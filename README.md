@@ -1,6 +1,11 @@
 # gearbox
 
-A Claude Code mod that shifts gears for you. Start a session on **Haiku**. Before each prompt, a quick Haiku call *describes* the request: how much of the project it touches, how costly a mistake would be, how subtle it is, and whether the turn will edit code, drive a browser or wait on a long command. gearbox's own rules turn that description into a model (haiku, sonnet, opus, fable) and an effort (low … max), and the turn runs there. Browser checks and long commands go to cheap subagents, so the expensive model plans and judges instead of clicking and waiting.
+A Claude Code mod that shifts gears for you. Before each prompt, a quick Haiku call *describes* the request: how much of the project it touches, how costly a mistake would be, how subtle it is, and whether the turn will write code, answer, drive a browser or wait on a long command. gearbox's own rules turn that description into a gear, and the turn runs there. Browser checks and long commands go to cheap subagents, so the expensive model plans and judges instead of clicking and waiting.
+
+It works in two modes, picked by the model the session runs on:
+
+- **Steer** (any model but Haiku, for example Opus 5.5): the session keeps its model, so its prompt cache and reasoning stay intact. gearbox sets each turn's effort and hands tool-heavy and Fable-level work to subagents. Changing effort between turns keeps the prompt cache: on Claude Code 2.1.311 with Opus 5.5 and a 70K-token conversation, a switch wrote under 1K tokens to the cache, the same as an unchanged turn.
+- **Shift** (a session on Haiku): gearbox also picks the model per turn (haiku, sonnet, opus, fable), only ever moving up.
 
 Built and tested on Claude Code 2.1.311. The mod API is early access and may change between releases.
 
@@ -14,7 +19,16 @@ At the prompt of a Claude Code terminal session:
 
 Answer `y` to add the marketplace, then pick a scope (user scope loads it in every session). From a shell: `claude plugin install gearbox --marketplace gnuh/gearbox`. In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `gnuh/gearbox`, then Add plugin.
 
-Then start a session on Haiku (`/model haiku`) and work as usual.
+Then work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model haiku`) for shift mode. Set your coding effort in `/config` (below).
+
+## Settings
+
+Both appear as rows in `/config` and on the install screen.
+
+| Setting | Default | |
+|---|---|---|
+| `code_effort` | `medium` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low` and the hardest `xhigh`; answers and explanations follow their difficulty. gearbox never asks before using your own choice. Anthropic advises `medium` for Opus 5.5, which beats Opus 5 at `high` on coding; pick `xhigh` if you want the most thorough work and accept longer turns. |
+| `steer` | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
 
 ## The rules
 
@@ -25,20 +39,24 @@ Then start a session on Haiku (`/model haiku`) and work as usual.
 | many files, or a bug whose location is unknown | opus |
 | open-ended design or research | fable, in a subagent |
 | a costly mistake (payments, auth, secrets, data) | at least opus · medium |
-| depth 0 / 1 / 2 / 3 | effort low / medium / high / xhigh (max only when you ask) |
+| depth 0 | effort low |
+| depth 1 / 2 / 3, writing code | your `code_effort` / at least high / at least xhigh |
+| depth 1 / 2 / 3, answering | effort medium / high / xhigh (max only when you ask) |
 
-- **The main model only rises, and never to Fable.** Each model switch writes the whole conversation into the new model's cache, so gearbox shifts up when needed and stays there. A toast shows what each shift costs. Effort changes freely. `/clear` starts over.
+In steer mode the model column only picks subagents' models: the session itself keeps its model unless you name another ("use sonnet for this"), which moves that one turn.
+
+- **In shift mode the main model only rises, and never to Fable.** Each model switch writes the whole conversation into the new model's cache, so gearbox shifts up when needed and stays there. A toast shows what each shift costs. Effort changes keep the cache. `/clear` starts over.
 - **Fable work runs in a Fable subagent** with a self-contained brief. If you name Fable yourself ("use fable"), that one turn runs on Fable in the main conversation.
 - **Browser checks:** the main model writes the checklist, a **Sonnet** subagent clicks through it and reports pass or fail per step, and the main model judges. Screenshots never enter the main conversation.
 - **Long commands** (build, deploy, publish, full test runs, log searches): a **Haiku** subagent runs the exact command and reports only the outcome.
 - **Side tasks** unrelated to your recent messages go to a subagent at their own gear, unless they are quick edits.
 - **Nods** ("ok", "go ahead", "pode seguir") keep the last gear with no survey.
-- **Asking you first.** Before Fable or xhigh/max effort, gearbox asks, offering a cheaper gear. It skips the question when you asked for that model or effort yourself: the survey must report the ask *and* the word must appear in your own text, outside code and quotes.
-- **Hands off otherwise.** Routing happens only when the session's model is Haiku (the readout below works in any session). Prompts nobody typed (notifications, schedules) run on the current main model without a survey.
+- **Asking you first.** Before Fable or xhigh/max effort, gearbox asks, offering a cheaper gear. It skips the question when the effort is your own `code_effort`, or when you asked for that model or effort yourself: the survey must report the ask *and* the word must appear in your own text, outside code and quotes.
+- **Hands off otherwise.** Prompts nobody typed (notifications, schedules) run on the current gear without a survey.
 
 ## Live readout
 
-gearbox shows which model every loop is running on at this moment: the main conversation and each subagent. It does this in any session while gearbox is on; routing still needs Haiku.
+gearbox shows which model every loop is running on at this moment: the main conversation and each subagent, in either mode.
 
 - **Spinner:** the working loop's line names its model, `Sauteing… on opus` (Claude Code already shows the effort).
 - **Above the prompt:** while subagents run, a chip per live loop, `● main opus·high  ● browser check sonnet·medium  ● deploy haiku·low`. It stays empty otherwise.
@@ -55,9 +73,9 @@ The rules, your new prompt (up to about 4,000 characters, as JSON), your last th
 
 | Command | |
 |---|---|
-| `/gearbox` | status |
+| `/gearbox` | status: mode, coding effort, current gear |
 | `/gearbox pane` | open the live table of every loop's model |
-| `/gearbox on`, `/gearbox off` | turn gearbox on or off (off is plain Haiku, no readout) |
+| `/gearbox on`, `/gearbox off` | turn gearbox on or off (off leaves every session alone, no readout) |
 | `/gearbox ask on`, `/gearbox ask off` | ask before Fable or xhigh/max |
 | `/gearbox usage` | calls, tokens and estimated cost per model, subagents included |
 | `/gearbox usage reset` | clear the usage ledger |

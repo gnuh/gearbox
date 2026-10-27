@@ -52,11 +52,41 @@ test('a Haiku session runs each turn in the gear its reading calls for', async (
   expect(r.surveys[0]).toEqual({ request: 'the invoice totals drift after a refund', earlier: [], previous: null })
 })
 
-test('a session on another model is left alone', async ($: any, on) => {
+test('with steer off, a session on another model is left alone', { options: { steer: false } }, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2 }], { session: 'claude-opus-5-5' })
   await $.prompt.submit({ text: 'anything', asUser: true })
   await stepOnce($, { model: 'claude-opus-5-5' })
   expect(r.surveys).toHaveLength(0)
+  expect(r.steps).toEqual(['claude-opus-5-5·medium'])
+})
+
+const sayOn = async ($: any, model: string, text: string) => {
+  await $.prompt.submit({ text, asUser: true })
+  await stepOnce($, { model })
+}
+
+test('an Opus session keeps its model; each turn gets its effort from the coding setting', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1 }, { reach: 'point', depth: 0 }, { reach: 'area', depth: 1, mode: 'answer' }, { mode: 'drive' }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'add pagination to the orders list')
+  await sayOn($, 'claude-opus-5-5', 'rename that prop')
+  await sayOn($, 'claude-opus-5-5', 'why does the list re-render twice?')
+  await sayOn($, 'claude-opus-5-5', 'click through the orders page in the browser')
+  expect(r.dialogs).toHaveLength(0) // xhigh is the person's own standing choice
+  expect(r.steps).toEqual(['claude-opus-5-5·xhigh', 'claude-opus-5-5·low', 'claude-opus-5-5·medium', 'claude-opus-5-5·medium'])
+  expect(r.notes[3]![0]).toContain('gearbox handoff, browser check')
+})
+
+test('steering: an ask for another model moves that turn only', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1, ask: { model: 'sonnet' } }, { reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'use sonnet for this rename')
+  await sayOn($, 'claude-opus-5-5', 'now add a test for it')
+  expect(r.steps).toEqual(['sonnet·medium', 'claude-opus-5-5·medium'])
+})
+
+test('steering: fable-level work still goes to a Fable subagent', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'frontier', depth: 2 }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'design an offline-first sync engine')
+  expect(r.notes[0]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'fable', effort: 'high' } })])
   expect(r.steps).toEqual(['claude-opus-5-5·medium'])
 })
 

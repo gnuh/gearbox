@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PromptOrigin, Register, TurnUsage } from 'claude-code'
+import type { EngineInterface, ModelEffort, PromptOrigin, Register, TurnUsage } from 'claude-code'
 import type { GearboxLoop } from '../types'
 import {
   type Gear,
@@ -158,7 +158,12 @@ export const usageReport = (ledger: Ledger) => {
   return [...lines, `total ≈ $${total.toFixed(2)} at API list prices, subagents included`].join('\n')
 }
 
-export const register: Register = on => {
+const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh']
+
+export const register: Register = (on, options) => {
+  // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
+  const standing: ModelEffort = CODE_EFFORTS.includes(options.code_effort as ModelEffort) ? (options.code_effort as ModelEffort) : 'medium'
+  const steers = options.steer !== false
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
   let enabled = true
@@ -211,8 +216,10 @@ export const register: Register = on => {
       return { text: `gearbox: unknown "${arg}". Try pane, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
+    const session = await $.session.model()
+    const mode = session.includes('haiku') ? 'shifting models' : steers ? `steering effort on ${family(session) ?? session}` : 'readout only'
     return {
-      text: `gearbox ${enabled ? 'on' : 'off'} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}`,
+      text: `gearbox ${enabled ? `on, ${mode}` : 'off'} · coding effort ${standing} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}`,
     }
   })
 
@@ -220,7 +227,12 @@ export const register: Register = on => {
     if (e.turnId) return next(e) // typed into a running turn, which keeps its gear
     turnGear = turnHandoff = undefined
     if (!enabled || e.command || e.isMeta || !typedByPerson(e.origin)) return next(e)
-    if (!(await $.session.model()).includes('haiku')) return next(e)
+    // A Haiku session shifts models; any other keeps its model and is only steered (effort and handoffs).
+    const session = await $.session.model()
+    const shifting = session.includes('haiku')
+    const fixed = shifting ? undefined : family(session)
+    if (!shifting && (!steers || !fixed)) return next(e)
+    const base = fixed ?? floor
 
     let p: Plan
     let ask: Partial<Gear> = {}
@@ -236,12 +248,12 @@ export const register: Register = on => {
       } else {
         ask = verifyAsk(r.ask, e.text)
         const checked = { ...r, ask }
-        let want = gearFor(checked)
-        if ((await $.store.get('consent')) !== false && needsConsent(want, ask, previous)) want = await consent($, want)
-        p = plan(checked, want, floor, earlier.length > 0)
+        let want = gearFor(checked, standing)
+        if ((await $.store.get('consent')) !== false && needsConsent(want, ask, previous, standing)) want = await consent($, want)
+        p = plan(checked, want, base, earlier.length > 0, fixed)
       }
     }
-    turnGear = previous = { model: mainModel(p, ask, floor), effort: p.main.effort }
+    turnGear = previous = { model: mainModel(p, ask, base), effort: p.main.effort }
     turnHandoff = p.handoff
     return next(p.handoff ? { ...e, context: [...(e.context ?? []), handoffNote(p.handoff)] } : e)
   })
@@ -284,16 +296,19 @@ export const register: Register = on => {
   // for the readout, in any session, and its usage tallied.
   on('turn.step', async function* ($, e, next) {
     let step = e
-    if (!e.agentId) {
-      const model = enabled && e.model.includes('haiku') ? turnGear?.model ?? floor : undefined
-      if (model) {
-        if (floor && model !== floor && e.index === 0) {
-          const tokens = (await $.session.usage()).context.tokens ?? 0
-          $.ui.toast(`gearbox: shifting to ${model}, re-caching ${kilo(tokens)} tokens ≈ $${((tokens * PRICES[model].written) / 1e6).toFixed(2)}`)
-        }
-        floor = nextFloor(model, floor)
-        step = { ...e, model, effort: turnGear?.effort ?? e.effort }
+    if (!e.agentId && enabled) {
+      // Shifting (Haiku session): the turn's model, else the floor. Steering: the session's model, unless the
+      // person asked for another this turn. Effort changes are free: they keep the prompt cache (measured).
+      const shifting = e.model.includes('haiku')
+      const from = shifting ? floor : family(e.model)
+      const model = shifting ? turnGear?.model ?? floor : turnGear?.model
+      if (model && model !== from && from && e.index === 0) {
+        const tokens = (await $.session.usage()).context.tokens ?? 0
+        $.ui.toast(`gearbox: shifting to ${model}, re-caching ${kilo(tokens)} tokens ≈ $${((tokens * PRICES[model].written) / 1e6).toFixed(2)}`)
       }
+      if (model && shifting) floor = nextFloor(model, floor)
+      if (model && (shifting || model !== from)) step = { ...step, model }
+      if (turnGear) step = { ...step, effort: turnGear.effort }
     }
     const id = e.agentId ?? 'main'
     if (enabled) {

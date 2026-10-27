@@ -1,10 +1,29 @@
 {
   "name": "gearbox",
-  "version": "0.2.0",
-  "description": "Haiku sessions shift gears per prompt, and a live readout shows which model every agent and subagent runs on.",
+  "version": "0.3.0",
+  "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
   },
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "code_effort": {
+      "type": "string",
+      "title": "Coding effort",
+      "description": "Effort for ordinary coding turns. Trivial turns still run low and the hardest ones xhigh; answers and explanations follow their difficulty. Anthropic advises medium for Opus 5.5.",
+      "options": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "default": "medium"
+    },
+    "steer": {
+      "type": "boolean",
+      "title": "Steer sessions not on Haiku",
+      "description": "On sessions running another model, keep that model and set each turn's effort and handoffs. Off leaves those sessions alone apart from the readout.",
+      "default": true
+    }
+  }
 }

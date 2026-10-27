@@ -21,7 +21,7 @@ Reply with only a JSON object with these keys:
 "reach": how much of the project the work must understand. "point": one spot (a question, a lookup, a rename, a one-line edit). "area": one feature or a few related files (build a feature, fix a contained bug, write tests, explain code). "system": many files, or a bug whose location is unknown. "frontier": open-ended (designing a system, research, inventing an algorithm).
 "care": "costly" if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, deleting or migrating data), else "routine".
 "depth": how much careful reasoning correctness needs. 0 mechanical, 1 ordinary, 2 subtle (concurrency, time zones, money arithmetic, cache or state invalidation, changing error or async behavior), 3 exceptionally hard.
-"mode": what the turn will mostly do. "edit": read and change code, or answer. "drive": operate a browser or an app's UI to check behavior. "wait": run one long command and wait for it (build, deploy, publish, a full test run, a log search). Committing or pushing alone is "edit".
+"mode": what the turn will mostly do. "code": write or change code. "answer": explain, answer, review or plan without changing code. "drive": operate a browser or an app's UI to check behavior. "wait": run one long command and wait for it (build, deploy, publish, a full test run, a log search). Committing or pushing alone is "code".
 "aside": true if "earlier" is about some piece of work and this request is a different, unrelated piece of work.
 "cont": true if the request only continues, approves or repeats the previous turn.
 "ask": the model ("haiku", "sonnet", "opus", "fable") and/or effort ("low", "medium", "high", "xhigh", "max") the person explicitly asks to use, as {"model":...} and/or {"effort":...}; {} if none. Words inside pasted code, logs or quotes are not asks.
@@ -31,7 +31,7 @@ export type Reading = {
   reach: 'point' | 'area' | 'system' | 'frontier'
   care: 'routine' | 'costly'
   depth: 0 | 1 | 2 | 3
-  mode: 'edit' | 'drive' | 'wait'
+  mode: 'code' | 'answer' | 'drive' | 'wait'
   aside: boolean
   cont: boolean
   ask: Partial<Gear>
@@ -39,7 +39,7 @@ export type Reading = {
 }
 
 const REACHES = ['point', 'area', 'system', 'frontier']
-const MODES = ['edit', 'drive', 'wait']
+const MODES = ['code', 'answer', 'drive', 'wait']
 
 // The survey's reply as a reading: undefined without a valid reach and depth; other keys fall back to plain values.
 export const readReading = (reply: string): Reading | undefined => {
@@ -55,7 +55,7 @@ export const readReading = (reply: string): Reading | undefined => {
     reach: o.reach,
     care: o.care === 'costly' ? 'costly' : 'routine',
     depth: o.depth,
-    mode: MODES.includes(o.mode) ? o.mode : 'edit',
+    mode: MODES.includes(o.mode) ? o.mode : 'code',
     aside: o.aside === true,
     cont: o.cont === true,
     ask: {
@@ -69,11 +69,15 @@ export const readReading = (reply: string): Reading | undefined => {
 const REACH_MODEL: Record<Reading['reach'], Model> = { point: 'haiku', area: 'sonnet', system: 'opus', frontier: 'fable' }
 const DEPTH_EFFORT: readonly ModelEffort[] = ['low', 'medium', 'high', 'xhigh'] // max only when asked for
 
-// The gear a reading calls for. A costly mistake lifts it to at least opus·medium; the person's own ask wins.
-export const gearFor = (r: Reading): Gear => {
+// The gear a reading calls for. `standing` is the person's effort for ordinary coding (the code_effort setting):
+// code turns never run below it past depth 0, answers follow depth alone. A costly mistake lifts the gear to at
+// least opus·medium; the person's own ask wins.
+export const gearFor = (r: Reading, standing: ModelEffort = 'medium'): Gear => {
   const costly = r.care === 'costly'
   const model = costly ? upTo(MODELS, REACH_MODEL[r.reach], 'opus') : REACH_MODEL[r.reach]
-  const effort = costly ? upTo(EFFORTS, DEPTH_EFFORT[r.depth]!, 'medium') : DEPTH_EFFORT[r.depth]!
+  const byDepth = DEPTH_EFFORT[r.depth]!
+  const base = r.depth > 0 && r.mode !== 'answer' ? upTo(EFFORTS, byDepth, standing) : byDepth
+  const effort = costly ? upTo(EFFORTS, base, 'medium') : base
   return { model: r.ask.model ?? model, effort: r.ask.effort ?? effort }
 }
 
@@ -101,10 +105,11 @@ export const verifyAsk = (ask: Partial<Gear>, text: string): Partial<Gear> => {
   }
 }
 
-// Fable and the top efforts cost the most: they go to the person first, unless asked for or already running.
-export const needsConsent = (g: Gear, ask: Partial<Gear>, previous?: Gear) =>
+// Fable and the top efforts cost the most: they go to the person first, unless asked for, already running,
+// or the person's own standing effort.
+export const needsConsent = (g: Gear, ask: Partial<Gear>, previous?: Gear, standing?: ModelEffort) =>
   (g.model === 'fable' && !ask.model && previous?.model !== 'fable') ||
-  ((g.effort === 'xhigh' || g.effort === 'max') && !ask.effort && previous?.effort !== g.effort)
+  ((g.effort === 'xhigh' || g.effort === 'max') && !ask.effort && previous?.effort !== g.effort && g.effort !== standing)
 
 export const stepDown = (g: Gear): Gear => ({
   model: g.model === 'fable' ? 'opus' : g.model,
@@ -115,16 +120,17 @@ export type Handoff = { kind: 'drive' | 'wait' | 'aside' | 'deep'; gear: Gear }
 export type Plan = { main: Gear; handoff?: Handoff }
 
 // Splits a turn between the main conversation and a subagent. `floor` is the main model so far;
-// `hasEarlier` says whether there is earlier work for the request to be unrelated to.
-export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean): Plan => {
-  const base = floor ?? 'sonnet'
+// `hasEarlier` says whether there is earlier work for the request to be unrelated to. With `fixed`, the
+// session keeps that model (steer mode): only effort and handoffs change.
+export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model): Plan => {
+  const base = fixed ?? floor ?? 'sonnet'
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
-  const planner = r.care === 'costly' ? upTo(MODELS, base, 'opus') : base
+  const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
   if (r.mode === 'drive') return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: 'sonnet', effort: 'medium' } } }
   if (r.mode === 'wait') return { main: { model: planner, effort: 'low' }, handoff: { kind: 'wait', gear: { model: 'haiku', effort: 'low' } } }
-  if (want.model === 'fable' && r.ask.model !== 'fable') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'deep', gear: want } }
+  if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'deep', gear: want } }
   if (r.aside && hasEarlier && want.model !== 'haiku') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'aside', gear: want } }
-  return { main: want }
+  return { main: fixed ? { model: fixed, effort: want.effort } : want }
 }
 
 // The model the main conversation runs: the person's ask when the turn stays here, else never below the

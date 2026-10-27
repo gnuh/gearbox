@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { type Reading, NOD, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, stepDown, trimRequest, verifyAsk } from './policy'
 
-const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'edit', aside: false, cont: false, ask: {}, sure: true, ...o })
+const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, ...o })
 
 test('readReading takes a reply apart and fills the plain defaults', () => {
   expect(readReading('{"reach":"system","depth":2}')).toEqual(reading({ reach: 'system', depth: 2 }))
@@ -23,6 +23,26 @@ test('gearFor maps reach to a model and depth to an effort', () => {
     [{ reach: 'system', depth: 2, ask: { model: 'sonnet', effort: 'max' } }, 'sonnet·max'],
   ]
   for (const [r, want] of cases) expect(label(gearFor(reading(r)))).toBe(want)
+})
+
+test('a standing coding effort lifts code turns, not answers or trivial edits', () => {
+  const cases: [Partial<Reading>, string][] = [
+    [{ reach: 'area', depth: 1 }, 'sonnet·xhigh'],
+    [{ reach: 'system', depth: 2 }, 'opus·xhigh'],
+    [{ reach: 'point', depth: 0 }, 'haiku·low'],
+    [{ reach: 'area', depth: 1, mode: 'answer' }, 'sonnet·medium'],
+    [{ reach: 'area', depth: 3, mode: 'answer' }, 'sonnet·xhigh'],
+  ]
+  for (const [r, want] of cases) expect(label(gearFor(reading(r), 'xhigh'))).toBe(want)
+  expect(label(gearFor(reading({ reach: 'area', depth: 2 }), 'medium'))).toBe('sonnet·high')
+  expect(needsConsent({ model: 'opus', effort: 'xhigh' }, {}, undefined, 'xhigh')).toBe(false)
+})
+
+test('steer mode keeps the session model and still hands work off', () => {
+  expect(plan(reading({ reach: 'point', depth: 0 }), { model: 'haiku', effort: 'low' }, 'opus', true, 'opus')).toEqual({ main: { model: 'opus', effort: 'low' } })
+  expect(plan(reading({ mode: 'drive', care: 'costly' }), { model: 'opus', effort: 'medium' }, 'sonnet', true, 'sonnet').main.model).toBe('sonnet')
+  expect(plan(reading({ reach: 'frontier' }), { model: 'fable', effort: 'high' }, 'opus', false, 'opus').handoff?.kind).toBe('deep')
+  expect(plan(reading({ reach: 'frontier' }), { model: 'fable', effort: 'high' }, 'fable', false, 'fable')).toEqual({ main: { model: 'fable', effort: 'high' } })
 })
 
 test('verifyAsk keeps only what the person said outside code and quotes', () => {
