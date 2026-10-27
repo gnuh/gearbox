@@ -1,6 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import { type Reading, handoffNote } from './policy'
 
+// The routing rules below are written for a medium coding effort; the default is xhigh.
+const MEDIUM = { options: { code_effort: 'medium' } }
 const ZERO = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 const ONE = { ...ZERO, input_tokens: 10, output_tokens: 2 }
 
@@ -45,7 +47,7 @@ const say = async ($: any, text: string) => {
   await stepOnce($)
 }
 
-test('a Haiku session runs each turn in the gear its reading calls for', async ($: any, on) => {
+test('a Haiku session runs each turn in the gear its reading calls for', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2 }])
   await say($, 'the invoice totals drift after a refund')
   expect(r.steps).toEqual(['opus·high'])
@@ -76,21 +78,21 @@ test('an Opus session keeps its model; each turn gets its effort from the coding
   expect(r.notes[3]![0]).toContain('gearbox handoff, browser check')
 })
 
-test('steering: an ask for another model moves that turn only', async ($: any, on) => {
+test('steering: an ask for another model moves that turn only', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'area', depth: 1, ask: { model: 'sonnet' } }, { reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
   await sayOn($, 'claude-opus-5-5', 'use sonnet for this rename')
   await sayOn($, 'claude-opus-5-5', 'now add a test for it')
   expect(r.steps).toEqual(['sonnet·medium', 'claude-opus-5-5·medium'])
 })
 
-test('steering: fable-level work still goes to a Fable subagent', async ($: any, on) => {
+test('steering: fable-level work still goes to a Fable subagent', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'frontier', depth: 2 }], { session: 'claude-opus-5-5' })
   await sayOn($, 'claude-opus-5-5', 'design an offline-first sync engine')
   expect(r.notes[0]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'fable', effort: 'high' } })])
   expect(r.steps).toEqual(['claude-opus-5-5·medium'])
 })
 
-test('the main model only rises; effort follows each reading; an unusable survey keeps the last gear', async ($: any, on) => {
+test('the main model only rises; effort follows each reading; an unusable survey keeps the last gear', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2 }, { reach: 'point', depth: 0 }])
   await say($, 'find why sessions expire early')
   await say($, 'rename that helper')
@@ -104,7 +106,7 @@ test('a first prompt the survey cannot read starts in sonnet·medium', async ($:
   expect(r.steps).toEqual(['sonnet·medium'])
 })
 
-test('a nod keeps the gear without a survey', async ($: any, on) => {
+test('a nod keeps the gear without a survey', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2 }])
   await say($, 'find why sessions expire early')
   await say($, 'go ahead')
@@ -112,7 +114,7 @@ test('a nod keeps the gear without a survey', async ($: any, on) => {
   expect(r.steps).toEqual(['opus·high', 'opus·high'])
 })
 
-test('/gearbox off is plain Haiku again; on starts over', async ($: any, on) => {
+test('/gearbox off is plain Haiku again; on starts over', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2 }, { reach: 'area', depth: 1 }])
   await say($, 'find why sessions expire early')
   expect((await $.command.run({ command: 'gearbox', args: 'off' })).text).toContain('gearbox off')
@@ -123,7 +125,7 @@ test('/gearbox off is plain Haiku again; on starts over', async ($: any, on) => 
   expect(r.steps).toEqual(['opus·high', 'claude-haiku-5-5·medium', 'sonnet·medium'])
 })
 
-test('costly gears are put to the person, unless their own words asked', async ($: any, on) => {
+test('costly gears are put to the person, unless their own words asked', MEDIUM, async ($: any, on) => {
   const r = rig(
     on,
     [
@@ -148,7 +150,7 @@ test('/gearbox ask off skips the question', async ($: any, on) => {
   expect(r.steps).toEqual(['sonnet·xhigh'])
 })
 
-test('fable work goes to a subagent while the main conversation stays put', async ($: any, on) => {
+test('fable work goes to a subagent while the main conversation stays put', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 1 }, { reach: 'frontier', depth: 2 }], { earlier: ['wire the report page'] })
   await say($, 'wire the report page')
   await say($, 'design an offline-first sync engine')
@@ -156,7 +158,7 @@ test('fable work goes to a subagent while the main conversation stays put', asyn
   expect(r.steps).toEqual(['opus·medium', 'opus·medium'])
 })
 
-test('fable the person names runs one turn here, then the floor again', async ($: any, on) => {
+test('fable the person names runs one turn here, then the floor again', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 1 }, { reach: 'frontier', depth: 2, ask: { model: 'fable' } }, { reach: 'area', depth: 1 }])
   await say($, 'wire the report page')
   await say($, 'use fable to plan the data model')
@@ -165,7 +167,7 @@ test('fable the person names runs one turn here, then the floor again', async ($
   expect(r.steps).toEqual(['opus·medium', 'fable·high', 'opus·medium'])
 })
 
-test('browser checks and long commands are run by cheaper subagents', async ($: any, on) => {
+test('browser checks and long commands are run by cheaper subagents', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2 }, { mode: 'drive' }, { mode: 'wait' }, { reach: 'point', depth: 0 }])
   await say($, 'checkout totals are wrong')
   await say($, 'click through checkout in the browser and confirm the fix')
@@ -175,7 +177,7 @@ test('browser checks and long commands are run by cheaper subagents', async ($: 
   expect(r.steps).toEqual(['opus·high', 'opus·medium', 'opus·low', 'opus·low'])
 })
 
-test('a side task goes to a subagent only when there is earlier work and it is more than a quick edit', async ($: any, on) => {
+test('a side task goes to a subagent only when there is earlier work and it is more than a quick edit', MEDIUM, async ($: any, on) => {
   const earlier: string[] = []
   const r = rig(
     on,
@@ -230,7 +232,7 @@ test('one prompt with several steps: a route, and effort follows the phase tool'
     await stepOnce($, { model: 'claude-opus-5-5' })
     expect(r.steps.at(-1)).toBe(`claude-opus-5-5·${effort}`)
   }
-  expect(r.steps[0]).toBe('claude-opus-5-5·low')
+  expect(r.steps[0]).toBe('claude-opus-5-5·xhigh') // before any phase call: the work's effort, not the lookup's
   expect(r.dialogs).toHaveLength(0)
 })
 
@@ -240,4 +242,109 @@ test('a model you name for the browser step is used only if your own words say i
   await $.prompt.submit({ text: 'check the page in the browser using haiku to navigate, then read the ticket', asUser: true })
   expect(r.notes[0]![0]).toContain('1. check it: navigate: start an Agent with model "haiku"')
   expect(r.notes[0]![0]).toContain('3. read it: start an Agent with model "haiku"') // opus was never said by the person
+})
+
+test('coding runs at xhigh out of the box, without asking', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1 }, { reach: 'area', depth: 1, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'add pagination to the orders list')
+  await sayOn($, 'claude-opus-5-5', 'why does it re-render?')
+  expect(r.dialogs).toHaveLength(0)
+  expect(r.steps).toEqual(['claude-opus-5-5·xhigh', 'claude-opus-5-5·medium'])
+})
+
+test('/gearbox effort, navigator and steer change the settings, over the plugin options', { options: { code_effort: 'high' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1 }, { reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'add pagination')
+  expect((await $.command.run({ command: 'gearbox', args: 'effort medium' })).text).toContain('coding effort medium')
+  expect((await $.command.run({ command: 'gearbox', args: 'effort ludicrous' })).text).toBe('gearbox: effort takes medium, high or xhigh')
+  expect((await $.command.run({ command: 'gearbox', args: 'navigator haiku' })).text).toContain('navigator haiku')
+  await sayOn($, 'claude-opus-5-5', 'add sorting')
+  expect(r.steps).toEqual(['claude-opus-5-5·high', 'claude-opus-5-5·medium'])
+  expect(r.kv.get('settings')).toEqual({ code_effort: 'medium', navigator: 'haiku' })
+  expect((await $.command.run({ command: 'gearbox', args: 'steer off' })).text).toContain('steer off')
+  await sayOn($, 'claude-opus-5-5', 'add filters')
+  expect(r.surveys).toHaveLength(2) // steer off: no survey for the third prompt
+})
+
+const SETTINGS_PANE = { plugin: 'gearbox', component: 'Pane', requestId: 'gearbox-settings', props: { title: 'gearbox settings', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 12 }, view: {} } } as const
+
+test('/gearbox settings opens a panel of buttons; a press saves the value, on every surface', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  expect((await $.command.run({ command: 'gearbox', args: 'settings' })).text).toContain('settings open')
+  for (const [surface, effort] of [['terminal', 'high'], ['desktop', 'medium']] as const) {
+    const ui = await $.ui.mount({ ...SETTINGS_PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /Coding effort/ })).toBeDefined()
+    await ui.press({ key: `effort-${effort}` })
+    await ui.unmount()
+  }
+  await (await $.ui.mount({ ...SETTINGS_PANE, surface: 'terminal' })).press({ key: 'navigator-haiku' })
+  expect(r.kv.get('settings')).toEqual({ code_effort: 'medium', navigator: 'haiku' })
+  await sayOn($, 'claude-opus-5-5', 'add sorting')
+  expect(r.steps).toEqual(['claude-opus-5-5·medium'])
+  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('coding effort medium · navigator haiku')
+})
+
+test('/gearbox settings says how to set values where the panel has no room', async ($: any, on) => {
+  rig(on, [])
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'narrow' } }))
+  expect((await $.command.run({ command: 'gearbox', args: 'settings' })).text).toContain('/gearbox effort|navigator|steer')
+})
+
+test('a route the model never marks runs at the work effort, and a nod reuses it', async ($: any, on) => {
+  const phases = [{ what: 'read the ticket', mode: 'lookup', depth: 0 }, { what: 'implement it', mode: 'code', depth: 1 }]
+  const r = rig(on, [{ reach: 'area', depth: 1, phases } as any], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'read GAUNTLET-1 and implement it')
+  await sayOn($, 'claude-opus-5-5', 'continue')
+  expect(r.steps).toEqual(['claude-opus-5-5·xhigh', 'claude-opus-5-5·xhigh'])
+})
+
+test('a hand-off turn does not set what a nod reuses', MEDIUM, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }, { mode: 'wait' }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'fix the session expiry bug')
+  await sayOn($, 'claude-opus-5-5', 'run the e2e suite')
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  expect(r.steps).toEqual(['claude-opus-5-5·high', 'claude-opus-5-5·low', 'claude-opus-5-5·high'])
+})
+
+test('with strict off, running the command itself instead of the subagent raises the effort', { options: { strict: false } }, async ($: any, on) => {
+  const r = rig(on, [{ mode: 'wait' }, { mode: 'wait' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  await sayOn($, 'claude-opus-5-5', 'run the e2e suite')
+  await $.tool.call({ tool: 'Bash', command: 'npx playwright test' })
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'run the e2e suite again')
+  await $.tool.call({ tool: 'Agent', description: 'run e2e', prompt: 'p', model: 'haiku' })
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  expect(r.steps).toEqual(['claude-opus-5-5·low', 'claude-opus-5-5·medium', 'claude-opus-5-5·low', 'claude-opus-5-5·low'])
+})
+
+test('strict hand-offs: the long command and the browser stay with subagents; other work goes on', async ($: any, on) => {
+  const r = rig(on, [{ mode: 'wait' }, { mode: 'drive' }], { session: 'claude-opus-5-5' })
+  const reached: string[] = []
+  on('tool.call', (_: unknown, e: any) => (reached.push(`${e.tool} ${e.command ?? e.url ?? ''}`.trim()), { result: '' }))
+  await sayOn($, 'claude-opus-5-5', 'run the e2e suite')
+  const refused = await $.tool.call({ tool: 'Bash', command: 'npx playwright test' })
+  await $.tool.call({ tool: 'Bash', command: 'cat package.json' })
+  expect(JSON.stringify(refused)).toContain('this step is a hand-off')
+  expect(JSON.stringify(refused)).toContain('model \\"haiku\\"')
+  await sayOn($, 'claude-opus-5-5', 'check the cart page in the browser')
+  const browser = await $.tool.call({ tool: 'mcp__claude-in-chrome__navigate', url: 'http://localhost:3000/cart' })
+  expect(JSON.stringify(browser)).toContain('this step is a hand-off')
+  expect(reached).toEqual(['Bash cat package.json'])
+  expect(r.steps.every(s => s.endsWith('·low') || s.endsWith('·medium'))).toBe(true)
+})
+
+test('a plain subagent in a hand-off runs on the step gear, whatever the call named; typed agents are left alone', async ($: any, on) => {
+  const phases = [{ what: 'read the ticket', mode: 'lookup', depth: 0 }, { what: 'build it', mode: 'code', depth: 1 }, { what: 'run e2e', mode: 'wait', depth: 0 }]
+  rig(on, [{ reach: 'area', depth: 1, phases } as any], { session: 'claude-opus-5-5' })
+  const agents: string[] = []
+  on('tool.call', (_: unknown, e: any) => (agents.push(`${e.subagent_type ?? 'plain'} ${e.model}·${e.effort ?? '-'}`), { result: '' }))
+  await sayOn($, 'claude-opus-5-5', 'read GAUNTLET-1, build it, run the e2e suite')
+  await $.tool.call({ tool: 'Agent', description: 'read', prompt: 'p', model: 'opus' }) // first subagent step: the lookup
+  await $.tool.call({ tool: 'Agent', description: 'look around', prompt: 'p', subagent_type: 'Explore' })
+  await $.tool.call({ tool: 'mcp__gearbox__phase', step: 3 })
+  await $.tool.call({ tool: 'Agent', description: 'e2e', prompt: 'p', model: 'sonnet', effort: 'high' })
+  await $.tool.call({ tool: 'Agent', description: 'extra', prompt: 'p', model: 'sonnet' }) // no hand-off left: as called
+  expect(agents).toEqual(['plain haiku·low', 'Explore undefined·-', 'plain haiku·low', 'plain sonnet·-'])
 })

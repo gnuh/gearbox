@@ -175,6 +175,22 @@ export const routeNote = (steps: Step[]): string =>
     ),
   ].join('\n')
 
+// The effort of a route's own work: its highest main-conversation step. A turn starts there, so a model that
+// never calls the phase tool works at the work's effort, not at a briefing step's low.
+export const workEffort = (steps: Step[]): ModelEffort =>
+  steps.filter(s => s.by === 'main').reduce<ModelEffort>((top, s) => upTo(EFFORTS, top, s.mainEffort), 'low')
+
+// Tools that do a browser check or a long command's work: the main conversation calling one during such a step
+// means it skipped the subagent.
+export const doesHandoffWork = (tool: string) => /^(Bash|PowerShell)$|chrome|playwright|browser|computer/i.test(tool)
+
+// What strict mode keeps out of the main conversation during a hand-off step: driving the browser in a browser
+// check, and the long command itself (a test run, a build, a deploy) in a long-command step. Other shell work,
+// such as reading a file to settle the command, stays allowed.
+export const isBrowserTool = (tool: string) => /chrome|playwright|browser|computer/i.test(tool)
+export const isLongCommand = (command: string) =>
+  /\b(test|tests|e2e|playwright|jest|vitest|cypress|mocha|pytest|build|deploy|publish|release)\b/i.test(command)
+
 export type Handoff = { kind: 'drive' | 'wait' | 'aside' | 'deep'; gear: Gear }
 export type Plan = { main: Gear; handoff?: Handoff }
 

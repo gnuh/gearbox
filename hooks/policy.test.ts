@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Reading, NOD, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
+import { type Reading, NOD, doesHandoffWork, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], ...o })
 
@@ -137,4 +137,11 @@ test('a model named for a step wins over the navigator setting', () => {
   expect(label(look!.gear)).toBe('sonnet·low')
   expect(plan(reading({ mode: 'drive', ask: { model: 'haiku' } }), { model: 'sonnet', effort: 'medium' }, 'opus', true, 'opus').handoff?.gear.model).toBe('haiku')
   expect(readReading('{"reach":"area","depth":1,"phases":[{"what":"x","mode":"drive","depth":1,"ask":"gpt"}]}')?.phases[0]?.ask).toBeUndefined()
+})
+
+test('workEffort is the highest main step; doesHandoffWork spots tools a subagent should run', () => {
+  const steps = route([{ what: 'read', mode: 'lookup', depth: 0 }, { what: 'build', mode: 'code', depth: 1 }, { what: 'commit', mode: 'commit', depth: 0 }], 'opus', 'xhigh', false)
+  expect(workEffort(steps)).toBe('xhigh')
+  expect(['Bash', 'mcp__claude-in-chrome__navigate', 'mcp__playwright__browser_click'].every(doesHandoffWork)).toBe(true)
+  expect(['Read', 'Edit', 'Agent', 'mcp__gearbox__phase'].some(doesHandoffWork)).toBe(false)
 })

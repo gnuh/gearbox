@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.4.2",
+  "version": "0.4.5",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -11,13 +11,13 @@
     "code_effort": {
       "type": "string",
       "title": "Coding effort",
-      "description": "Effort for ordinary coding turns. Trivial turns still run low and the hardest ones xhigh; answers and explanations follow their difficulty. Anthropic advises medium for Opus 5.5.",
+      "description": "Effort for ordinary coding turns. Trivial turns still run low; answers and explanations follow their difficulty. Default xhigh, the most thorough; Anthropic suggests medium for Opus 5.5 if you prefer faster, cheaper turns. Also settable with /gearbox settings.",
       "options": [
         "medium",
         "high",
         "xhigh"
       ],
-      "default": "medium"
+      "default": "xhigh"
     },
     "steer": {
       "type": "boolean",
@@ -34,6 +34,12 @@
         "sonnet"
       ],
       "default": "sonnet"
+    },
+    "strict": {
+      "type": "boolean",
+      "title": "Strict hand-offs",
+      "description": "During a browser-check or long-command step, keep the main conversation from doing the work itself so a subagent does it; also binds a plain subagent to the step's model and effort. Also settable with /gearbox strict.",
+      "default": true
     }
   }
 }
