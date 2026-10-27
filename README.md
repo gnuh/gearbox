@@ -42,7 +42,7 @@ Work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model ha
 The defaults are ready to use. To change one, type in any session, terminal or desktop app:
 
 - `/gearbox settings`: a panel with a row of buttons per setting; the value in use is marked, press another to switch.
-- Or directly: `/gearbox effort high`, `/gearbox navigator haiku`, `/gearbox steer off`, `/gearbox strict off`.
+- Or directly: `/gearbox effort high`, `/gearbox navigator haiku`, `/gearbox steer off`, `/gearbox strict off`, `/gearbox log on`.
 
 A change applies from your next prompt and is kept for later sessions. What you set with `/gearbox` wins over the plugin's own options, which you can also set from a shell (`claude plugin configure gearbox@gearbox --values-stdin`) where you prefer.
 
@@ -51,6 +51,7 @@ A change applies from your next prompt and is kept for later sessions. What you 
 | coding effort (`/gearbox effort`) | `xhigh` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low`; answers and explanations follow their difficulty. gearbox never asks before using it. `xhigh` is the most thorough and makes turns longer; Anthropic suggests `medium` for Opus 5.5, which beats Opus 5 at `high` on coding, if you want faster, cheaper turns. |
 | steer (`/gearbox steer`) | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
 | strict hand-offs (`/gearbox strict`) | on | During a browser-check or long-command step, the main conversation may not drive the browser or run the test, build or deploy command itself: the call is refused with a note naming the subagent to start. Other shell work, like reading a file or a commit whose message mentions a build, still runs: only the command itself counts, not its quoted text. Off lets the model do it itself, at least at medium effort. |
+| debug log (`/gearbox log`) | off | `on` writes what gearbox decides to a log file (below); `full` also keeps the first 200 characters of each prompt. |
 | navigator (`/gearbox navigator`) | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
 
 ## The rules
@@ -116,6 +117,7 @@ The rules, your new prompt (up to about 4,000 characters, as JSON), your last th
 |---|---|
 | `/gearbox` | status: mode, settings, current gear |
 | `/gearbox settings` | open the settings panel |
+| `/gearbox log` | show the debug log's path, last decision and last request; `/gearbox log on\|off\|full` turns it on or off |
 | `/gearbox effort <medium\|high\|xhigh>`, `/gearbox navigator <sonnet\|haiku>`, `/gearbox steer <on\|off>`, `/gearbox strict <on\|off>` | change one setting directly |
 | `/gearbox pane` | open the live table of every loop's model |
 | `/gearbox on`, `/gearbox off` | turn gearbox on or off (off leaves every session alone, no readout) |
@@ -128,6 +130,19 @@ Each survey reply goes to the debug log (`claude --debug`).
 ## Tuning
 
 The survey prompt and the rules are in `hooks/policy.ts` (`SURVEY`, `gearFor`, `plan`). The prices behind the cost estimates are `PRICES` in `hooks/register.tsx`. Run the tests with `claude plugin test .`.
+
+## Debug log
+
+`/gearbox log on` (off by default) writes one JSON line per event to `~/.claude/gearbox/logs/<session-id>.jsonl`, so you can see what gearbox decided and why:
+
+- `session`: gearbox and Claude Code versions, the session's model, and the settings in force with where they came from.
+- `prompt`: its kind (typed, command, notification, ultrathink) and length. The text itself is kept only with `/gearbox log full`, first 200 characters.
+- `survey`: the quick Haiku check's reply, how long it took, and how it was read.
+- `gear`: the gear chosen and why (for example `survey: code, area, depth 1`, `nod: reused the last work gear`, `survey unreadable: previous gear`), plus any hand-off or route.
+- `phase`, `agent` (a subagent re-geared: asked versus set), `strict` (a refused call), `raise` (effort raised because the model did a hand-off step itself).
+- `step`: every request, main conversation and subagents: the model and effort gearbox **sent**, what Claude Code's own setting would have sent, the model that answered, and tokens.
+
+`/gearbox log` shows the file's path, the last decision and the last request. Claude Code's own effort display shows its session setting, not what gearbox sent per request; the log's `step` lines show both. `bench/compare.py` reads the log to add the effort sent per request to its comparison. The log stays on your machine; delete the folder whenever you like.
 
 ## Does it pay off?
 

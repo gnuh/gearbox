@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -40,6 +40,17 @@
       "title": "Strict hand-offs",
       "description": "During a browser-check or long-command step, keep the main conversation from doing the work itself so a subagent does it; also binds a plain subagent to the step's model and effort. Also settable with /gearbox strict.",
       "default": true
+    },
+    "log": {
+      "type": "string",
+      "title": "Debug log",
+      "description": "Write what gearbox decides, and what each request sent, to ~/.claude/gearbox/logs/<session>.jsonl: off, on, or full (also the first 200 characters of each prompt). Also settable with /gearbox log.",
+      "options": [
+        "off",
+        "on",
+        "full"
+      ],
+      "default": "off"
     }
   }
 }
