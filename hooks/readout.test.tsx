@@ -175,10 +175,11 @@ const disk = (on: any) => {
   }
 }
 
-test('the popup shows the running tree, follows each change, and closes when the agents finish', async ($: any, on) => {
+test('popup agents: the running tree, following each change, closing when the agents finish', async ($: any, on) => {
   bench(on)
   const popups = disk(on)
   await $.command.run({ command: 'gearbox', args: 'log on' })
+  await $.command.run({ command: 'gearbox', args: 'popup agents' })
   await step($, 'claude-opus-5-5')
   expect(await popups($)).toEqual([]) // the main conversation alone: the status line covers it
   await spawn($, 'browser check', 'sonnet')
@@ -213,4 +214,19 @@ test('the popup stays quiet while the gearbox pane is shown, and when switched o
   const before = (await popups($)).length
   await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a-check' })
   expect(await popups($)).toHaveLength(before)
+})
+
+test('popup always (the default): the main conversation alone shows its live model and effort, then done', async ($: any, on) => {
+  bench(on)
+  const popups = disk(on)
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await step($, 'claude-opus-5-5', { effort: 'xhigh' })
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·xhigh · thinking')
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/cart/total.ts', old_string: 'a', new_string: 'b' })
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·xhigh · Edit total.ts')
+  await step($, 'claude-opus-5-5', { effort: 'low', index: 1 }) // the next request goes out at another effort
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·low · Edit total.ts')
+  await complete($)
+  expect((await popups($)).at(-1)).toMatchObject({ closed: true })
+  expect((await $.command.run({ command: 'gearbox', args: 'popup sometimes' })).text).toBe('gearbox: popup takes always, agents or off')
 })

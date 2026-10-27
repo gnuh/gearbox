@@ -87,32 +87,35 @@ export const describeTool = (tool: string, input: Record<string, unknown>): stri
   return name
 }
 
-// The popup's text: main, then every running subagent as a tree, each with its model·effort and what it is doing.
-// Undefined while no subagent runs: the status line covers the main conversation alone.
-export const popupText = (loops: Record<string, GearboxLoop>): string | undefined => {
+// The popup's text: main, then every running subagent as a tree, each with the model·effort of its request in
+// flight and what it is doing. `always`: also while the main conversation works alone; otherwise only while a
+// subagent runs. Undefined when there is nothing to show.
+export const popupText = (loops: Record<string, GearboxLoop>, always = false): string | undefined => {
   const running = Object.entries(loops).filter(([id, l]) => id !== 'main' && l.state === 'working')
-  if (!running.length) return undefined
   const main = loops.main
-  const head = main ? [`main · ${gearText(main)} · ${main.state === 'working' ? (main.doing ?? 'thinking') : main.state}`] : []
+  const mainWorks = main?.state === 'working'
+  if (!running.length && !(always && mainWorks)) return undefined
+  const head = main ? [`main · ${gearText(main)} · ${mainWorks ? (main.doing ?? 'thinking') : main.state}`] : []
   const rows = running.map(
     ([id, l], i) => `${'   '.repeat(Math.max(0, depth(loops, id) - 1))}${i === running.length - 1 ? '└' : '├'} ${l.label} · ${gearText(l)} · ${l.doing ?? 'thinking'}`,
   )
-  return [`gearbox · ${running.length} running`, ...head, ...rows].join('\n')
+  return [`gearbox · ${running.length ? `${running.length} running` : 'working'}`, ...head, ...rows].join('\n')
 }
 
 type PopupState = { shown?: string }
+export type PopupMode = 'always' | 'agents' | 'off'
 
 // Keeps the popup (a toast, the one floating surface a mod has on every client) in step with what runs. A new
 // toast takes the place of the mod's own last one, so each change redraws it; it holds while agents run, and a
 // short closing toast replaces it when the last one ends. Quiet while the gearbox pane is shown: it says the same.
-const refreshPopup = async ($: EngineInterface, popup: PopupState, on: boolean, note: (rec: Record<string, unknown>) => void) => {
-  if (!on) return
+const refreshPopup = async ($: EngineInterface, popup: PopupState, mode: PopupMode, note: (rec: Record<string, unknown>) => void) => {
+  if (mode === 'off') return
   // A display, never a gate: whatever fails here must not take the hook that called it down with it.
   try {
-    const text = popupText(await read($, LOOPS))
+    const text = popupText(await read($, LOOPS), mode === 'always')
     if (!text) {
       if (popup.shown) {
-        $.ui.toast('gearbox · subagents finished', { timeoutMs: 2500 })
+        $.ui.toast(mode === 'always' ? 'gearbox · done' : 'gearbox · subagents finished', { timeoutMs: 2500 })
         note({ ev: 'popup', closed: true })
       }
       popup.shown = undefined
@@ -253,7 +256,7 @@ export const usageReport = (ledger: Ledger) => {
 const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh']
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; popup: boolean }
+export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; popup: PopupMode }
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit.
@@ -266,7 +269,8 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
     strict: o.strict !== false,
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
     pane: o.pane === 'running' ? 'running' : 'all',
-    popup: o.popup !== false,
+    // 0.5.0 stored on/off as true/false: true (or on) is always now.
+    popup: o.popup === false || o.popup === 'off' ? 'off' : o.popup === 'agents' ? 'agents' : 'always',
   }
 }
 
@@ -278,13 +282,14 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
   if (word === 'pane' && (value === 'all' || value === 'running')) return { pane: value }
-  if (word === 'popup' && (value === 'on' || value === 'off')) return { popup: value === 'on' }
+  if (word === 'popup' && (value === 'always' || value === 'on')) return { popup: 'always' }
+  if (word === 'popup' && (value === 'agents' || value === 'off')) return { popup: value }
   return undefined
 }
 
-const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full', popup: 'on or off' }
+const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full', popup: 'always, agents or off' }
 const settingsText = (s: Settings) =>
-  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · popup ${s.popup ? 'on' : 'off'}`
+  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · popup ${s.popup}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -299,9 +304,9 @@ export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
   let { code_effort: standing, steer: steers, navigator, strict, log: logMode } = settingsFrom(options, undefined)
   let paneShows: Settings['pane'] = 'all'
-  let popupOn = true
+  let popupMode: PopupMode = 'always'
   const popup: PopupState = {}
-  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode, pane: paneShows, popup: popupOn })
+  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode, pane: paneShows, popup: popupMode })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
@@ -314,7 +319,7 @@ export const register: Register = (on, options) => {
     strict = s.strict
     logMode = s.log
     paneShows = s.pane
-    popupOn = s.popup
+    popupMode = s.popup
   }
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
@@ -582,7 +587,7 @@ export const register: Register = (on, options) => {
       // Its first steps may land before this, so keep what they recorded.
       await patch($, started.agentId, l => ({ steps: 0, state: 'working', asked: started.model, ...l, label: e.description, parent: e.parentAgentId ?? 'main' }))
       await showStatus($, turnHandoff, stepLabel())
-      await refreshPopup($, popup, popupOn, logEvent)
+      await refreshPopup($, popup, popupMode, logEvent)
     }
     return started
   })
@@ -590,7 +595,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     if (!enabled) return next(e)
     await patch($, e.agentId ?? 'main', l => l && { ...l, doing: describeTool(String(e.tool), e as unknown as Record<string, unknown>) })
-    await refreshPopup($, popup, popupOn, logEvent)
+    await refreshPopup($, popup, popupMode, logEvent)
     if (e.agentId) return next(e) // subagents do the hand-off work; never stand in their way
     // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named.
     if (e.tool === 'Agent' && (!e.subagent_type || e.subagent_type === 'general-purpose')) {
@@ -631,7 +636,7 @@ export const register: Register = (on, options) => {
         return { ...rest, state: e.agentId ? 'done' : 'idle' }
       })
       await showStatus($, turnHandoff, stepLabel())
-      await refreshPopup($, popup, popupOn, logEvent)
+      await refreshPopup($, popup, popupMode, logEvent)
     }
     if (!e.agentId) {
       logEvent({ ev: 'turn', ms: e.durationMs, aborted: e.isAborted })
@@ -671,7 +676,7 @@ export const register: Register = (on, options) => {
         state: 'working',
       }))
       if (!e.agentId) await showStatus($, turnHandoff, stepLabel())
-      await refreshPopup($, popup, popupOn, logEvent)
+      await refreshPopup($, popup, popupMode, logEvent)
     }
     const result = yield* next(step)
     if (enabled) await patch($, id, l => l && { ...l, ...(result.usage ? { answered: result.usage.model } : {}), steps: l.steps + 1 })
@@ -732,7 +737,7 @@ export const register: Register = (on, options) => {
       ['Strict hand-offs', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
       ['Debug log', 'log', ['off', 'on', 'full'], s.log],
       ['Models pane shows', 'pane', ['all', 'running'], s.pane],
-      ['Popup while agents run', 'popup', ['on', 'off'], s.popup ? 'on' : 'off'],
+      ['Popup', 'popup', ['always', 'agents', 'off'], s.popup],
     ]
     return (
       <Box flexDirection="column" rowGap={1}>

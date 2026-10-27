@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -53,10 +53,15 @@
       "default": "off"
     },
     "popup": {
-      "type": "boolean",
-      "title": "Popup while agents run",
-      "description": "While subagents run, a popup shows the tree of what is running: each loop with its model, effort and current tool. Quiet while the gearbox pane is open. Also settable with /gearbox popup.",
-      "default": true
+      "type": "string",
+      "title": "Popup",
+      "description": "A popup with what is running, live: always (whenever Claude works: the model and effort of the request in flight, and any subagents), agents (only while subagents run) or off. Quiet while the gearbox pane is open. Also settable with /gearbox popup.",
+      "options": [
+        "always",
+        "agents",
+        "off"
+      ],
+      "default": "always"
     }
   }
 }
