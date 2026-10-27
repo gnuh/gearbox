@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { shouldSend } from './register'
 
 const USAGE = { input_tokens: 5, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 const SCROLL = { offset: 0, bodyRows: 20 }
@@ -9,6 +10,9 @@ const SURFACES = ['terminal', 'desktop'] as const
 // The engine beneath the mod, faked for a session that is not on Haiku: gearbox only watches here.
 const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = () => []) => {
   const kv = new Map<string, unknown>()
+  let usd = 1.25
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 1e6 }, rateLimits: [], cost: { usd } } }))
+  on('prompt.submit', (_: unknown, e: any) => ({ text: e.text }))
   const status: (string | undefined)[] = []
   const toasts: string[] = []
   on('ui.log', () => ({ value: undefined }))
@@ -30,7 +34,7 @@ const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = ()
   on('turn.step', async function* (_: unknown, e: any) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, model: e.answeredBy ?? e.model } }
   })
-  return { status, toasts }
+  return { status, toasts, setCost: (v: number) => { usd = v } }
 }
 
 const step = async ($: any, model: string, extra: object = {}) => {
@@ -58,26 +62,45 @@ test('the pane lists every loop with its model, nested under main', async ($: an
   }
 })
 
-test('the band shows chips only while a subagent works', async ($: any, on) => {
-  bench(on)
+const BAND_AT = (bodyColumns: number) => ({ ...BAND, props: { ...BAND.props, bodyColumns } })
+
+test('the band: effort tabs, actions and five live columns, above what the mods below draw', async ($: any, on) => {
+  const { setCost } = bench(on)
+  setCost(10)
+  await $.prompt.submit({ text: '/review', command: { name: 'review', args: '' } } as any) // a person's prompt starts the tally
   await step($, 'claude-opus-5-5')
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ type: 'Text', text: /main/ })).toBeUndefined()
-    await ui.unmount()
-  }
   await spawn($, 'deploy', 'haiku')
   await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
+  setCost(10.4)
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect((await ui.find({ type: 'Text', text: /deploy/ }))?.text).toContain('haiku·low')
-    expect((await ui.find({ type: 'Text', text: /main/ }))?.text).toContain('opus·high')
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
+    for (const text of [/^coding effort$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /engine band/]) {
+      expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    }
+    expect(JSON.stringify(await ui.find({ key: 'band-effort-xhigh' }))).toContain('primary') // the default coding effort
     await ui.unmount()
   }
-  await complete($, 'a-deploy')
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /deploy/ })).toBeUndefined()
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await ui.press({ key: 'band-effort-high' })
+  await ui.press({ key: 'band-popup' })
   await ui.unmount()
+  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('coding effort high')
+  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('popup always')
+})
+
+test('the band keeps three columns in a narrow terminal, and steps aside when switched off', async ($: any, on) => {
+  bench(on)
+  await step($, 'claude-opus-5-5')
+  const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  expect(await narrow.find({ type: 'Text', text: /^now$/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /^cost$/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /^this turn$/ })).toBeUndefined()
+  await narrow.unmount()
+  await $.command.run({ command: 'gearbox', args: 'band off' })
+  const off = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  expect(await off.find({ type: 'Text', text: /coding effort/ })).toBeUndefined()
+  expect(await off.find({ type: 'Text', text: /engine band/ })).toBeDefined()
+  await off.unmount()
 })
 
 test('the spinner names the working loop’s model', async ($: any, on) => {
@@ -93,10 +116,10 @@ test('the spinner names the working loop’s model', async ($: any, on) => {
   const spinner = { plugin: 'gearbox', component: 'Spinner', props: { word: 'Sauteing', message: null, suffix: '…', mode: 'thinking' } } as const
   for (const surface of SURFACES) {
     const main = await $.ui.mount({ ...spinner, requestId: 'main-turn', surface })
-    expect((await main.find({ type: 'Text' }))?.text).toBe('Sauteing… on opus')
+    expect((await main.find({ type: 'Text' }))?.text).toBe('Sauteing… on opus · high')
     await main.unmount()
     const sub = await $.ui.mount({ ...spinner, requestId: 'a-check', surface })
-    expect((await sub.find({ type: 'Text' }))?.text).toBe('Sauteing… on sonnet')
+    expect((await sub.find({ type: 'Text' }))?.text).toBe('Sauteing… on sonnet · medium')
     await sub.unmount()
   }
 })
@@ -189,12 +212,12 @@ test('popup agents: the running tree, following each change, closing when the ag
   await $.tool.call({ tool: 'Bash', command: 'npm run deploy:staging\necho done', agentId: 'a-deploy' })
   const shown = await popups($)
   expect(shown.at(-1)?.text).toBe(
-    ['gearbox · 2 running', 'main · opus·high · thinking', '├ browser check · sonnet·low · navigate http://localhost:3000/cart', '└ deploy · haiku · Bash: npm run deploy:staging'].join('\n'),
+    ['gearbox · opus·high · thinking · 2 agents', '├ browser check · sonnet·low · navigate http://localhost:3000/cart', '└ deploy · haiku · Bash: npm run deploy:staging'].join('\n'),
   )
   await $.tool.call({ tool: 'Bash', command: 'npm run deploy:staging\necho done', agentId: 'a-deploy' })
   expect(await popups($)).toHaveLength(shown.length) // nothing changed: no new popup
   await complete($, 'a-check')
-  expect((await popups($)).at(-1)?.text).toContain('gearbox · 1 running')
+  expect((await popups($)).at(-1)?.text).toContain('gearbox · opus·high · thinking · 1 agent\n└ deploy')
   await complete($, 'a-deploy')
   expect((await popups($)).at(-1)).toMatchObject({ closed: true })
 })
@@ -204,6 +227,7 @@ test('the popup stays quiet while the gearbox pane is shown, and when switched o
   bench(on, 'claude-opus-5-5', () => (paneShown ? [{ id: 'gearbox', title: 'gearbox: models now', isShown: true, isFocused: false, isPlaced: true }] : []))
   const popups = disk(on)
   await $.command.run({ command: 'gearbox', args: 'log on' })
+  await $.command.run({ command: 'gearbox', args: 'popup always' })
   await step($, 'claude-opus-5-5')
   await spawn($, 'browser check', 'sonnet')
   expect(await popups($)).toEqual([])
@@ -216,17 +240,25 @@ test('the popup stays quiet while the gearbox pane is shown, and when switched o
   expect(await popups($)).toHaveLength(before)
 })
 
-test('popup always (the default): the main conversation alone shows its live model and effort, then done', async ($: any, on) => {
+test('popup always: the main conversation alone shows its live model and effort, then done', async ($: any, on) => {
   bench(on)
   const popups = disk(on)
   await $.command.run({ command: 'gearbox', args: 'log on' })
+  await $.command.run({ command: 'gearbox', args: 'popup always' })
   await step($, 'claude-opus-5-5', { effort: 'xhigh' })
-  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·xhigh · thinking')
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · opus·xhigh · thinking')
   await $.tool.call({ tool: 'Edit', file_path: '/repo/cart/total.ts', old_string: 'a', new_string: 'b' })
-  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·xhigh · Edit total.ts')
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · opus·xhigh · Edit total.ts')
   await step($, 'claude-opus-5-5', { effort: 'low', index: 1 }) // the next request goes out at another effort
-  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·low · Edit total.ts')
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · opus·low · Edit total.ts')
   await complete($)
   expect((await popups($)).at(-1)).toMatchObject({ closed: true })
   expect((await $.command.run({ command: 'gearbox', args: 'popup sometimes' })).text).toBe('gearbox: popup takes always, agents or off')
+})
+
+test('the popup is renewed while it is up: same text sent again after 8 s, a new text at once', () => {
+  expect(shouldSend({}, 'a', 1000)).toBe(true)
+  expect(shouldSend({ shown: 'a', sentAt: 1000 }, 'a', 5000)).toBe(false)
+  expect(shouldSend({ shown: 'a', sentAt: 1000 }, 'a', 9000)).toBe(true)
+  expect(shouldSend({ shown: 'a', sentAt: 1000 }, 'b', 1001)).toBe(true)
 })

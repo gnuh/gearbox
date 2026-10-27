@@ -51,7 +51,8 @@ A change applies from your next prompt and is kept for later sessions. What you 
 | coding effort (`/gearbox effort`) | `xhigh` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low`; answers and explanations follow their difficulty. gearbox never asks before using it. `xhigh` is the most thorough and makes turns longer; Anthropic suggests `medium` for Opus 5.5, which beats Opus 5 at `high` on coding, if you want faster, cheaper turns. |
 | steer (`/gearbox steer`) | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
 | strict hand-offs (`/gearbox strict`) | on | During a browser-check or long-command step, the main conversation may not drive the browser or run the test, build or deploy command itself: the call is refused with a note naming the subagent to start. Other shell work, like reading a file or a commit whose message mentions a build, still runs: only the command itself counts, not its quoted text. Off lets the model do it itself, at least at medium effort. |
-| popup (`/gearbox popup`) | `always` | `always`: whenever Claude works, a popup with the live model and effort and any subagents (see Live readout); `agents`: only while subagents run; `off`. Quiet while the gearbox pane is open. |
+| band (`/gearbox band`) | on | The band above the prompt (see Live readout). |
+| popup (`/gearbox popup`) | `auto` | `always`: whenever Claude works, a popup with the live model and effort and any subagents; `agents`: only while subagents run; `off`; `auto`: off while the band is on (it shows the same), always otherwise. Quiet while the gearbox pane is open. |
 | debug log (`/gearbox log`) | off | `on` writes what gearbox decides to a log file (below); `full` also keeps the first 200 characters of each prompt. |
 | navigator (`/gearbox navigator`) | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
 
@@ -101,10 +102,16 @@ Name a model for a step and it wins over the settings ("navigate with haiku"), b
 
 gearbox shows which model every loop is running on at this moment: the main conversation and each subagent, in either mode.
 
-- **Spinner:** the working loop's line names its model, `Sauteing… on opus` (Claude Code already shows the effort).
-- **Above the prompt:** while subagents run, a chip per live loop, `● main opus·high  ● check it in Chrome haiku·low  ● deploy haiku·low`. It stays empty otherwise.
+- **Spinner:** the working loop's line names the model and effort of its request in flight, `Sauteing… on opus · xhigh`. Claude Code's own effort display shows the session setting, not what gearbox sent; this one is live.
+- **Band above the prompt** (terminal and desktop app): a row of coding-effort tabs (`medium · high · xhigh`, one click to switch) and buttons (**Pane**, **Popup**, **Log**, **Settings**), then five live columns:
+  - **now**: the model·effort of the main conversation's request in flight, and what it is doing;
+  - **agents**: how many subagents run, and each one's gear;
+  - **this turn**: requests since your last prompt, by model (`opus 6 · sonnet 3 · haiku 2`);
+  - **cost**: the session's cost as `/cost` counts it, a bar per recent turn, this turn's cost and the average;
+  - **why**: the reason for the gear (`code · area`, `route 2/5`, `nod`, `/review`).
+  Bands other mods draw in that slot (ponytail's, say) stay, under gearbox's. A narrow terminal shows three columns (now, agents, cost). The band's own collapse folds it; `/gearbox band off` turns it off.
 - **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested. **Hide finished** at the top keeps only what is running (the main conversation stays); **Show finished (n)** brings the rest back. The choice is kept; `/gearbox pane running` or `/gearbox pane all` sets it too.
-- **Popup:** whenever Claude is working, a popup (a toast, in the terminal and the desktop app) shows what is running, live: the main conversation with the model·effort of the request in flight and what it is doing (down to the Bash command, file or URL), then any subagents as a tree. It follows every request and tool call, and a short "gearbox · done" replaces it when the turn ends. It stays quiet while the gearbox pane is open, which shows the same. `/gearbox popup agents` shows it only while subagents run; `/gearbox popup off` turns it off.
+- **Popup:** whenever Claude is working, a popup (a toast, in the terminal and the desktop app) shows what is running, live. Its first line is the main conversation's model·effort for the request in flight and what it is doing (down to the Bash command, file or URL), `gearbox · opus·xhigh · Edit total.ts`, so a surface that shows one line still shows it; any subagents follow as a tree. Each popup asks for a short stay and is renewed every few seconds while work runs. It follows every request and tool call, and a short "gearbox · done" replaces it when the turn ends. It stays quiet while the gearbox pane is open, which shows the same. `/gearbox popup agents` shows it only while subagents run; `/gearbox popup off` turns it off.
 - **Status line:** the main gear plus the running subagents, `gearbox ▸ opus·high ⇢ 2 agents: sonnet·medium, haiku·low`.
 
 All four read one shared record that is updated when a subagent starts, as each request leaves (so the readout is never a step late), when the reply returns, on each tool call and when a turn ends.
