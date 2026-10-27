@@ -122,3 +122,9 @@ test('a multi-step request becomes a route: each step on its own executor and ef
   expect(note).toContain('judge pass or fail')
   expect(note).toContain('4. check it in Chrome: analyze: judge the evidence yourself')
 })
+
+test('the navigator setting picks the model that clicks; analysis stays with the main model', () => {
+  const steps = route([{ what: 'check it in Chrome', mode: 'drive', depth: 1 }], 'opus', 'medium', false, 'sonnet')
+  expect(steps.map(s => `${s.by} ${label(s.gear)}`)).toEqual(['agent sonnet·low', 'main opus·medium'])
+  expect(plan(reading({ mode: 'drive' }), { model: 'sonnet', effort: 'medium' }, 'opus', true, 'opus', 'sonnet').handoff?.gear.model).toBe('sonnet')
+})

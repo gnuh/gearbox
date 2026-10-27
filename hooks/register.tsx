@@ -167,6 +167,7 @@ export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
   const standing: ModelEffort = CODE_EFFORTS.includes(options.code_effort as ModelEffort) ? (options.code_effort as ModelEffort) : 'medium'
   const steers = options.steer !== false
+  const navigator: 'haiku' | 'sonnet' = options.navigator === 'sonnet' ? 'sonnet' : 'haiku'
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
   let enabled = true
@@ -237,8 +238,9 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (e.turnId) return next(e) // typed into a running turn, which keeps its gear
-    turnGear = turnHandoff = turnRoute = turnStep = undefined
+    // A notification (say, a route's subagent finishing) or a command keeps the turn's gear and route.
     if (!enabled || e.command || e.isMeta || !typedByPerson(e.origin)) return next(e)
+    turnGear = turnHandoff = turnRoute = turnStep = undefined
     // A Haiku session shifts models; any other keeps its model and is only steered (effort and handoffs).
     const session = await $.session.model()
     const shifting = session.includes('haiku')
@@ -265,7 +267,7 @@ export const register: Register = (on, options) => {
         if (r.phases.length >= 2) {
           // Several steps: one route, each step on its own executor and effort. Fable only as a subagent.
           const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
-          turnRoute = route(r.phases, lead, standing, r.care === 'costly')
+          turnRoute = route(r.phases, lead, standing, r.care === 'costly', navigator)
           for (const s of turnRoute) {
             if (s.by === 'main' && asks && needsConsent(s.gear, ask, previous, standing)) {
               s.gear = await consent($, s.gear)
@@ -275,7 +277,7 @@ export const register: Register = (on, options) => {
           p = { main: { model: lead, effort: turnRoute[0]!.mainEffort } }
         } else {
           if (asks && needsConsent(want, ask, previous, standing)) want = await consent($, want)
-          p = plan(checked, want, base, earlier.length > 0, fixed)
+          p = plan(checked, want, base, earlier.length > 0, fixed, navigator)
         }
       }
     }
@@ -289,14 +291,12 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__gearbox__phase' }, async ($, e) => {
     const n = Number((e as any).input?.step ?? (e as any).step)
     const s = turnRoute?.[n - 1]
-    if (!s || !turnGear) return { result: { ok: false }, text: 'gearbox: no route step with that number in this turn' }
+    if (!s || !turnGear) return { result: 'gearbox: no route step with that number in this turn', isError: true as const }
     turnGear = { ...turnGear, effort: s.mainEffort }
     turnStep = n
     await showStatus($, undefined, stepLabel())
-    return {
-      result: { ok: true },
-      text: s.by === 'agent' ? `step ${n}: hand it to a ${s.gear.model} subagent at ${s.gear.effort}` : `step ${n}: you now run at effort ${s.mainEffort}`,
-    }
+    // A tool's result is a string (or content blocks), never an object.
+    return { result: s.by === 'agent' ? `step ${n}: hand it to a ${s.gear.model} subagent at ${s.gear.effort}` : `step ${n}: you now run at effort ${s.mainEffort}` }
   })
 
   // An Agent call that names no model and no agent type runs on the main conversation's model.
