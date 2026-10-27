@@ -31,27 +31,26 @@ Answer `y` to add the marketplace, then pick a scope. The user scope loads gearb
 4. Find **gearbox** in that marketplace's list and choose **Add plugin**.
 5. Start a new session. The status line under the prompt box shows `gearbox ▸ …` once the first turn runs, and `/gearbox` reports the mode and settings.
 
-The desktop app has no screen for gearbox's settings; set them from a shell (see Settings below), then start a new session.
+gearbox works with its defaults right away. To change a setting, type `/gearbox settings` in a session (see Settings below).
 
 ### After installing
 
-Work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model haiku`) for shift mode. Set your coding effort as shown under Settings. To get a newer version later: `claude plugin update gearbox` from a shell, then `/reload-plugins`.
+Work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model haiku`) for shift mode. The defaults suit most work; change them with `/gearbox settings`. To get a newer version later: `claude plugin update gearbox` from a shell, then `/reload-plugins`.
 
 ## Settings
 
-Set them in a terminal session with `/plugin configure gearbox@gearbox`, or from a shell, which also covers the desktop app:
+The defaults are ready to use. To change one, type in any session, terminal or desktop app:
 
-```
-echo '{"code_effort":"xhigh","navigator":"sonnet"}' | claude plugin configure gearbox@gearbox --values-stdin
-```
+- `/gearbox settings`: pick the setting, then its value, from two short questions.
+- Or directly: `/gearbox effort high`, `/gearbox navigator haiku`, `/gearbox steer off`.
 
-Settings you leave out keep their values. They apply from the next session you start. `claude plugin configure gearbox@gearbox` lists which are set.
+A change applies from your next prompt and is kept for later sessions. What you set with `/gearbox` wins over the plugin's own options, which you can also set from a shell (`claude plugin configure gearbox@gearbox --values-stdin`) where you prefer.
 
 | Setting | Default | |
 |---|---|---|
-| `code_effort` | `medium` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low` and the hardest `xhigh`; answers and explanations follow their difficulty. gearbox never asks before using your own choice. Anthropic advises `medium` for Opus 5.5, which beats Opus 5 at `high` on coding; pick `xhigh` if you want the most thorough work and accept longer turns. |
-| `steer` | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
-| `navigator` | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
+| coding effort (`/gearbox effort`) | `xhigh` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low`; answers and explanations follow their difficulty. gearbox never asks before using it. `xhigh` is the most thorough and makes turns longer; Anthropic suggests `medium` for Opus 5.5, which beats Opus 5 at `high` on coding, if you want faster, cheaper turns. |
+| steer (`/gearbox steer`) | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
+| navigator (`/gearbox navigator`) | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
 
 ## The rules
 
@@ -111,7 +110,9 @@ The rules, your new prompt (up to about 4,000 characters, as JSON), your last th
 
 | Command | |
 |---|---|
-| `/gearbox` | status: mode, coding effort, current gear |
+| `/gearbox` | status: mode, settings, current gear |
+| `/gearbox settings` | change a setting from two short questions |
+| `/gearbox effort <medium\|high\|xhigh>`, `/gearbox navigator <sonnet\|haiku>`, `/gearbox steer <on\|off>` | change one setting directly |
 | `/gearbox pane` | open the live table of every loop's model |
 | `/gearbox on`, `/gearbox off` | turn gearbox on or off (off leaves every session alone, no readout) |
 | `/gearbox ask on`, `/gearbox ask off` | ask before Fable or xhigh/max |

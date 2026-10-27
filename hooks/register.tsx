@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelEffort, PromptOrigin, Register, TurnUsage } from 'claude-code'
+import type { EngineInterface, ModelEffort, PluginOptions, PromptOrigin, Register, TurnUsage } from 'claude-code'
 import type { GearboxLoop } from '../types'
 import {
   type Gear,
@@ -163,11 +163,57 @@ export const usageReport = (ledger: Ledger) => {
 
 const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh']
 
+export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet' }
+
+// The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
+// every Claude Code screen lets a person edit.
+export const settingsFrom = (options: PluginOptions, stored: unknown): Settings => {
+  const o: Record<string, unknown> = { ...options, ...(stored && typeof stored === 'object' ? stored : {}) }
+  return {
+    code_effort: CODE_EFFORTS.includes(o.code_effort as ModelEffort) ? (o.code_effort as ModelEffort) : 'xhigh',
+    steer: o.steer !== false,
+    navigator: o.navigator === 'haiku' ? 'haiku' : 'sonnet',
+  }
+}
+
+// One `/gearbox <setting> <value>`; undefined when the value is not one the setting takes.
+export const settingPatch = (word: string, value: string | undefined): Partial<Settings> | undefined => {
+  if (word === 'effort' && CODE_EFFORTS.includes(value as ModelEffort)) return { code_effort: value as ModelEffort }
+  if (word === 'navigator' && (value === 'haiku' || value === 'sonnet')) return { navigator: value }
+  if (word === 'steer' && (value === 'on' || value === 'off')) return { steer: value === 'on' }
+  return undefined
+}
+
+const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off' }
+const settingsText = (s: Settings) => `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'}`
+
+const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
+
+const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
+  const stored = ((await $.store.get('settings')) ?? {}) as Partial<Settings>
+  await $.store.set('settings', { ...stored, ...patch })
+}
+
+// /gearbox settings: which setting, then its value, as two questions.
+const pickSetting = async ($: EngineInterface, s: Settings): Promise<Partial<Settings> | undefined> => {
+  const which = await $.ui.ask('Which gearbox setting do you want to change?', {
+    header: 'gearbox',
+    options: [`Coding effort (now ${s.code_effort})`, `Browser navigator (now ${s.navigator})`, `Steer non-Haiku sessions (now ${s.steer ? 'on' : 'off'})`],
+  })
+  if (which.startsWith('Coding')) return settingPatch('effort', await $.ui.ask('Effort for ordinary coding turns?', { header: 'Coding effort', options: ['medium', 'high', 'xhigh'] }))
+  if (which.startsWith('Browser')) return settingPatch('navigator', await $.ui.ask('Which model clicks through browser checks? The main model always analyzes.', { header: 'Navigator', options: ['sonnet', 'haiku'] }))
+  if (which.startsWith('Steer')) return settingPatch('steer', await $.ui.ask('Keep the model of sessions not on Haiku and set their effort and hand-offs per turn?', { header: 'Steer', options: ['on', 'off'] }))
+  return undefined
+}
+
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
-  const standing: ModelEffort = CODE_EFFORTS.includes(options.code_effort as ModelEffort) ? (options.code_effort as ModelEffort) : 'medium'
-  const steers = options.steer !== false
-  const navigator: 'haiku' | 'sonnet' = options.navigator === 'haiku' ? 'haiku' : 'sonnet'
+  let { code_effort: standing, steer: steers, navigator } = settingsFrom(options, undefined)
+  const apply = (s: Settings) => {
+    standing = s.code_effort
+    steers = s.steer
+    navigator = s.navigator
+  }
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
   let enabled = true
@@ -189,8 +235,9 @@ export const register: Register = (on, options) => {
       inputSchema: { type: 'object', properties: { step: { type: 'integer', minimum: 1 } }, required: ['step'] },
       isDeferred: false,
     })
-    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [pane | on | off | ask on | ask off | usage | usage reset]' })
+    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | effort <level> | navigator <model> | steer on|off | pane | on | off | ask on|off | usage]' })
     enabled = (await $.store.get('enabled')) !== false
+    apply(await loadSettings($, options))
     return next(e)
   })
 
@@ -205,6 +252,25 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'gearbox' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
+    apply(await loadSettings($, options))
+    const [word = '', value] = arg.split(/\s+/)
+    if (arg === 'settings' || word in SETTING_CHOICES) {
+      let change: Partial<Settings> | undefined
+      if (arg === 'settings') {
+        try {
+          change = await pickSetting($, { code_effort: standing, steer: steers, navigator })
+        } catch {
+          return { text: 'gearbox: settings unchanged' }
+        }
+        if (!change) return { text: 'gearbox: settings unchanged' }
+      } else {
+        change = settingPatch(word, value)
+        if (!change) return { text: `gearbox: ${word} takes ${SETTING_CHOICES[word]}` }
+      }
+      await saveSetting($, change)
+      apply(await loadSettings($, options))
+      return { text: `gearbox: ${settingsText({ code_effort: standing, steer: steers, navigator })} (from your next prompt)` }
+    }
     if (arg === 'pane') {
       const { isPlaced } = await $.ui.open({ id: PANE, title: 'gearbox: models now' })
       return { text: isPlaced ? 'gearbox: pane open' : 'gearbox: the pane opens once the window has room for it' }
@@ -226,13 +292,13 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'gearbox: usage cleared' }
     } else if (arg) {
-      return { text: `gearbox: unknown "${arg}". Try pane, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `gearbox: unknown "${arg}". Try settings, effort, navigator, steer, pane, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
     const mode = session.includes('haiku') ? 'shifting models' : steers ? `steering effort on ${family(session) ?? session}` : 'readout only'
     return {
-      text: `gearbox ${enabled ? `on, ${mode}` : 'off'} · coding effort ${standing} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}`,
+      text: `gearbox ${enabled ? `on, ${mode}` : 'off'} · ${settingsText({ code_effort: standing, steer: steers, navigator })} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox effort|navigator|steer <value>.`,
     }
   })
 
@@ -241,6 +307,7 @@ export const register: Register = (on, options) => {
     // A notification (say, a route's subagent finishing) or a command keeps the turn's gear and route.
     if (!enabled || e.command || e.isMeta || !typedByPerson(e.origin)) return next(e)
     turnGear = turnHandoff = turnRoute = turnStep = undefined
+    apply(await loadSettings($, options))
     // A Haiku session shifts models; any other keeps its model and is only steered (effort and handoffs).
     const session = await $.session.model()
     const shifting = session.includes('haiku')
