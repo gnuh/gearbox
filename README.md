@@ -50,7 +50,7 @@ A change applies from your next prompt and is kept for later sessions. What you 
 |---|---|---|
 | coding effort (`/gearbox effort`) | `xhigh` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low`; answers and explanations follow their difficulty. gearbox never asks before using it. `xhigh` is the most thorough and makes turns longer; Anthropic suggests `medium` for Opus 5.5, which beats Opus 5 at `high` on coding, if you want faster, cheaper turns. |
 | steer (`/gearbox steer`) | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
-| strict hand-offs (`/gearbox strict`) | on | During a browser-check or long-command step, the main conversation may not drive the browser or run the test, build or deploy command itself: the call is refused with a note naming the subagent to start. Other shell work, like reading a file, still runs. Off lets the model do it itself, at least at medium effort. |
+| strict hand-offs (`/gearbox strict`) | on | During a browser-check or long-command step, the main conversation may not drive the browser or run the test, build or deploy command itself: the call is refused with a note naming the subagent to start. Other shell work, like reading a file or a commit whose message mentions a build, still runs: only the command itself counts, not its quoted text. Off lets the model do it itself, at least at medium effort. |
 | navigator (`/gearbox navigator`) | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
 
 ## The rules
@@ -76,6 +76,7 @@ In steer mode the model column only picks subagents' models: the session itself 
 - **Nods** ("ok", "go ahead", "pode seguir") keep the gear of the last real work with no survey, never the low effort of a turn that only briefed a subagent.
 - **Hand-offs are enforced.** A plain subagent started during a hand-off step runs on that step's model and effort, whatever the call named (typed agents such as Explore keep theirs). With strict hand-offs on, the main conversation cannot drive the browser or run the long command itself during such a step; with it off, doing so raises its effort to at least medium.
 - **Asking you first.** Before Fable or xhigh/max effort, gearbox asks, offering a cheaper gear. It skips the question when the effort is your own `code_effort`, or when you asked for that model or effort yourself: the survey must report the ask *and* the word must appear in your own text, outside code and quotes.
+- **Slash commands and skills set their own effort.** A `/command` turn does not inherit the gear of your last prompt: the skill's own `effort` frontmatter applies, else Claude Code's usual effort. So does `ultrathink` in your own words.
 - **Hands off otherwise.** Prompts nobody typed (notifications, schedules) run on the current gear without a survey.
 
 ## Multi-step requests
@@ -85,6 +86,7 @@ A prompt with several steps ("go to Jira, check the task, build it, test it in C
 | Step | Runs on | Effort |
 |---|---|---|
 | Read the Jira task | Haiku subagent, returns the task word for word | low |
+| (or) Search the vault for earlier decisions | Haiku subagent, returns each matching note in full | low |
 | Build the change | main conversation (Opus) | xhigh |
 | Check it in Chrome: navigate | Sonnet subagent, evidence only | low |
 | Check it in Chrome: analyze | main conversation (Opus) | medium or higher |
@@ -126,6 +128,10 @@ Each survey reply goes to the debug log (`claude --debug`).
 ## Tuning
 
 The survey prompt and the rules are in `hooks/policy.ts` (`SURVEY`, `gearFor`, `plan`). The prices behind the cost estimates are `PRICES` in `hooks/register.tsx`. Run the tests with `claude plugin test .`.
+
+## Does it pay off?
+
+`bench/` has a side-by-side test: the same real tasks on plain Opus and with gearbox, compared on cost, time and quality from Claude Code's own transcripts. See [bench/README.md](bench/README.md).
 
 ## License
 

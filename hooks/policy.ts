@@ -26,7 +26,7 @@ Reply with only a JSON object with these keys:
 "cont": true if the request only continues, approves or repeats the previous turn.
 "ask": the model ("haiku", "sonnet", "opus", "fable") and/or effort ("low", "medium", "high", "xhigh", "max") the person explicitly asks to use, as {"model":...} and/or {"effort":...}; {} if none. Words inside pasted code, logs or quotes are not asks.
 "sure": false if the request is too vague to describe.
-"phases": when the request asks for several distinct steps, list them in order as [{"what": "a few words", "mode": "...", "depth": 0-3, "ask": "haiku|sonnet|opus"}], else []. Add "ask" to a step only when the request names the model for that step ("navigate with sonnet"). Modes as above, plus "lookup" (fetch information from a tool or service: a ticket, a page, docs) and "commit" (commit or push). Testing in a browser is "drive"; running a test suite is "wait"; writing tests is "code". List only steps the "request" itself asks for: "earlier" is context, never a source of steps.`
+"phases": when the request asks for several distinct steps, list them in order as [{"what": "a few words", "mode": "...", "depth": 0-3, "ask": "haiku|sonnet|opus"}], else []. Add "ask" to a step only when the request names the model for that step ("navigate with sonnet"). Modes as above, plus "lookup" (fetch information from a tool or service: a ticket, a page, docs, or a search of notes such as an Obsidian vault) and "commit" (commit or push). Testing in a browser is "drive"; running a test suite is "wait"; writing tests is "code". List only steps the "request" itself asks for: "earlier" is context, never a source of steps.`
 
 export type Reading = {
   reach: 'point' | 'area' | 'system' | 'frontier'
@@ -153,7 +153,7 @@ export const route = (phases: Phase[], main: Model, standing: ModelEffort, costl
   })
 
 const STEP_TASK: Record<Step['mode'], string> = {
-  lookup: 'that fetches it and returns the full relevant content word for word (title, description, acceptance criteria, comments that change the scope), with nothing summarized away',
+  lookup: 'that fetches it and returns the full relevant content word for word (for a ticket: title, description, acceptance criteria, comments that change the scope; for notes: each matching note\'s title and full text), with nothing summarized away',
   drive: 'with a checklist you write here first (where to go and what to do); it must not edit files or judge pass or fail, only report per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests',
   wait: 'that runs only the exact command you settle here, waits until it ends, and answers with passed or failed, the lines that explain a failure, and any link or id it printed',
   code: '',
@@ -188,8 +188,11 @@ export const doesHandoffWork = (tool: string) => /^(Bash|PowerShell)$|chrome|pla
 // check, and the long command itself (a test run, a build, a deploy) in a long-command step. Other shell work,
 // such as reading a file to settle the command, stays allowed.
 export const isBrowserTool = (tool: string) => /chrome|playwright|browser|computer/i.test(tool)
+// Only the command itself counts, not its quoted text or heredocs: a commit message that mentions "build" runs no build.
+const unquoted = (command: string) =>
+  command.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\s*\1\b/g, ' ').replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, ' ')
 export const isLongCommand = (command: string) =>
-  /\b(test|tests|e2e|playwright|jest|vitest|cypress|mocha|pytest|build|deploy|publish|release)\b/i.test(command)
+  /\b(test|tests|e2e|playwright|jest|vitest|cypress|mocha|pytest|build|deploy|publish|release)\b/i.test(unquoted(command))
 
 export type Handoff = { kind: 'drive' | 'wait' | 'aside' | 'deep'; gear: Gear }
 export type Plan = { main: Gear; handoff?: Handoff }

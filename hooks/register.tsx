@@ -26,6 +26,7 @@ import {
   plan,
   route,
   routeNote,
+  ownWords,
   readReading,
   stepDown,
   trimRequest,
@@ -227,6 +228,7 @@ export const register: Register = (on, options) => {
   let turnRoute: Step[] | undefined // the steps of a multi-step request, in order
   let turnStep: number | undefined // the route step under way
   let handedOff = new Set<number>() // route steps (or -1, a single hand-off) whose subagent has started
+  let ownEffort: string | undefined // a turn whose effort Claude Code sets: a slash command or skill, or ultrathink
   // The browser check or long command under way that a subagent should be doing, if any.
   // The hand-off the next plain Agent call belongs to: the step marked with phase if it is a subagent step,
   // else the first subagent step not yet started; a single-hand-off turn has its one.
@@ -248,9 +250,11 @@ export const register: Register = (on, options) => {
     }
     return turnHandoff?.kind === 'drive' || turnHandoff?.kind === 'wait' ? turnHandoff.kind : undefined
   }
-  const stepLabel = () => (turnRoute && turnStep ? `step ${turnStep}/${turnRoute.length} ${turnRoute[turnStep - 1]!.what}` : undefined)
+  const stepLabel = (): string | undefined =>
+    ownEffort ? `${ownEffort} sets its own effort` : routeLabel()
+  const routeLabel = () => (turnRoute && turnStep ? `step ${turnStep}/${turnRoute.length} ${turnRoute[turnStep - 1]!.what}` : undefined)
   const forget = () => {
-    floor = previous = turnGear = turnHandoff = turnRoute = turnStep = undefined
+    floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = undefined
     handedOff = new Set()
   }
 
@@ -330,10 +334,19 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (e.turnId) return next(e) // typed into a running turn, which keeps its gear
-    // A notification (say, a route's subagent finishing) or a command keeps the turn's gear and route.
+    // A slash command or skill owns its turn's effort (its frontmatter, or Claude Code's own): no leftover gear.
+    if (enabled && e.command && typedByPerson(e.origin)) {
+      turnGear = turnHandoff = turnRoute = turnStep = undefined
+      handedOff = new Set()
+      ownEffort = `/${e.command.name}`
+      return next(e)
+    }
+    // A notification (say, a route's subagent finishing) keeps the turn's gear and route.
     if (!enabled || e.command || e.isMeta || !typedByPerson(e.origin)) return next(e)
     turnGear = turnHandoff = turnRoute = turnStep = undefined
     handedOff = new Set()
+    // "ultrathink" in the person's own words raises this turn's effort in Claude Code; gearbox leaves it be.
+    ownEffort = /\bultrathink\b/i.test(ownWords(e.text)) ? 'ultrathink' : undefined
     apply(await loadSettings($, options))
     // A Haiku session shifts models; any other keeps its model and is only steered (effort and handoffs).
     const session = await $.session.model()
@@ -475,7 +488,7 @@ export const register: Register = (on, options) => {
       }
       if (model && shifting) floor = nextFloor(model, floor)
       if (model && (shifting || model !== from)) step = { ...step, model }
-      if (turnGear) step = { ...step, effort: turnGear.effort }
+      if (turnGear && !ownEffort) step = { ...step, effort: turnGear.effort }
     }
     const id = e.agentId ?? 'main'
     if (enabled) {

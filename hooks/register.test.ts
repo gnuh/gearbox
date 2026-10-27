@@ -348,3 +348,19 @@ test('a plain subagent in a hand-off runs on the step gear, whatever the call na
   await $.tool.call({ tool: 'Agent', description: 'extra', prompt: 'p', model: 'sonnet' }) // no hand-off left: as called
   expect(agents).toEqual(['plain haiku·low', 'Explore undefined·-', 'plain haiku·low', 'plain sonnet·-'])
 })
+
+test('ultrathink in your own words leaves that turn’s effort to Claude Code', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1 }, { reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'ultrathink: how should the cache be invalidated?')
+  await sayOn($, 'claude-opus-5-5', 'now add pagination')
+  expect(r.steps).toEqual(['claude-opus-5-5·medium', 'claude-opus-5-5·xhigh']) // medium: what the engine sent
+})
+
+test('a slash command does not inherit the last prompt’s gear', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'refactor the session layer')
+  await $.prompt.submit({ text: '/graphify .', command: { name: 'graphify', args: '.' } } as any)
+  await stepOnce($, { model: 'claude-opus-5-5', effort: 'low' })
+  expect(r.steps).toEqual(['claude-opus-5-5·xhigh', 'claude-opus-5-5·low']) // low: what the skill or engine set
+  expect(r.surveys).toHaveLength(1)
+})
