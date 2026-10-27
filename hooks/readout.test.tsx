@@ -61,7 +61,7 @@ test('the pane lists every loop with its model, nested under main', async ($: an
 
 const BAND_AT = (bodyColumns: number) => ({ ...BAND, props: { ...BAND.props, bodyColumns } })
 
-test('the band: effort tabs, actions, five live columns and a row per subagent, above what the mods below draw', async ($: any, on) => {
+test('the band: GearBox and its actions, five live columns and a row per subagent, above what the mods below draw', async ($: any, on) => {
   const { setCost } = bench(on)
   setCost(10)
   await $.prompt.submit({ text: '/review', command: { name: 'review', args: '' } } as any) // a person's prompt starts the tally
@@ -72,12 +72,14 @@ test('the band: effort tabs, actions, five live columns and a row per subagent, 
   setCost(10.4)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^coding effort$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /^⇢ deploy$/, /^Bash: \.\/deploy\.sh staging$/, /^1 request {2}\d+s$/, /engine band/]) {
+    for (const text of [/^GearBox$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /^⇢ deploy$/, /^Bash: \.\/deploy\.sh staging$/, /^1 request {2}\d+s$/, /engine band/]) {
       expect(await ui.find({ type: 'Text', text })).toBeDefined()
     }
-    expect(JSON.stringify(await ui.find({ key: 'band-effort-xhigh' }))).toContain('primary') // the default coding effort
+    expect(await ui.find({ key: 'band-effort-xhigh' })).toBeUndefined() // the coding effort lives in Settings now
     for (const key of ['band-pane', 'band-log', 'band-settings']) expect(await ui.find({ key })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /—|⌀|avg/ })).toBeUndefined() // no dash, and no average of one turn
+    // Rules and column separators are text only the terminal draws as lines; a desktop draws a card.
+    for (const text of [/^─+$/, /^│$/, /^┄+$/]) expect(!!(await ui.find({ type: 'Text', text }))).toBe(surface === 'terminal')
     await ui.unmount()
   }
   // A second turn brings the bars and the average.
@@ -87,17 +89,13 @@ test('the band: effort tabs, actions, five live columns and a row per subagent, 
   expect(await two.find({ type: 'Text', text: /^ [▁▂▃▄▅▆▇█]{2}$/ })).toBeDefined()
   expect(await two.find({ type: 'Text', text: /this turn \$0\.50 · avg \$0\.45/ })).toBeDefined()
   await two.unmount()
-  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-  await ui.press({ key: 'band-effort-high' })
-  await ui.unmount()
-  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('coding effort high')
 })
 
 test('the band groups subagents by gear, lists five at most, and flags a fallback', async ($: any, on) => {
   const { status } = bench(on)
   await step($, 'claude-opus-5-5')
   for (const n of [1, 2, 3, 4, 5, 6]) await spawn($, `c${n}`, 'sonnet')
-  expect(status.at(-1)).toBe('gearbox ▸ opus·high ⇢ 6 agents: sonnet ×6')
+  expect(status.at(-1)).toBe('opus·high ⇢ 6 agents: sonnet ×6')
   await step($, 'claude-sonnet-5-5', { agentId: 'a-c1', effort: 'low', answeredBy: 'claude-haiku-5-5' })
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface })
@@ -124,7 +122,7 @@ test('the band keeps three columns in a narrow terminal, and steps aside when sw
   await desk.unmount()
   await $.command.run({ command: 'gearbox', args: 'band off' })
   const off = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
-  expect(await off.find({ type: 'Text', text: /coding effort/ })).toBeUndefined()
+  expect(await off.find({ type: 'Text', text: /GearBox/ })).toBeUndefined()
   expect(await off.find({ type: 'Text', text: /engine band/ })).toBeDefined()
   await off.unmount()
 })
@@ -153,15 +151,15 @@ test('the spinner names the working loop’s model', async ($: any, on) => {
 test('the status line counts running subagents, and a fallback is flagged in the pane', async ($: any, on) => {
   const { status } = bench(on)
   await step($, 'claude-opus-5-5')
-  expect(status.at(-1)).toBe('gearbox ▸ opus·high')
+  expect(status.at(-1)).toBe('opus·high')
   await spawn($, 'browser check', 'sonnet')
-  expect(status.at(-1)).toBe('gearbox ▸ opus·high ⇢ 1 agent: sonnet')
+  expect(status.at(-1)).toBe('opus·high ⇢ 1 agent: sonnet')
   await step($, 'claude-sonnet-5-5', { agentId: 'a-check', effort: 'medium', answeredBy: 'claude-haiku-5-5' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /browser check/ }))?.text).toContain('answered by haiku')
   await ui.unmount()
   await complete($, 'a-check')
-  expect(status.at(-1)).toBe('gearbox ▸ opus·high')
+  expect(status.at(-1)).toBe('opus·high')
 })
 
 test('/gearbox off clears the readout; /gearbox pane opens it', async ($: any, on) => {

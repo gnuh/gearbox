@@ -14,7 +14,8 @@ test('readReading takes a reply apart and fills the plain defaults', () => {
 
 test('gearFor maps reach to a model and depth to an effort', () => {
   const cases: [Partial<Reading>, string][] = [
-    [{ reach: 'point', depth: 0 }, 'haiku·low'],
+    [{ reach: 'point', depth: 0, mode: 'answer' }, 'haiku·low'],
+    [{ reach: 'point', depth: 0 }, 'haiku·medium'], // code: never below the coding effort (medium here)
     [{ reach: 'area', depth: 1 }, 'sonnet·medium'],
     [{ reach: 'system', depth: 2 }, 'opus·high'],
     [{ reach: 'frontier', depth: 3 }, 'fable·xhigh'],
@@ -25,17 +26,30 @@ test('gearFor maps reach to a model and depth to an effort', () => {
   for (const [r, want] of cases) expect(label(gearFor(reading(r)))).toBe(want)
 })
 
-test('a standing coding effort lifts code turns, not answers or trivial edits', () => {
+test('a standing coding effort lifts all code, small edits too, but not answers', () => {
   const cases: [Partial<Reading>, string][] = [
     [{ reach: 'area', depth: 1 }, 'sonnet·xhigh'],
     [{ reach: 'system', depth: 2 }, 'opus·xhigh'],
-    [{ reach: 'point', depth: 0 }, 'haiku·low'],
+    [{ reach: 'point', depth: 0 }, 'haiku·xhigh'],
+    [{ reach: 'point', depth: 0, mode: 'answer' }, 'haiku·low'],
     [{ reach: 'area', depth: 1, mode: 'answer' }, 'sonnet·medium'],
     [{ reach: 'area', depth: 3, mode: 'answer' }, 'sonnet·xhigh'],
   ]
   for (const [r, want] of cases) expect(label(gearFor(reading(r), 'xhigh'))).toBe(want)
   expect(label(gearFor(reading({ reach: 'area', depth: 2 }), 'medium'))).toBe('sonnet·high')
   expect(needsConsent({ model: 'opus', effort: 'xhigh' }, {}, undefined, 'xhigh')).toBe(false)
+})
+
+test('git chores follow their depth, never the coding effort; max stays for subtle code', () => {
+  expect(label(gearFor(reading({ mode: 'commit', reach: 'point', depth: 0 }), 'xhigh'))).toBe('haiku·low')
+  expect(label(gearFor(reading({ mode: 'commit', reach: 'point', depth: 1 }), 'xhigh'))).toBe('haiku·medium')
+  expect(label(gearFor(reading({ reach: 'point', depth: 0 }), 'max'))).toBe('haiku·xhigh')
+  expect(label(gearFor(reading({ reach: 'area', depth: 2 }), 'max'))).toBe('sonnet·max')
+  const phases = [{ what: 'fix it', mode: 'code', depth: 1 }, { what: 'commit', mode: 'commit', depth: 0 }] as const
+  expect(route([...phases], 'opus', 'xhigh', false).map(s => `${s.by} ${label(s.gear)}`)).toEqual(['main opus·xhigh', 'main opus·low'])
+  expect(route([...phases], 'opus', 'xhigh', false, 'sonnet', true).map(s => `${s.by} ${label(s.gear)}`)).toEqual(['main opus·xhigh', 'agent haiku·low'])
+  expect(plan(reading({ mode: 'commit', depth: 1 }), { model: 'opus', effort: 'medium' }, 'opus', true, 'opus', 'sonnet', true).handoff).toEqual({ kind: 'chore', gear: { model: 'sonnet', effort: 'medium' } })
+  expect(plan(reading({ mode: 'commit', depth: 0 }), { model: 'opus', effort: 'low' }, 'opus', true, 'opus').handoff).toBeUndefined()
 })
 
 test('steer mode keeps the session model and still hands work off', () => {
