@@ -6,6 +6,7 @@ import {
   type Handoff,
   type Model,
   type Plan,
+  type Step,
   MODELS,
   NOD,
   STARTER,
@@ -17,6 +18,8 @@ import {
   needsConsent,
   nextFloor,
   plan,
+  route,
+  routeNote,
   readReading,
   stepDown,
   trimRequest,
@@ -63,7 +66,7 @@ const working = (loops: Record<string, GearboxLoop>) =>
   Object.entries(loops).filter(([id, l]) => id !== 'main' && l.state === 'working')
 
 // The status line: the main gear, then the running subagents, else what this turn hands off.
-const showStatus = async ($: EngineInterface, handoff?: Handoff) => {
+const showStatus = async ($: EngineInterface, handoff?: Handoff, step?: string) => {
   const loops = await read($, LOOPS)
   const main = loops.main
   if (!main) return $.ui.status(undefined)
@@ -73,7 +76,7 @@ const showStatus = async ($: EngineInterface, handoff?: Handoff) => {
     : handoff
       ? ` ⇢ ${handoff.gear.model} ${KIND[handoff.kind]}`
       : ''
-  $.ui.status(`gearbox ▸ ${gearText(main)}${tail}`)
+  $.ui.status(`gearbox ▸ ${gearText(main)}${step ? ` · ${step}` : ''}${tail}`)
 }
 
 // How deep a loop sits under main, for the pane's indent.
@@ -164,6 +167,7 @@ export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
   const standing: ModelEffort = CODE_EFFORTS.includes(options.code_effort as ModelEffort) ? (options.code_effort as ModelEffort) : 'medium'
   const steers = options.steer !== false
+  const navigator: 'haiku' | 'sonnet' = options.navigator === 'haiku' ? 'haiku' : 'sonnet'
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
   let enabled = true
@@ -171,11 +175,20 @@ export const register: Register = (on, options) => {
   let previous: Gear | undefined // the last main gear, for carry-on replies
   let turnGear: Gear | undefined // the gear of the turn under way
   let turnHandoff: Handoff | undefined
+  let turnRoute: Step[] | undefined // the steps of a multi-step request, in order
+  let turnStep: number | undefined // the route step under way
+  const stepLabel = () => (turnRoute && turnStep ? `step ${turnStep}/${turnRoute.length} ${turnRoute[turnStep - 1]!.what}` : undefined)
   const forget = () => {
-    floor = previous = turnGear = turnHandoff = undefined
+    floor = previous = turnGear = turnHandoff = turnRoute = turnStep = undefined
   }
 
   on('session.start', async ($, e, next) => {
+    await $.tool.register({
+      name: 'phase',
+      description: 'gearbox: call with a step number from the gearbox route as you start that step; gearbox sets your effort for it.',
+      inputSchema: { type: 'object', properties: { step: { type: 'integer', minimum: 1 } }, required: ['step'] },
+      isDeferred: false,
+    })
     await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [pane | on | off | ask on | ask off | usage | usage reset]' })
     enabled = (await $.store.get('enabled')) !== false
     return next(e)
@@ -225,8 +238,9 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (e.turnId) return next(e) // typed into a running turn, which keeps its gear
-    turnGear = turnHandoff = undefined
+    // A notification (say, a route's subagent finishing) or a command keeps the turn's gear and route.
     if (!enabled || e.command || e.isMeta || !typedByPerson(e.origin)) return next(e)
+    turnGear = turnHandoff = turnRoute = turnStep = undefined
     // A Haiku session shifts models; any other keeps its model and is only steered (effort and handoffs).
     const session = await $.session.model()
     const shifting = session.includes('haiku')
@@ -248,14 +262,43 @@ export const register: Register = (on, options) => {
       } else {
         ask = verifyAsk(r.ask, e.text)
         const checked = { ...r, ask }
+        const asks = (await $.store.get('consent')) !== false
         let want = gearFor(checked, standing)
-        if ((await $.store.get('consent')) !== false && needsConsent(want, ask, previous, standing)) want = await consent($, want)
-        p = plan(checked, want, base, earlier.length > 0, fixed)
+        if (r.phases.length >= 2) {
+          // Several steps: one route, each step on its own executor and effort. Fable only as a subagent.
+          const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
+          // A model named for a step counts only where the person's own words say it.
+          const phases = r.phases.map(ph => ({ ...ph, ask: ph.ask && verifyAsk({ model: ph.ask }, e.text).model === ph.ask ? ph.ask : undefined }))
+          turnRoute = route(phases, lead, standing, r.care === 'costly', navigator)
+          for (const s of turnRoute) {
+            if (s.by === 'main' && asks && needsConsent(s.gear, ask, previous, standing)) {
+              s.gear = await consent($, s.gear)
+              s.mainEffort = s.gear.effort
+            }
+          }
+          p = { main: { model: lead, effort: turnRoute[0]!.mainEffort } }
+        } else {
+          if (asks && needsConsent(want, ask, previous, standing)) want = await consent($, want)
+          p = plan(checked, want, base, earlier.length > 0, fixed, navigator)
+        }
       }
     }
     turnGear = previous = { model: mainModel(p, ask, base), effort: p.main.effort }
     turnHandoff = p.handoff
-    return next(p.handoff ? { ...e, context: [...(e.context ?? []), handoffNote(p.handoff)] } : e)
+    const note = turnRoute ? routeNote(turnRoute) : p.handoff ? handoffNote(p.handoff) : undefined
+    return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
+  })
+
+  // The route's phase tool: the main model calls it as each step starts, and later steps run at that step's effort.
+  on('tool.call', { tool: 'mcp__gearbox__phase' }, async ($, e) => {
+    const n = Number((e as any).input?.step ?? (e as any).step)
+    const s = turnRoute?.[n - 1]
+    if (!s || !turnGear) return { result: 'gearbox: no route step with that number in this turn', isError: true as const }
+    turnGear = { ...turnGear, effort: s.mainEffort }
+    turnStep = n
+    await showStatus($, undefined, stepLabel())
+    // A tool's result is a string (or content blocks), never an object.
+    return { result: s.by === 'agent' ? `step ${n}: hand it to a ${s.gear.model} subagent at ${s.gear.effort}` : `step ${n}: you now run at effort ${s.mainEffort}` }
   })
 
   // An Agent call that names no model and no agent type runs on the main conversation's model.
@@ -269,7 +312,7 @@ export const register: Register = (on, options) => {
     if (enabled && !started.deny && started.agentId) {
       // Its first steps may land before this, so keep what they recorded.
       await patch($, started.agentId, l => ({ steps: 0, state: 'working', asked: started.model, ...l, label: e.description, parent: e.parentAgentId ?? 'main' }))
-      await showStatus($, turnHandoff)
+      await showStatus($, turnHandoff, stepLabel())
     }
     return started
   })
@@ -286,7 +329,7 @@ export const register: Register = (on, options) => {
         const { doing: _, ...rest } = l
         return { ...rest, state: e.agentId ? 'done' : 'idle' }
       })
-      await showStatus($, turnHandoff)
+      await showStatus($, turnHandoff, stepLabel())
     }
     return next(e)
   })
@@ -321,7 +364,7 @@ export const register: Register = (on, options) => {
         ...(step.effort !== undefined ? { effort: String(step.effort) } : {}),
         state: 'working',
       }))
-      if (!e.agentId) await showStatus($, turnHandoff)
+      if (!e.agentId) await showStatus($, turnHandoff, stepLabel())
     }
     const result = yield* next(step)
     if (enabled) await patch($, id, l => l && { ...l, ...(result.usage ? { answered: result.usage.model } : {}), steps: l.steps + 1 })
