@@ -16,6 +16,8 @@ import tempfile
 from datetime import datetime
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
+# gearbox's debug log (/gearbox log on), one file per session: what effort each request was actually sent with.
+LOGS = os.path.expanduser("~/.claude/gearbox/logs")
 # US$ per million tokens: fresh input, cache write, cache read, output.
 # shortcut: Anthropic list prices as of 2026-10; Haiku's long-prompt rate ignored. Update when prices move.
 PRICES = {
@@ -55,7 +57,18 @@ def entries(path):
                 continue
 
 
-def measure(main_path):
+def efforts_sent(session_id, logs=LOGS):
+    """Requests per effort gearbox sent, main conversation and subagents; empty without a gearbox log."""
+    path = os.path.join(logs, f"{session_id}.jsonl")
+    sent = collections.Counter()
+    if os.path.exists(path):
+        for d in entries(path):
+            if d.get("ev") == "step":
+                sent[d.get("sent", "?").split("·")[-1]] += 1
+    return dict(sent)
+
+
+def measure(main_path, logs=LOGS):
     """Totals for one session, its subagents included."""
     sub_paths = sorted(glob.glob(os.path.join(main_path[: -len(".jsonl")], "subagents", "*.jsonl")))
     seen = set()  # a response is written once per content block; count its usage once
@@ -89,7 +102,8 @@ def measure(main_path):
         for m, r in per_model.items()
         for p in [PRICES.get(m, PRICES["opus"])]
     )
-    return {"wall": wall, "prompts": prompts, "subagents": len(sub_paths), "per_model": dict(per_model), "cost": cost, "gearbox": gearbox_notes}
+    session_id = os.path.basename(main_path)[: -len(".jsonl")]
+    return {"wall": wall, "prompts": prompts, "subagents": len(sub_paths), "per_model": dict(per_model), "cost": cost, "gearbox": gearbox_notes, "efforts": efforts_sent(session_id, logs)}
 
 
 def kilo(n):
@@ -97,14 +111,15 @@ def kilo(n):
 
 
 def report(rows):
-    print("| run | wall | prompts | subagents | requests by model | input (fresh/write/read) | output | ≈ cost |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("| run | wall | prompts | subagents | requests by model | effort sent (gearbox log) | input (fresh/write/read) | output | ≈ cost |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for label, m in rows:
         pm = m["per_model"]
         reqs = ", ".join(f"{f} {r[0]}" for f, r in sorted(pm.items(), key=lambda kv: -kv[1][0]))
         fresh, write, read, out = (sum(r[i] for r in pm.values()) for i in (1, 2, 3, 4))
+        efforts = ", ".join(f"{e} {n}" for e, n in sorted(m["efforts"].items(), key=lambda kv: -kv[1])) or "no log"
         print(
-            f"| {label} | {m['wall'] / 60:.1f} min | {m['prompts']} | {m['subagents']} | {reqs} | "
+            f"| {label} | {m['wall'] / 60:.1f} min | {m['prompts']} | {m['subagents']} | {reqs} | {efforts} | "
             f"{kilo(fresh)} / {kilo(write)} / {kilo(read)} | {kilo(out)} | ${m['cost']:.2f} |"
         )
     print("\nCost at API list prices; on a subscription it shows as usage-limit headroom instead.")
@@ -126,7 +141,12 @@ def self_test():
             f.write("\n".join(json.dumps(r) for r in rows))
         with open(os.path.join(tmp, "s", "subagents", "agent-a.jsonl"), "w") as f:
             f.write(json.dumps({"type": "assistant", "timestamp": "2026-10-27T10:02:00Z", "message": {"id": "m2", "model": "claude-haiku-5-5", "usage": usage}}))
-        m = measure(main)
+        logs = os.path.join(tmp, "logs")
+        os.makedirs(logs)
+        with open(os.path.join(logs, "s.jsonl"), "w") as f:
+            f.write("\n".join(json.dumps({"ev": "step", "loop": "main", "sent": s}) for s in ["opus·xhigh", "opus·xhigh", "opus·low"]))
+        m = measure(main, logs)
+        assert m["efforts"] == {"xhigh": 2, "low": 1}, m
         assert m["prompts"] == 1, m
         assert m["subagents"] == 1, m
         assert m["per_model"]["opus"] == [1, 10, 1000, 0, 100], m

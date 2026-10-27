@@ -121,7 +121,32 @@ const survey = async ($: EngineInterface, request: string, earlier: string[], pr
     timeoutMs: 12_000,
   })
   $.ui.log(`gearbox survey: ${r.isAnswered ? r.text.trim() : `no reply (${r.reason})`}`, { to: 'debug' })
-  return r.isAnswered ? readReading(r.text) : undefined
+  return { reading: r.isAnswered ? readReading(r.text) : undefined, reply: r.isAnswered ? r.text.trim() : `no reply (${r.reason})` }
+}
+
+// The debug log: one JSON line per event in ~/.claude/gearbox/logs/<session>.jsonl. The mod file API replaces a
+// whole file, so the session's log is kept and rewritten at the end of each turn.
+type LogState = { pending: string[]; path?: string; body?: string }
+
+const flushLog = async ($: EngineInterface, log: LogState) => {
+  if (!log.pending.length) return
+  try {
+    log.path ??= `${(await $.env.get('HOME')) ?? '.'}/.claude/gearbox/logs/${await $.session.id()}.jsonl`
+    log.body ??= (await $.fs.exists(log.path)) ? String(await $.fs.read(log.path)) : ''
+    log.body += log.pending.splice(0).map(line => `${line}\n`).join('')
+    await $.fs.write(log.path, log.body)
+  } catch (err) {
+    $.ui.log(`gearbox: log not written: ${err}`, { to: 'debug' })
+  }
+}
+
+// What the log opens with: versions and the settings in force, with where they came from.
+const sessionFacts = async ($: EngineInterface, options: PluginOptions) => {
+  let gearbox = 'unknown'
+  try {
+    gearbox = JSON.parse(String(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))).version
+  } catch {}
+  return { ev: 'session', gearbox, claude: (await $.session.version()).version, model: await $.session.model(), fromGearbox: (await $.store.get('settings')) ?? {}, fromPlugin: options }
 }
 
 // Puts a costly gear to the person; a dismissed dialog, or an answer typed under "Other", takes the cheaper one.
@@ -173,7 +198,8 @@ export const usageReport = (ledger: Ledger) => {
 
 const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh']
 
-export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean }
+export type LogMode = 'off' | 'on' | 'full'
+export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode }
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit.
@@ -184,6 +210,7 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
     steer: o.steer !== false,
     navigator: o.navigator === 'haiku' ? 'haiku' : 'sonnet',
     strict: o.strict !== false,
+    log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
   }
 }
 
@@ -193,12 +220,13 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'navigator' && (value === 'haiku' || value === 'sonnet')) return { navigator: value }
   if (word === 'steer' && (value === 'on' || value === 'off')) return { steer: value === 'on' }
   if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
+  if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
   return undefined
 }
 
-const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off' }
+const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full' }
 const settingsText = (s: Settings) =>
-  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'}`
+  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -211,12 +239,19 @@ const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
 
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
-  let { code_effort: standing, steer: steers, navigator, strict } = settingsFrom(options, undefined)
+  let { code_effort: standing, steer: steers, navigator, strict, log: logMode } = settingsFrom(options, undefined)
+  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode })
+  // The debug log of this session; see /gearbox log.
+  const log: LogState = { pending: [] }
+  const logEvent = (rec: Record<string, unknown>) => {
+    if (logMode !== 'off') log.pending.push(JSON.stringify({ t: Date.now(), ...rec }))
+  }
   const apply = (s: Settings) => {
     standing = s.code_effort
     steers = s.steer
     navigator = s.navigator
     strict = s.strict
+    logMode = s.log
   }
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
@@ -270,6 +305,7 @@ export const register: Register = (on, options) => {
     apply(await loadSettings($, options))
     const stored = ((await $.store.get('settings')) ?? {}) as Partial<Settings>
     await update($, SETTINGS, () => stored)
+    if (logMode !== 'off') logEvent({ ...(await sessionFacts($, options)), settings: current() })
     return next(e)
   })
 
@@ -279,6 +315,8 @@ export const register: Register = (on, options) => {
       forget()
       await update($, LOOPS, () => ({}))
     }
+    logEvent({ ev: 'end', reason: e.reason })
+    await flushLog($, log)
     return next(e)
   })
 
@@ -286,20 +324,40 @@ export const register: Register = (on, options) => {
     const arg = e.args.trim().toLowerCase()
     apply(await loadSettings($, options))
     const [word = '', value] = arg.split(/\s+/)
+    if (arg === 'log') {
+      if (logMode === 'off') return { text: 'gearbox: the log is off. /gearbox log on starts one for this session; /gearbox log full also keeps the first 200 characters of each prompt.' }
+      await flushLog($, log)
+      const lines = (log.body ?? '').trim().split('\n').filter(Boolean)
+      const last = (ev: string) => lines.map(l => JSON.parse(l)).reverse().find(r => r.ev === ev)
+      const gear = last('gear')
+      const step = last('step')
+      return {
+        text: [
+          `gearbox log (${logMode}): ${log.path} · ${lines.length} events`,
+          gear ? `last decision: ${gear.gear} (${gear.why})` : 'no decision logged yet',
+          step ? `last request: ${step.loop} sent ${step.sent}, Claude Code's own setting ${step.engine}, answered by ${step.answered ?? 'unknown'}` : '',
+        ].filter(Boolean).join('\n'),
+      }
+    }
     if (arg === 'settings' || word in SETTING_CHOICES) {
       if (arg === 'settings') {
         const { isPlaced } = await $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })
         return {
           text: isPlaced
             ? 'gearbox: settings open. Press a value to use it; Esc closes.'
-            : `gearbox: ${settingsText({ code_effort: standing, steer: steers, navigator, strict })}. The settings panel has no room here; set one with /gearbox effort|navigator|steer|strict <value>.`,
+            : `gearbox: ${settingsText(current())}. The settings panel has no room here; set one with /gearbox effort|navigator|steer|strict <value>.`,
         }
       }
       const change = settingPatch(word, value)
       if (!change) return { text: `gearbox: ${word} takes ${SETTING_CHOICES[word]}` }
+      const wasLogging = logMode !== 'off'
       await saveSetting($, change)
       apply(await loadSettings($, options))
-      return { text: `gearbox: ${settingsText({ code_effort: standing, steer: steers, navigator, strict })} (from your next prompt)` }
+      if (!wasLogging && logMode !== 'off') {
+        logEvent({ ...(await sessionFacts($, options)), settings: current() })
+        await flushLog($, log)
+      }
+      return { text: `gearbox: ${settingsText(current())} (from your next prompt)` }
     }
     if (arg === 'pane') {
       const { isPlaced } = await $.ui.open({ id: PANE, title: 'gearbox: models now' })
@@ -328,7 +386,7 @@ export const register: Register = (on, options) => {
     const session = await $.session.model()
     const mode = session.includes('haiku') ? 'shifting models' : steers ? `steering effort on ${family(session) ?? session}` : 'readout only'
     return {
-      text: `gearbox ${enabled ? `on, ${mode}` : 'off'} · ${settingsText({ code_effort: standing, steer: steers, navigator, strict })} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox effort|navigator|steer <value>.`,
+      text: `gearbox ${enabled ? `on, ${mode}` : 'off'} · ${settingsText(current())} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox effort|navigator|steer <value>.`,
     }
   })
 
@@ -339,10 +397,14 @@ export const register: Register = (on, options) => {
       turnGear = turnHandoff = turnRoute = turnStep = undefined
       handedOff = new Set()
       ownEffort = `/${e.command.name}`
+      logEvent({ ev: 'prompt', kind: 'command', command: e.command.name, gear: 'its own effort' })
       return next(e)
     }
     // A notification (say, a route's subagent finishing) keeps the turn's gear and route.
-    if (!enabled || e.command || e.isMeta || !typedByPerson(e.origin)) return next(e)
+    if (!enabled || e.command || e.isMeta || !typedByPerson(e.origin)) {
+      if (enabled && !e.command) logEvent({ ev: 'prompt', kind: e.origin?.kind ?? 'meta', keeps: turnGear ? label(turnGear) : 'no gear' })
+      return next(e)
+    }
     turnGear = turnHandoff = turnRoute = turnStep = undefined
     handedOff = new Set()
     // "ultrathink" in the person's own words raises this turn's effort in Claude Code; gearbox leaves it be.
@@ -352,21 +414,32 @@ export const register: Register = (on, options) => {
     const session = await $.session.model()
     const shifting = session.includes('haiku')
     const fixed = shifting ? undefined : family(session)
-    if (!shifting && (!steers || !fixed)) return next(e)
+    logEvent({ ev: 'prompt', kind: ownEffort ?? 'typed', chars: e.text.length, ...(logMode === 'full' ? { text: e.text.slice(0, 200) } : {}), session })
+    if (!shifting && (!steers || !fixed)) {
+      logEvent({ ev: 'gear', gear: 'untouched', why: 'steer is off for sessions not on Haiku' })
+      return next(e)
+    }
     const base = fixed ?? floor
+    let why = ''
 
     let p: Plan
     let ask: Partial<Gear> = {}
     if (previous && NOD.test(e.text.trim())) {
       p = { main: previous }
+      why = 'nod: reused the last work gear'
     } else {
       const earlier = await recentAsks($)
-      const r = await survey($, e.text, earlier, previous)
+      const started = Date.now()
+      const { reading: r, reply } = await survey($, e.text, earlier, previous)
+      logEvent({ ev: 'survey', ms: Date.now() - started, reply: reply.slice(0, 400), reading: r ?? null })
       if (!r || !r.sure) {
         p = { main: previous ?? STARTER }
+        why = `survey ${r ? 'unsure' : 'unreadable'}: ${previous ? 'previous gear' : 'starting gear'}`
       } else if (r.cont && previous) {
         p = { main: previous }
+        why = 'continuation: previous gear'
       } else {
+        why = `survey: ${r.mode}, ${r.reach}, depth ${r.depth}${r.care === 'costly' ? ', costly' : ''}`
         ask = verifyAsk(r.ask, e.text)
         const checked = { ...r, ask }
         const asks = (await $.store.get('consent')) !== false
@@ -384,9 +457,15 @@ export const register: Register = (on, options) => {
             }
           }
           p = { main: { model: lead, effort: workEffort(turnRoute) } }
+          why += `; route of ${turnRoute.length} steps, starting at its work effort`
         } else {
-          if (asks && needsConsent(want, ask, previous, standing)) want = await consent($, want)
+          if (asks && needsConsent(want, ask, previous, standing)) {
+            const proposed = label(want)
+            want = await consent($, want)
+            why += `; you chose ${label(want)} over ${proposed}`
+          }
           p = plan(checked, want, base, earlier.length > 0, fixed, navigator)
+          if (ask.model || ask.effort) why += `; you asked for ${[ask.model, ask.effort].filter(Boolean).join(' ')}`
         }
       }
     }
@@ -395,6 +474,13 @@ export const register: Register = (on, options) => {
     // effort of a turn that only briefs a subagent.
     if (!p.handoff || !previous) previous = turnGear
     turnHandoff = p.handoff
+    logEvent({
+      ev: 'gear',
+      gear: label(turnGear),
+      why: ownEffort ? `${why}; ultrathink: Claude Code sets the effort` : why,
+      ...(p.handoff ? { handoff: `${p.handoff.kind} → ${label(p.handoff.gear)}` } : {}),
+      ...(turnRoute ? { route: turnRoute.map((s, i) => `${i + 1}. ${s.what}: ${s.by} ${label(s.gear)}`) } : {}),
+    })
     const note = turnRoute ? routeNote(turnRoute) : p.handoff ? handoffNote(p.handoff) : undefined
     return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
   })
@@ -406,6 +492,7 @@ export const register: Register = (on, options) => {
     if (!s || !turnGear) return { result: 'gearbox: no route step with that number in this turn', isError: true as const }
     turnGear = { ...turnGear, effort: s.mainEffort }
     turnStep = n
+    logEvent({ ev: 'phase', step: n, what: s.what, by: s.by, effort: s.mainEffort })
     await showStatus($, undefined, stepLabel())
     // A tool's result is a string (or content blocks), never an object.
     return { result: s.by === 'agent' ? `step ${n}: hand it to a ${s.gear.model} subagent at ${s.gear.effort}` : `step ${n}: you now run at effort ${s.mainEffort}` }
@@ -436,6 +523,7 @@ export const register: Register = (on, options) => {
       const h = nextHandoff()
       if (!h) return next(e)
       handedOff.add(h.slot)
+      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked: `${e.model ?? 'default'}·${e.effort ?? 'default'}`, set: label(h.gear) })
       return next({ ...e, model: h.gear.model, effort: h.gear.effort })
     }
     const mode = handoffMode()
@@ -445,6 +533,7 @@ export const register: Register = (on, options) => {
       // Strict: the main conversation may not do a hand-off step's work itself; the refusal says what to start.
       if (strict && inline) {
         const g = handoffGear()
+        logEvent({ ev: 'strict', tool, mode, refused: true })
         const job = mode === 'drive' ? 'click through the browser check and report only what it saw' : 'run the command and report only the outcome'
         return {
           deny: `gearbox: this step is a hand-off. Start an Agent${g ? ` with model "${g.model}" and effort "${g.effort}"` : ''} to ${job}, then judge its report here. (The person can allow doing it here with /gearbox strict off.)`,
@@ -453,6 +542,7 @@ export const register: Register = (on, options) => {
       // Not strict: the model does the step's work itself, so low effort no longer fits; at least medium.
       if (doesHandoffWork(tool)) {
         turnGear = { ...turnGear, effort: upTo(EFFORTS, turnGear.effort, 'medium') }
+        logEvent({ ev: 'raise', tool, mode, effort: turnGear.effort, why: 'the model does a hand-off step itself' })
         await showStatus($, turnHandoff, stepLabel())
       }
     }
@@ -467,6 +557,10 @@ export const register: Register = (on, options) => {
         return { ...rest, state: e.agentId ? 'done' : 'idle' }
       })
       await showStatus($, turnHandoff, stepLabel())
+    }
+    if (!e.agentId) {
+      logEvent({ ev: 'turn', ms: e.durationMs, aborted: e.isAborted })
+      await flushLog($, log)
     }
     return next(e)
   })
@@ -505,6 +599,17 @@ export const register: Register = (on, options) => {
     }
     const result = yield* next(step)
     if (enabled) await patch($, id, l => l && { ...l, ...(result.usage ? { answered: result.usage.model } : {}), steps: l.steps + 1 })
+    // What gearbox sent next to what Claude Code would have sent (its own setting), and who answered.
+    const u = result.usage
+    logEvent({
+      ev: 'step',
+      loop: id,
+      index: e.index,
+      sent: `${family(step.model) ?? step.model}·${step.effort ?? 'default'}`,
+      engine: `${family(e.model) ?? e.model}·${e.effort ?? 'default'}`,
+      answered: u?.model,
+      ...(u ? { in: u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens, out: u.output_tokens } : {}),
+    })
     if (result.usage) await tally($, result.usage)
     return result
   })
@@ -549,6 +654,7 @@ export const register: Register = (on, options) => {
       ['Browser navigator', 'navigator', ['sonnet', 'haiku'], s.navigator],
       ['Steer non-Haiku', 'steer', ['on', 'off'], s.steer ? 'on' : 'off'],
       ['Strict hand-offs', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
+      ['Debug log', 'log', ['off', 'on', 'full'], s.log],
     ]
     return (
       <Box flexDirection="column" rowGap={1}>

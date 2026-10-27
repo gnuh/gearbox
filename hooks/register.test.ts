@@ -364,3 +364,59 @@ test('a slash command does not inherit the last prompt’s gear', async ($: any,
   expect(r.steps).toEqual(['claude-opus-5-5·xhigh', 'claude-opus-5-5·low']) // low: what the skill or engine set
   expect(r.surveys).toHaveLength(1)
 })
+
+// A file system, home and session beneath the mod, for the debug log.
+const disk = (on: any) => {
+  const files = new Map<string, string>()
+  on('fs.write', (_: unknown, e: any) => (files.set(e.path, e.text), { value: undefined }))
+  on('fs.exists', (_: unknown, e: any) => ({ value: files.has(e.path) }))
+  on('fs.read', (_: unknown, e: any) => ({ value: e.path.endsWith('plugin.json') ? '{"version":"9.9.9"}' : files.get(e.path) ?? '' }))
+  on('env.get', (_: unknown, e: any) => ({ value: e.name === 'HOME' ? '/home/tester' : undefined }))
+  on('session.id', () => ({ value: 's-1' }))
+  on('session.version', () => ({ value: { version: '2.1.311', base: '2.1.311' } }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
+  return files
+}
+const LOG = '/home/tester/.claude/gearbox/logs/s-1.jsonl'
+const events = (files: Map<string, string>) => (files.get(LOG) ?? '').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+const done = ($: any) => $.turn.complete({ turnId: 'x', answer: '', durationMs: 1200, isAborted: false })
+
+test('the debug log is off by default: nothing is written', async ($: any, on) => {
+  rig(on, [{ reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  await sayOn($, 'claude-opus-5-5', 'add pagination')
+  await done($)
+  expect(files.size).toBe(0)
+  expect((await $.command.run({ command: 'gearbox', args: 'log' })).text).toContain('the log is off')
+})
+
+test('with the log on, a turn records the prompt, the survey, the gear and why, and each request', async ($: any, on) => {
+  rig(on, [{ reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'add pagination to the orders list')
+  await done($)
+  const ev = events(files)
+  expect(ev.map(e => e.ev)).toEqual(['session', 'prompt', 'survey', 'gear', 'step', 'turn'])
+  expect(ev[0]).toMatchObject({ gearbox: '9.9.9', claude: '2.1.311' })
+  expect(ev[1]).toMatchObject({ kind: 'typed', chars: 33 })
+  expect(ev[1].text).toBeUndefined() // no prompt text unless the log is full
+  expect(ev[3]).toMatchObject({ gear: 'opus·xhigh', why: 'survey: code, area, depth 1' })
+  expect(ev[4]).toMatchObject({ loop: 'main', sent: 'opus·xhigh', engine: 'opus·medium', answered: 'claude-opus-5-5' })
+  const shown = (await $.command.run({ command: 'gearbox', args: 'log' })).text
+  expect(shown).toContain(LOG)
+  expect(shown).toContain('last decision: opus·xhigh (survey: code, area, depth 1)')
+  expect(shown).toContain("sent opus·xhigh, Claude Code's own setting opus·medium")
+})
+
+test('a full log keeps the first 200 characters of each prompt; a nod says it reused the gear', async ($: any, on) => {
+  rig(on, [{ reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  await $.command.run({ command: 'gearbox', args: 'log full' })
+  await sayOn($, 'claude-opus-5-5', `fix the totals ${'x'.repeat(300)}`)
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  await done($)
+  const prompts = events(files).filter(e => e.ev === 'prompt')
+  expect(prompts[0].text).toHaveLength(200)
+  expect(events(files).filter(e => e.ev === 'gear').map(e => e.why)).toEqual(['survey: code, area, depth 1', 'nod: reused the last work gear'])
+})
