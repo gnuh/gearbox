@@ -53,7 +53,7 @@ const LOOPS = atom({ plugin: 'gearbox', key: 'loops' } as const, {}, { shape: 'l
 const SETTINGS = atom({ plugin: 'gearbox', key: 'settings' } as const, {}, { shape: 'settings-1' })
 const SETTINGS_PANE = 'gearbox-settings'
 // The band's per-turn numbers. The tag declines what another version stored.
-const TURN = atom({ plugin: 'gearbox', key: 'turn' } as const, { requests: {}, costs: [] }, { shape: 'turn-1' })
+const TURN = atom({ plugin: 'gearbox', key: 'turn' } as const, { requests: {} }, { shape: 'turn-2' })
 
 const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n))
 
@@ -77,7 +77,7 @@ const patch = ($: EngineInterface, id: string, fn: (l: GearboxLoop | undefined) 
 const working = (loops: Record<string, GearboxLoop>) =>
   Object.entries(loops).filter(([id, l]) => id !== 'main' && l.state === 'working')
 
-// What a loop is doing, for the pane and the popup: the tool, with its target where that says something.
+// What a loop is doing, for the pane and the band: the tool, with its target where that says something.
 export const describeTool = (tool: string, input: Record<string, unknown>): string => {
   const name = tool.includes('__') ? tool.split('__').pop()! : tool
   const first = (v: unknown, n: number) => String(v ?? '').trim().split('\n')[0]!.slice(0, n)
@@ -89,62 +89,6 @@ export const describeTool = (tool: string, input: Record<string, unknown>): stri
   return name
 }
 
-// The popup's text: main, then every running subagent as a tree, each with the model·effort of its request in
-// flight and what it is doing. `always`: also while the main conversation works alone; otherwise only while a
-// subagent runs. Undefined when there is nothing to show.
-export const popupText = (loops: Record<string, GearboxLoop>, always = false): string | undefined => {
-  const running = Object.entries(loops).filter(([id, l]) => id !== 'main' && l.state === 'working')
-  const main = loops.main
-  const mainWorks = main?.state === 'working'
-  if (!running.length && !(always && mainWorks)) return undefined
-  // The first line carries the main conversation's live gear, so a surface that shows one line still shows it.
-  const head = main ? `gearbox · ${gearText(main)} · ${mainWorks ? (main.doing ?? 'thinking') : main.state}` : 'gearbox'
-  const agents = running.length ? ` · ${running.length} agent${running.length > 1 ? 's' : ''}` : ''
-  const rows = running.map(
-    ([id, l], i) => `${'   '.repeat(Math.max(0, depth(loops, id) - 1))}${i === running.length - 1 ? '└' : '├'} ${l.label} · ${gearText(l)} · ${l.doing ?? 'thinking'}`,
-  )
-  return [head + agents, ...rows].join('\n')
-}
-
-// Each popup asks for a short stay and is sent again while it is up: the desktop app showed a 10-minute toast
-// only once the turn was over, a 2.5-second one at once.
-const POPUP_MS = 15_000
-const RESEND_MS = 8_000
-
-// Whether to send the popup now: a new text, or the same one that has been up long enough to need renewing.
-export const shouldSend = (popup: PopupState, text: string, now: number) =>
-  text !== popup.shown || now - (popup.sentAt ?? 0) >= RESEND_MS
-
-type PopupState = { shown?: string; sentAt?: number }
-export type PopupMode = 'always' | 'agents' | 'off'
-
-// Keeps the popup (a toast, the one floating surface a mod has on every client) in step with what runs. A new
-// toast takes the place of the mod's own last one, so each change redraws it; it holds while agents run, and a
-// short closing toast replaces it when the last one ends. Quiet while the gearbox pane is shown: it says the same.
-const refreshPopup = async ($: EngineInterface, popup: PopupState, mode: PopupMode, note: (rec: Record<string, unknown>) => void) => {
-  if (mode === 'off') return
-  // A display, never a gate: whatever fails here must not take the hook that called it down with it.
-  try {
-    const text = popupText(await read($, LOOPS), mode === 'always')
-    if (!text) {
-      if (popup.shown) {
-        $.ui.toast(mode === 'always' ? 'gearbox · done' : 'gearbox · subagents finished', { timeoutMs: 2500 })
-        note({ ev: 'popup', closed: true })
-      }
-      popup.shown = undefined
-      return
-    }
-    const now = Date.now()
-    if (!shouldSend(popup, text, now)) return
-    if ((await $.ui.panes()).some(p => p.id === PANE && p.isShown)) return
-    $.ui.toast(text, { timeoutMs: POPUP_MS })
-    if (text !== popup.shown) note({ ev: 'popup', text })
-    popup.shown = text
-    popup.sentAt = now
-  } catch (err) {
-    $.ui.log(`gearbox: popup not shown: ${err}`, { to: 'debug' })
-  }
-}
 
 const sessionCost = async ($: EngineInterface) => {
   try {
@@ -154,14 +98,10 @@ const sessionCost = async ($: EngineInterface) => {
   }
 }
 
-// A person's prompt starts a new tally; the turn before it joins the costs the band's bars draw.
+// A person's prompt starts a new tally: no requests yet, and the session's cost as it begins.
 const startTurnTally = async ($: EngineInterface) => {
   const usd = await sessionCost($)
-  await update($, TURN, t => ({
-    requests: {},
-    ...(usd !== undefined ? { costAtStart: usd } : {}),
-    costs: t.costAtStart !== undefined && usd !== undefined && Object.keys(t.requests).length ? [...t.costs, usd - t.costAtStart].slice(-8) : t.costs,
-  }))
+  await update($, TURN, () => ({ requests: {}, ...(usd !== undefined ? { costAtStart: usd } : {}) }))
 }
 
 const setWhy = ($: EngineInterface, why: [string, string]) => update($, TURN, t => ({ ...t, why }))
@@ -170,10 +110,7 @@ const countRequest = ($: EngineInterface, model: string) =>
   update($, TURN, t => ({ ...t, requests: { ...t.requests, [model]: (t.requests[model] ?? 0) + 1 } }))
 
 const money = (n?: number) => (n === undefined ? '—' : `$${n.toFixed(2)}`)
-const bars = (vals: number[]) => {
-  const top = Math.max(...vals, 0)
-  return top > 0 ? vals.map(v => '▁▂▃▄▅▆▇█'[Math.min(7, Math.round((v / top) * 7))]).join('') : ''
-}
+const clip1 = (text: string, n: number) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
 
 // The status line: the main gear, then the running subagents, else what this turn hands off.
 const showStatus = async ($: EngineInterface, handoff?: Handoff, step?: string) => {
@@ -260,7 +197,7 @@ const consent = async ($: EngineInterface, g: Gear): Promise<Gear> => {
     })
     return answer === label(g) ? g : cheaper
   } catch {
-    $.ui.toast(`gearbox: couldn't ask, so ${label(cheaper)}`)
+    $.ui.log(`gearbox: couldn't ask, so ${label(cheaper)}`, { to: 'debug' })
     return cheaper
   }
 }
@@ -300,7 +237,7 @@ export const usageReport = (ledger: Ledger) => {
 const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh']
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; popup: PopupMode; band: boolean }
+export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; band: boolean }
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit.
@@ -313,15 +250,6 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
     strict: o.strict !== false,
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
     pane: o.pane === 'running' ? 'running' : 'all',
-    // 0.5.0 stored on/off as true/false: true (or on) is always now. Unset, it is off while the band shows the same.
-    popup:
-      o.popup === false || o.popup === 'off'
-        ? 'off'
-        : o.popup === 'agents'
-          ? 'agents'
-          : o.popup === true || o.popup === 'on' || o.popup === 'always' || o.band === false // auto, or unset
-            ? 'always'
-            : 'off',
     band: o.band !== false,
   }
 }
@@ -334,15 +262,13 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
   if (word === 'pane' && (value === 'all' || value === 'running')) return { pane: value }
-  if (word === 'popup' && (value === 'always' || value === 'on')) return { popup: 'always' }
-  if (word === 'popup' && (value === 'agents' || value === 'off')) return { popup: value }
   if (word === 'band' && (value === 'on' || value === 'off')) return { band: value === 'on' }
   return undefined
 }
 
-const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full', popup: 'always, agents or off', band: 'on or off' }
+const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full', band: 'on or off' }
 const settingsText = (s: Settings) =>
-  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · popup ${s.popup} · band ${s.band ? 'on' : 'off'}`
+  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · band ${s.band ? 'on' : 'off'}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -357,10 +283,8 @@ export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
   let { code_effort: standing, steer: steers, navigator, strict, log: logMode } = settingsFrom(options, undefined)
   let paneShows: Settings['pane'] = 'all'
-  let popupMode: PopupMode = 'off'
   let bandOn = true
-  const popup: PopupState = {}
-  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode, pane: paneShows, popup: popupMode, band: bandOn })
+  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode, pane: paneShows, band: bandOn })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
@@ -373,7 +297,6 @@ export const register: Register = (on, options) => {
     strict = s.strict
     logMode = s.log
     paneShows = s.pane
-    popupMode = s.popup
     bandOn = s.band
   }
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
@@ -429,8 +352,6 @@ export const register: Register = (on, options) => {
     const stored = ((await $.store.get('settings')) ?? {}) as Partial<Settings>
     await update($, SETTINGS, () => stored)
     if (logMode !== 'off') logEvent({ ...(await sessionFacts($, options)), settings: current() })
-    // Renews the popup during long requests, when no event would; idle, it sends nothing.
-    $.clock.every(4_000, () => void refreshPopup($, popup, popupMode, logEvent))
     return next(e)
   })
 
@@ -439,7 +360,7 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear') {
       forget()
       await update($, LOOPS, () => ({}))
-      await update($, TURN, () => ({ requests: {}, costs: [] }))
+      await update($, TURN, () => ({ requests: {} }))
     }
     logEvent({ ev: 'end', reason: e.reason })
     await flushLog($, log)
@@ -658,7 +579,6 @@ export const register: Register = (on, options) => {
       // Its first steps may land before this, so keep what they recorded.
       await patch($, started.agentId, l => ({ steps: 0, state: 'working', asked: started.model, ...l, label: e.description, parent: e.parentAgentId ?? 'main' }))
       await showStatus($, turnHandoff, stepLabel())
-      await refreshPopup($, popup, popupMode, logEvent)
     }
     return started
   })
@@ -666,7 +586,6 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     if (!enabled) return next(e)
     await patch($, e.agentId ?? 'main', l => l && { ...l, doing: describeTool(String(e.tool), e as unknown as Record<string, unknown>) })
-    await refreshPopup($, popup, popupMode, logEvent)
     if (e.agentId) return next(e) // subagents do the hand-off work; never stand in their way
     // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named.
     if (e.tool === 'Agent' && (!e.subagent_type || e.subagent_type === 'general-purpose')) {
@@ -707,7 +626,6 @@ export const register: Register = (on, options) => {
         return { ...rest, state: e.agentId ? 'done' : 'idle' }
       })
       await showStatus($, turnHandoff, stepLabel())
-      await refreshPopup($, popup, popupMode, logEvent)
     }
     if (!e.agentId) {
       logEvent({ ev: 'turn', ms: e.durationMs, aborted: e.isAborted })
@@ -729,7 +647,7 @@ export const register: Register = (on, options) => {
       const model = shifting ? turnGear?.model ?? floor : turnGear?.model
       if (model && model !== from && from && e.index === 0) {
         const tokens = (await $.session.usage()).context.tokens ?? 0
-        $.ui.toast(`gearbox: shifting to ${model}, re-caching ${kilo(tokens)} tokens ≈ $${((tokens * PRICES[model].written) / 1e6).toFixed(2)}`)
+        logEvent({ ev: 'shift', from, to: model, recache: tokens, usd: (tokens * PRICES[model].written) / 1e6 })
       }
       if (model && shifting) floor = nextFloor(model, floor)
       if (model && (shifting || model !== from)) step = { ...step, model }
@@ -747,7 +665,6 @@ export const register: Register = (on, options) => {
         state: 'working',
       }))
       if (!e.agentId) await showStatus($, turnHandoff, stepLabel())
-      await refreshPopup($, popup, popupMode, logEvent)
       await countRequest($, family(step.model) ?? String(step.model))
     }
     const result = yield* next(step)
@@ -791,63 +708,43 @@ export const register: Register = (on, options) => {
     const works = main?.state === 'working'
     const subs = working(loops)
     const thisTurn = usd !== undefined && turn.costAtStart !== undefined ? usd - turn.costAtStart : undefined
-    const turnCosts = thisTurn !== undefined ? [...turn.costs, thisTurn] : turn.costs
-    const requests = Object.entries(turn.requests)
-    const total = requests.reduce((n, [, c]) => n + c, 0)
-    const avg = turnCosts.length ? turnCosts.reduce((a, b) => a + b, 0) / turnCosts.length : undefined
-    // [label, value, the line under it, the value's colour]
-    const cols: [string, string, string, string | undefined][] = [
-      ['now', works ? gearText(main!) : 'idle', works ? main!.doing ?? 'thinking' : main ? `last ${gearText(main)}` : 'waiting for a prompt', works ? hue(main!) : undefined],
-      ['agents', subs.length ? `${subs.length} running` : 'none', subs.length ? subs.map(([, l]) => gearText(l)).join(' · ') : '—', undefined],
-      ['this turn', `${total} request${total === 1 ? '' : 's'}`, requests.map(([m, c]) => `${m} ${c}`).join(' · ') || '—', undefined],
-      ['cost', `${money(usd)} ${bars(turnCosts)}`.trim(), `this turn ${money(thisTurn)} · ⌀ ${money(avg)}`, undefined],
-      ['why', turn.why?.[0] || '—', turn.why?.[1] || '', '#E9A23B'],
-    ]
-    // A narrow terminal keeps what matters most, so nothing wraps.
-    const shown = e.props.bodyColumns < 100 ? [cols[0]!, cols[1]!, cols[3]!] : cols
-    const width = Math.max(12, Math.floor((e.props.bodyColumns - 2 * (shown.length - 1)) / shown.length))
+    const total = Object.values(turn.requests).reduce((n, c) => n + c, 0)
+    const levels = ['medium', 'high', 'xhigh'] as const
+    const nextLevel = levels[(levels.indexOf(s.code_effort as (typeof levels)[number]) + 1) % levels.length]!
     const choose = async (change: Partial<Settings>) => {
       await saveSetting($, change)
       apply(await loadSettings($, options))
     }
+    const doing = works ? clip1(main!.doing ?? 'thinking', 40) : main ? `idle · last ${gearText(main)}` : 'idle'
+    // One slim row, like ponytail's compact band: the coding effort (press to cycle), the live gear and what it does,
+    // subagents only while some run, cost, why, then two plain actions. Nothing unknown is drawn as a dash.
     const mine = (
-      <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={1} alignItems="center">
-          <Text dimColor>coding effort</Text>
-          {(['medium', 'high', 'xhigh'] as const).map(level => (
-            <Button key={`band-effort-${level}`} label={level} variant={level === s.code_effort ? 'primary' : 'secondary'} onPress={() => choose({ code_effort: level })} />
-          ))}
-          <Box flexGrow={1} />
-          <Button key="band-pane" label="Pane" onPress={() => void $.ui.open({ id: PANE, title: 'gearbox: models now' })} />
-          <Button key="band-popup" label={s.popup === 'off' ? 'Popup' : 'Popup ✓'} onPress={() => choose({ popup: s.popup === 'off' ? 'always' : 'off' })} />
-          <Button
-            key="band-log"
-            label={s.log === 'off' ? 'Log' : 'Log ✓'}
-            onPress={async () => {
-              await choose({ log: s.log === 'off' ? 'on' : 'off' })
-              if (s.log === 'off') {
-                logEvent({ ...(await sessionFacts($, options)), settings: current() })
-                await flushLog($, log)
-              }
-            }}
-          />
-          <Button key="band-settings" label="Settings" onPress={() => void $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })} />
-        </Box>
-        <Box flexDirection="row" columnGap={2}>
-          {shown.map(([k, v, sub, color]) => (
-            <Box flexDirection="column" width={width}>
-              <Text dimColor wrap="truncate">
-                {k}
-              </Text>
-              <Text bold wrap="truncate" {...(color ? { color } : {})}>
-                {v}
-              </Text>
-              <Text dimColor wrap="truncate">
-                {sub}
-              </Text>
-            </Box>
-          ))}
-        </Box>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={3} alignItems="center">
+        <Button key="band-effort" plain label={`• ${s.code_effort}`} onPress={() => choose({ code_effort: nextLevel })} />
+        <Text wrap="truncate">
+          {works ? (
+            <Text bold color={hue(main!)}>
+              {gearText(main!)}{' '}
+            </Text>
+          ) : null}
+          <Text dimColor>{doing}</Text>
+        </Text>
+        {subs.length ? (
+          <Text wrap="truncate">
+            {`${subs.length} agent${subs.length > 1 ? 's' : ''} `}
+            <Text dimColor>{subs.map(([, l]) => gearText(l)).join(' · ')}</Text>
+          </Text>
+        ) : null}
+        {usd !== undefined ? (
+          <Text>
+            {money(usd)}
+            {thisTurn !== undefined && total > 0 ? <Text dimColor>{` +${money(thisTurn)} this turn`}</Text> : null}
+          </Text>
+        ) : null}
+        {turn.why?.[0] ? <Text color="#E9A23B">{turn.why[0]}</Text> : null}
+        <Box flexGrow={1} />
+        <Button key="band-pane" plain label="Pane" onPress={() => void $.ui.open({ id: PANE, title: 'gearbox: models now' })} />
+        <Button key="band-settings" plain label="Settings" onPress={() => void $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })} />
       </Box>
     )
     return below ? (
@@ -872,7 +769,6 @@ export const register: Register = (on, options) => {
       ['Debug log', 'log', ['off', 'on', 'full'], s.log],
       ['Models pane shows', 'pane', ['all', 'running'], s.pane],
       ['Band', 'band', ['on', 'off'], s.band ? 'on' : 'off'],
-      ['Popup', 'popup', ['always', 'agents', 'off'], s.popup],
     ]
     return (
       <Box flexDirection="column" rowGap={1}>
