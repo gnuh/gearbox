@@ -29,7 +29,7 @@ Both appear as rows in `/config` and on the install screen.
 |---|---|---|
 | `code_effort` | `medium` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low` and the hardest `xhigh`; answers and explanations follow their difficulty. gearbox never asks before using your own choice. Anthropic advises `medium` for Opus 5.5, which beats Opus 5 at `high` on coding; pick `xhigh` if you want the most thorough work and accept longer turns. |
 | `steer` | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
-| `navigator` | `haiku` | Model of the subagent that clicks through browser checks and only collects evidence: `haiku` (fastest) or `sonnet` (copes better with complex pages). The main model always does the analysis. |
+| `navigator` | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
 
 ## The rules
 
@@ -48,7 +48,7 @@ In steer mode the model column only picks subagents' models: the session itself 
 
 - **In shift mode the main model only rises, and never to Fable.** Each model switch writes the whole conversation into the new model's cache, so gearbox shifts up when needed and stays there. A toast shows what each shift costs. Effort changes keep the cache. `/clear` starts over.
 - **Fable work runs in a Fable subagent** with a self-contained brief. If you name Fable yourself ("use fable"), that one turn runs on Fable in the main conversation.
-- **Browser checks are two steps.** A navigator subagent (**Haiku** by default, or **Sonnet** with the `navigator` setting) clicks through and only collects evidence: what each page showed, values, console errors and failed requests, with no pass or fail. The main model, a different one, then analyzes that evidence, so no model judges its own clicking. Screenshots never enter the main conversation.
+- **Browser checks are two steps.** A navigator subagent (**Sonnet** by default, or **Haiku** with the `navigator` setting) clicks through and only collects evidence: what each page showed, values, console errors and failed requests, with no pass or fail. The main model, a different one, then analyzes that evidence, so no model judges its own clicking. Screenshots never enter the main conversation.
 - **Long commands** (build, deploy, publish, full test runs, log searches): a **Haiku** subagent runs the exact command and reports only the outcome.
 - **Side tasks** unrelated to your recent messages go to a subagent at their own gear, unless they are quick edits.
 - **Nods** ("ok", "go ahead", "pode seguir") keep the last gear with no survey.
@@ -63,12 +63,12 @@ A prompt with several steps ("go to Jira, check the task, build it, test it in C
 |---|---|---|
 | Read the Jira task | Haiku subagent, returns the task word for word | low |
 | Build the change | main conversation (Opus) | xhigh |
-| Check it in Chrome: navigate | Haiku subagent, evidence only | low |
+| Check it in Chrome: navigate | Sonnet subagent, evidence only | low |
 | Check it in Chrome: analyze | main conversation (Opus) | medium or higher |
 | Run Playwright | Haiku subagent, outcome only | low |
 | Commit | main conversation (Opus) | low |
 
-The main model calls gearbox's `phase` tool as each step starts, and gearbox sets its effort for that step; effort changes keep the prompt cache. Other models come in only as subagents, since switching the main conversation's model mid-turn would restart its cache. The status line shows the step under way, `gearbox ▸ opus·xhigh · step 2/6 build the change`.
+Name a model for a step and it wins over the settings ("navigate with haiku"), but only if the word is in your own text, outside code and quotes. The main model calls gearbox's `phase` tool as each step starts, and gearbox sets its effort for that step; effort changes keep the prompt cache. Other models come in only as subagents, since switching the main conversation's model mid-turn would restart its cache. The status line shows the step under way, `gearbox ▸ opus·xhigh · step 2/6 build the change`.
 
 ## Live readout
 

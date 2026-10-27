@@ -26,7 +26,7 @@ Reply with only a JSON object with these keys:
 "cont": true if the request only continues, approves or repeats the previous turn.
 "ask": the model ("haiku", "sonnet", "opus", "fable") and/or effort ("low", "medium", "high", "xhigh", "max") the person explicitly asks to use, as {"model":...} and/or {"effort":...}; {} if none. Words inside pasted code, logs or quotes are not asks.
 "sure": false if the request is too vague to describe.
-"phases": when the request asks for several distinct steps, list them in order as [{"what": "a few words", "mode": "...", "depth": 0-3}], else []. Modes as above, plus "lookup" (fetch information from a tool or service: a ticket, a page, docs) and "commit" (commit or push). Testing in a browser is "drive"; running a test suite is "wait"; writing tests is "code". List only steps the "request" itself asks for: "earlier" is context, never a source of steps.`
+"phases": when the request asks for several distinct steps, list them in order as [{"what": "a few words", "mode": "...", "depth": 0-3, "ask": "haiku|sonnet|opus"}], else []. Add "ask" to a step only when the request names the model for that step ("navigate with sonnet"). Modes as above, plus "lookup" (fetch information from a tool or service: a ticket, a page, docs) and "commit" (commit or push). Testing in a browser is "drive"; running a test suite is "wait"; writing tests is "code". List only steps the "request" itself asks for: "earlier" is context, never a source of steps.`
 
 export type Reading = {
   reach: 'point' | 'area' | 'system' | 'frontier'
@@ -40,7 +40,7 @@ export type Reading = {
   phases: Phase[]
 }
 
-export type Phase = { what: string; mode: 'lookup' | 'code' | 'answer' | 'drive' | 'wait' | 'commit'; depth: 0 | 1 | 2 | 3 }
+export type Phase = { what: string; mode: 'lookup' | 'code' | 'answer' | 'drive' | 'wait' | 'commit'; depth: 0 | 1 | 2 | 3; ask?: 'haiku' | 'sonnet' | 'opus' }
 const PHASE_MODES = ['lookup', 'code', 'answer', 'drive', 'wait', 'commit']
 
 // The survey's phases, kept only when well formed; at most eight.
@@ -48,7 +48,7 @@ const readPhases = (list: unknown): Phase[] =>
   (Array.isArray(list) ? list : [])
     .filter((p: any) => p && PHASE_MODES.includes(p.mode) && [0, 1, 2, 3].includes(p.depth))
     .slice(0, 8)
-    .map((p: any) => ({ what: String(p.what ?? p.mode).slice(0, 60), mode: p.mode, depth: p.depth }))
+    .map((p: any) => ({ what: String(p.what ?? p.mode).slice(0, 60), mode: p.mode, depth: p.depth, ...(['haiku', 'sonnet', 'opus'].includes(p.ask) ? { ask: p.ask } : {}) }))
 
 const REACHES = ['point', 'area', 'system', 'frontier']
 const MODES = ['code', 'answer', 'drive', 'wait']
@@ -135,16 +135,16 @@ export type Step = { what: string; mode: Phase['mode'] | 'analyze'; by: 'main' |
 
 // Each phase's executor and gear. The main model never changes mid-turn (that would restart the cache), so
 // other models only come in as subagents; effort changes between steps are free.
-// A browser check is two steps: the navigator (Haiku, or Sonnet by setting) only collects evidence, then the main model, a different
+// A browser check is two steps: the navigator (Sonnet, or Haiku by setting) only collects evidence, then the main model, a different
 // one, analyzes it, so no model judges its own clicking.
-export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'haiku'): Step[] =>
-  phases.flatMap(({ what, mode, depth }): Step[] => {
+export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet'): Step[] =>
+  phases.flatMap(({ what, mode, depth, ask }): Step[] => {
     const floor = (e: ModelEffort) => (costly ? upTo(EFFORTS, e, 'medium') : e)
-    if (mode === 'lookup' || mode === 'wait') return [{ what, mode, by: 'agent', gear: { model: 'haiku', effort: 'low' }, mainEffort: 'low' }]
+    if (mode === 'lookup' || mode === 'wait') return [{ what, mode, by: 'agent', gear: { model: ask ?? 'haiku', effort: 'low' }, mainEffort: 'low' }]
     if (mode === 'drive') {
       const judge = floor(upTo(EFFORTS, DEPTH_EFFORT[depth]!, 'medium'))
       return [
-        { what: `${what}: navigate`, mode, by: 'agent', gear: { model: navigator, effort: 'low' }, mainEffort: 'medium' },
+        { what: `${what}: navigate`, mode, by: 'agent', gear: { model: ask ?? navigator, effort: 'low' }, mainEffort: 'medium' },
         { what: `${what}: analyze`, mode: 'analyze', by: 'main', gear: { model: main, effort: judge }, mainEffort: judge },
       ]
     }
@@ -181,11 +181,11 @@ export type Plan = { main: Gear; handoff?: Handoff }
 // Splits a turn between the main conversation and a subagent. `floor` is the main model so far;
 // `hasEarlier` says whether there is earlier work for the request to be unrelated to. With `fixed`, the
 // session keeps that model (steer mode): only effort and handoffs change.
-export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'haiku'): Plan => {
+export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet'): Plan => {
   const base = fixed ?? floor ?? 'sonnet'
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
   const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
-  if (r.mode === 'drive') return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: navigator, effort: 'low' } } }
+  if (r.mode === 'drive') return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: r.ask.model === 'haiku' || r.ask.model === 'sonnet' ? r.ask.model : navigator, effort: 'low' } } }
   if (r.mode === 'wait') return { main: { model: planner, effort: 'low' }, handoff: { kind: 'wait', gear: { model: 'haiku', effort: 'low' } } }
   if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'deep', gear: want } }
   if (r.aside && hasEarlier && want.model !== 'haiku') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'aside', gear: want } }

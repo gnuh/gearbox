@@ -66,7 +66,7 @@ test('consent is needed for fable and the top efforts, once', () => {
 
 test('plan hands tool-heavy, deep and side work to subagents', () => {
   const drive = plan(reading({ mode: 'drive' }), { model: 'sonnet', effort: 'medium' }, 'opus', true)
-  expect(drive).toEqual({ main: { model: 'opus', effort: 'medium' }, handoff: { kind: 'drive', gear: { model: 'haiku', effort: 'low' } } })
+  expect(drive).toEqual({ main: { model: 'opus', effort: 'medium' }, handoff: { kind: 'drive', gear: { model: 'sonnet', effort: 'low' } } })
   const wait = plan(reading({ mode: 'wait', care: 'costly' }), { model: 'opus', effort: 'medium' }, 'sonnet', true)
   expect(wait).toEqual({ main: { model: 'opus', effort: 'low' }, handoff: { kind: 'wait', gear: { model: 'haiku', effort: 'low' } } })
   expect(plan(reading({ reach: 'frontier' }), { model: 'fable', effort: 'high' }, undefined, false).handoff?.kind).toBe('deep')
@@ -111,20 +111,30 @@ test('a multi-step request becomes a route: each step on its own executor and ef
   expect(steps.map(s => `${s.what} → ${s.by} ${label(s.gear)}`)).toEqual([
     'read the Jira task → agent haiku·low',
     'build the change → main opus·xhigh',
-    'check it in Chrome: navigate → agent haiku·low',
+    'check it in Chrome: navigate → agent sonnet·low',
     'check it in Chrome: analyze → main opus·medium',
     'run Playwright → agent haiku·low',
     'commit → main opus·low',
   ])
   const note = routeNote(steps)
   expect(note).toContain('mcp__gearbox__phase')
-  expect(note).toContain('3. check it in Chrome: navigate: start an Agent with model "haiku"')
+  expect(note).toContain('3. check it in Chrome: navigate: start an Agent with model "sonnet"')
   expect(note).toContain('judge pass or fail')
   expect(note).toContain('4. check it in Chrome: analyze: judge the evidence yourself')
 })
 
 test('the navigator setting picks the model that clicks; analysis stays with the main model', () => {
-  const steps = route([{ what: 'check it in Chrome', mode: 'drive', depth: 1 }], 'opus', 'medium', false, 'sonnet')
-  expect(steps.map(s => `${s.by} ${label(s.gear)}`)).toEqual(['agent sonnet·low', 'main opus·medium'])
-  expect(plan(reading({ mode: 'drive' }), { model: 'sonnet', effort: 'medium' }, 'opus', true, 'opus', 'sonnet').handoff?.gear.model).toBe('sonnet')
+  const steps = route([{ what: 'check it in Chrome', mode: 'drive', depth: 1 }], 'opus', 'medium', false, 'haiku')
+  expect(steps.map(s => `${s.by} ${label(s.gear)}`)).toEqual(['agent haiku·low', 'main opus·medium'])
+  expect(plan(reading({ mode: 'drive' }), { model: 'sonnet', effort: 'medium' }, 'opus', true, 'opus', 'haiku').handoff?.gear.model).toBe('haiku')
+  expect(plan(reading({ mode: 'drive' }), { model: 'sonnet', effort: 'medium' }, 'opus', true, 'opus').handoff?.gear.model).toBe('sonnet')
+})
+
+test('a model named for a step wins over the navigator setting', () => {
+  const [nav] = route([{ what: 'check it', mode: 'drive', depth: 1, ask: 'haiku' }], 'opus', 'medium', false, 'sonnet')
+  expect(label(nav!.gear)).toBe('haiku·low')
+  const [look] = route([{ what: 'read it', mode: 'lookup', depth: 0, ask: 'sonnet' }], 'opus', 'medium', false)
+  expect(label(look!.gear)).toBe('sonnet·low')
+  expect(plan(reading({ mode: 'drive', ask: { model: 'haiku' } }), { model: 'sonnet', effort: 'medium' }, 'opus', true, 'opus').handoff?.gear.model).toBe('haiku')
+  expect(readReading('{"reach":"area","depth":1,"phases":[{"what":"x","mode":"drive","depth":1,"ask":"gpt"}]}')?.phases[0]?.ask).toBeUndefined()
 })

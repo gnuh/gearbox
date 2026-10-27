@@ -233,3 +233,11 @@ test('one prompt with several steps: a route, and effort follows the phase tool'
   expect(r.steps[0]).toBe('claude-opus-5-5·low')
   expect(r.dialogs).toHaveLength(0)
 })
+
+test('a model you name for the browser step is used only if your own words say it', async ($: any, on) => {
+  const phases = [{ what: 'check it', mode: 'drive', depth: 1, ask: 'haiku' }, { what: 'read it', mode: 'lookup', depth: 0, ask: 'opus' }]
+  const r = rig(on, [{ reach: 'area', depth: 1, phases } as any], { session: 'claude-opus-5-5' })
+  await $.prompt.submit({ text: 'check the page in the browser using haiku to navigate, then read the ticket', asUser: true })
+  expect(r.notes[0]![0]).toContain('1. check it: navigate: start an Agent with model "haiku"')
+  expect(r.notes[0]![0]).toContain('3. read it: start an Agent with model "haiku"') // opus was never said by the person
+})

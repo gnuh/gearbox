@@ -167,7 +167,7 @@ export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
   const standing: ModelEffort = CODE_EFFORTS.includes(options.code_effort as ModelEffort) ? (options.code_effort as ModelEffort) : 'medium'
   const steers = options.steer !== false
-  const navigator: 'haiku' | 'sonnet' = options.navigator === 'sonnet' ? 'sonnet' : 'haiku'
+  const navigator: 'haiku' | 'sonnet' = options.navigator === 'haiku' ? 'haiku' : 'sonnet'
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
   let enabled = true
@@ -267,7 +267,9 @@ export const register: Register = (on, options) => {
         if (r.phases.length >= 2) {
           // Several steps: one route, each step on its own executor and effort. Fable only as a subagent.
           const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
-          turnRoute = route(r.phases, lead, standing, r.care === 'costly', navigator)
+          // A model named for a step counts only where the person's own words say it.
+          const phases = r.phases.map(ph => ({ ...ph, ask: ph.ask && verifyAsk({ model: ph.ask }, e.text).model === ph.ask ? ph.ask : undefined }))
+          turnRoute = route(phases, lead, standing, r.care === 'costly', navigator)
           for (const s of turnRoute) {
             if (s.by === 'main' && asks && needsConsent(s.gear, ask, previous, standing)) {
               s.gear = await consent($, s.gear)
