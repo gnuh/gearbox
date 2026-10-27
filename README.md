@@ -102,7 +102,7 @@ gearbox shows which model every loop is running on at this moment: the main conv
 
 - **Spinner:** the working loop's line names its model, `Sauteing… on opus` (Claude Code already shows the effort).
 - **Above the prompt:** while subagents run, a chip per live loop, `● main opus·high  ● check it in Chrome haiku·low  ● deploy haiku·low`. It stays empty otherwise.
-- **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested.
+- **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested. **Hide finished** at the top keeps only what is running (the main conversation stays); **Show finished (n)** brings the rest back. The choice is kept; `/gearbox pane running` or `/gearbox pane all` sets it too.
 - **Status line:** the main gear plus the running subagents, `gearbox ▸ opus·high ⇢ 2 agents: sonnet·medium, haiku·low`.
 
 All four read one shared record that is updated when a subagent starts, as each request leaves (so the readout is never a step late), when the reply returns, on each tool call and when a turn ends.
@@ -119,7 +119,7 @@ The rules, your new prompt (up to about 4,000 characters, as JSON), your last th
 | `/gearbox settings` | open the settings panel |
 | `/gearbox log` | show the debug log's path, last decision and last request; `/gearbox log on\|off\|full` turns it on or off |
 | `/gearbox effort <medium\|high\|xhigh>`, `/gearbox navigator <sonnet\|haiku>`, `/gearbox steer <on\|off>`, `/gearbox strict <on\|off>` | change one setting directly |
-| `/gearbox pane` | open the live table of every loop's model |
+| `/gearbox pane` | open the live table of every loop's model; `/gearbox pane running` lists only what is running, `/gearbox pane all` everything |
 | `/gearbox on`, `/gearbox off` | turn gearbox on or off (off leaves every session alone, no readout) |
 | `/gearbox ask on`, `/gearbox ask off` | ask before Fable or xhigh/max |
 | `/gearbox usage` | calls, tokens and estimated cost per model, subagents included |

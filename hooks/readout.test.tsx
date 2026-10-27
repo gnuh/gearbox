@@ -122,3 +122,35 @@ test('/gearbox off clears the readout; /gearbox pane opens it', async ($: any, o
   expect((await ui.find({ type: 'Text' }))?.text).toContain('gearbox is off')
   await ui.unmount()
 })
+
+test('the pane can hide finished subagents and keep only what is running', async ($: any, on) => {
+  bench(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'browser check', 'sonnet')
+  await spawn($, 'deploy', 'haiku')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-check', effort: 'low' })
+  await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await complete($, 'a-check')
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /browser check/ })).toBeDefined() // finished, shown by default
+    expect(JSON.stringify(await ui.find({ key: 'pane-filter' }))).toContain('Hide finished')
+    await ui.unmount()
+  }
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'pane-filter' })
+  await ui.unmount()
+  for (const surface of SURFACES) {
+    const view = await $.ui.mount({ ...PANE, surface })
+    expect(await view.find({ type: 'Text', text: /browser check/ })).toBeUndefined()
+    expect(await view.find({ type: 'Text', text: /deploy/ })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: /^main/ })).toBeDefined()
+    expect(JSON.stringify(await view.find({ key: 'pane-filter' }))).toContain('Show finished (1)')
+    await view.unmount()
+  }
+  expect((await $.command.run({ command: 'gearbox', args: 'pane all' })).text).toBe('gearbox: pane open')
+  const back = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await back.find({ type: 'Text', text: /browser check/ })).toBeDefined()
+  await back.unmount()
+  expect((await $.command.run({ command: 'gearbox', args: 'pane done' })).text).toBe('gearbox: pane takes running or all')
+})
