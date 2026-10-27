@@ -12,7 +12,7 @@ type Rig = { steps: string[]; surveys: any[]; dialogs: string[]; notes: (readonl
 const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choose?: (labels: string[]) => string; earlier?: string[] } = {}): Rig => {
   const r: Rig = { steps: [], surveys: [], dialogs: [], notes: [], kv: new Map() }
   const queue = [...readings]
-  for (const quiet of ['ui.status', 'ui.toast', 'ui.log']) on(quiet, () => ({ value: undefined }))
+  for (const quiet of ['ui.status', 'ui.log']) on(quiet, () => ({ value: undefined }))
   on('ui.panes', () => ({ value: [] }))
   on('store.get', (_: unknown, e: any) => ({ value: r.kv.get(e.key) }))
   on('store.set', (_: unknown, e: any) => (r.kv.set(e.key, e.value), { value: undefined }))
@@ -397,7 +397,7 @@ test('with the log on, a turn records the prompt, the survey, the gear and why, 
   await $.command.run({ command: 'gearbox', args: 'log on' })
   await sayOn($, 'claude-opus-5-5', 'add pagination to the orders list')
   await done($)
-  const ev = events(files).filter(e => e.ev !== 'popup') // the popup has tests of its own
+  const ev = events(files)
   expect(ev.map(e => e.ev)).toEqual(['session', 'prompt', 'survey', 'gear', 'step', 'turn'])
   expect(ev[0]).toMatchObject({ gearbox: '9.9.9', claude: '2.1.311' })
   expect(ev[1]).toMatchObject({ kind: 'typed', chars: 33 })

@@ -52,7 +52,6 @@ A change applies from your next prompt and is kept for later sessions. What you 
 | steer (`/gearbox steer`) | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
 | strict hand-offs (`/gearbox strict`) | on | During a browser-check or long-command step, the main conversation may not drive the browser or run the test, build or deploy command itself: the call is refused with a note naming the subagent to start. Other shell work, like reading a file or a commit whose message mentions a build, still runs: only the command itself counts, not its quoted text. Off lets the model do it itself, at least at medium effort. |
 | band (`/gearbox band`) | on | The band above the prompt (see Live readout). |
-| popup (`/gearbox popup`) | `auto` | `always`: whenever Claude works, a popup with the live model and effort and any subagents; `agents`: only while subagents run; `off`; `auto`: off while the band is on (it shows the same), always otherwise. Quiet while the gearbox pane is open. |
 | debug log (`/gearbox log`) | off | `on` writes what gearbox decides to a log file (below); `full` also keeps the first 200 characters of each prompt. |
 | navigator (`/gearbox navigator`) | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
 
@@ -71,7 +70,7 @@ A change applies from your next prompt and is kept for later sessions. What you 
 
 In steer mode the model column only picks subagents' models: the session itself keeps its model unless you name another ("use sonnet for this"), which moves that one turn.
 
-- **In shift mode the main model only rises, and never to Fable.** Each model switch writes the whole conversation into the new model's cache, so gearbox shifts up when needed and stays there. A toast shows what each shift costs. Effort changes keep the cache. `/clear` starts over.
+- **In shift mode the main model only rises, and never to Fable.** Each model switch writes the whole conversation into the new model's cache, so gearbox shifts up when needed and stays there. The debug log records what each shift costs (`shift` events). Effort changes keep the cache. `/clear` starts over.
 - **Fable work runs in a Fable subagent** with a self-contained brief. If you name Fable yourself ("use fable"), that one turn runs on Fable in the main conversation.
 - **Browser checks are two steps.** A navigator subagent (**Sonnet** by default, or **Haiku** with the `navigator` setting) clicks through and only collects evidence: what each page showed, values, console errors and failed requests, with no pass or fail. The main model, a different one, then analyzes that evidence, so no model judges its own clicking. Screenshots never enter the main conversation.
 - **Long commands** (build, deploy, publish, full test runs, log searches): a **Haiku** subagent runs the exact command and reports only the outcome.
@@ -103,15 +102,12 @@ Name a model for a step and it wins over the settings ("navigate with haiku"), b
 gearbox shows which model every loop is running on at this moment: the main conversation and each subagent, in either mode.
 
 - **Spinner:** the working loop's line names the model and effort of its request in flight, `Sauteing… on opus · xhigh`. Claude Code's own effort display shows the session setting, not what gearbox sent; this one is live.
-- **Band above the prompt** (terminal and desktop app): a row of coding-effort tabs (`medium · high · xhigh`, one click to switch) and buttons (**Pane**, **Popup**, **Log**, **Settings**), then five live columns:
-  - **now**: the model·effort of the main conversation's request in flight, and what it is doing;
-  - **agents**: how many subagents run, and each one's gear;
-  - **this turn**: requests since your last prompt, by model (`opus 6 · sonnet 3 · haiku 2`);
-  - **cost**: the session's cost as `/cost` counts it, a bar per recent turn, this turn's cost and the average;
-  - **why**: the reason for the gear (`code · area`, `route 2/5`, `nod`, `/review`).
-  Bands other mods draw in that slot (ponytail's, say) stay, under gearbox's. A narrow terminal shows three columns (now, agents, cost). The band's own collapse folds it; `/gearbox band off` turns it off.
+- **Band above the prompt** (terminal and desktop app): one slim row, like ponytail's compact band.
+  ```
+  • xhigh   opus·xhigh Edit total.ts   2 agents sonnet·low · haiku·low   $43.66 +$0.18 this turn   code · area      Pane  Settings
+  ```
+  `• xhigh` is your coding effort (press to cycle medium → high → xhigh); then the model·effort of the main conversation's request in flight and what it is doing; the subagents while some run; the session's cost (as `/cost` counts it) and this turn's; why this gear (`code · area`, `route 2/5`, `nod`, `/review`); and two plain actions, **Pane** and **Settings**. Nothing unknown is drawn. Bands other mods draw in that slot (ponytail's, say) stay. `/gearbox band off` turns it off.
 - **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested. **Hide finished** at the top keeps only what is running (the main conversation stays); **Show finished (n)** brings the rest back. The choice is kept; `/gearbox pane running` or `/gearbox pane all` sets it too.
-- **Popup:** whenever Claude is working, a popup (a toast, in the terminal and the desktop app) shows what is running, live. Its first line is the main conversation's model·effort for the request in flight and what it is doing (down to the Bash command, file or URL), `gearbox · opus·xhigh · Edit total.ts`, so a surface that shows one line still shows it; any subagents follow as a tree. Each popup asks for a short stay and is renewed every few seconds while work runs. It follows every request and tool call, and a short "gearbox · done" replaces it when the turn ends. It stays quiet while the gearbox pane is open, which shows the same. `/gearbox popup agents` shows it only while subagents run; `/gearbox popup off` turns it off.
 - **Status line:** the main gear plus the running subagents, `gearbox ▸ opus·high ⇢ 2 agents: sonnet·medium, haiku·low`.
 
 All four read one shared record that is updated when a subagent starts, as each request leaves (so the readout is never a step late), when the reply returns, on each tool call and when a turn ends.
@@ -148,7 +144,7 @@ The survey prompt and the rules are in `hooks/policy.ts` (`SURVEY`, `gearFor`, `
 - `prompt`: its kind (typed, command, notification, ultrathink) and length. The text itself is kept only with `/gearbox log full`, first 200 characters.
 - `survey`: the quick Haiku check's reply, how long it took, and how it was read.
 - `gear`: the gear chosen and why (for example `survey: code, area, depth 1`, `nod: reused the last work gear`, `survey unreadable: previous gear`), plus any hand-off or route.
-- `phase`, `agent` (a subagent re-geared: asked versus set), `strict` (a refused call), `raise` (effort raised because the model did a hand-off step itself), `popup` (what the popup showed, or that it closed).
+- `phase`, `agent` (a subagent re-geared: asked versus set), `strict` (a refused call), `raise` (effort raised because the model did a hand-off step itself), `shift` (in a Haiku session, the main model moving up and what re-caching the conversation cost).
 - `step`: every request, main conversation and subagents: the model and effort gearbox **sent**, what Claude Code's own setting would have sent, the model that answered, and tokens.
 
 `/gearbox log` shows the file's path, the last decision and the last request. Claude Code's own effort display shows its session setting, not what gearbox sent per request; the log's `step` lines show both. `bench/compare.py` reads the log to add the effort sent per request to its comparison. The log stays on your machine; delete the folder whenever you like.
