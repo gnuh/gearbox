@@ -213,3 +213,23 @@ test('usage counts every step when subagent steps end together', async ($: any, 
   await Promise.all(['a', 'b', 'c', 'd'].map(agentId => stepOnce($, { agentId })))
   expect((await $.command.run({ command: 'gearbox', args: 'usage' })).text).toContain('claude-haiku-5-5  4 calls')
 })
+
+test('one prompt with several steps: a route, and effort follows the phase tool', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const phases = [
+    { what: 'read the Jira task', mode: 'lookup', depth: 0 },
+    { what: 'build the change', mode: 'code', depth: 1 },
+    { what: 'check it in Chrome', mode: 'drive', depth: 1 },
+    { what: 'commit', mode: 'commit', depth: 0 },
+  ]
+  const r = rig(on, [{ reach: 'system', depth: 1, phases } as any], { session: 'claude-opus-5-5' })
+  await $.prompt.submit({ text: 'go to Jira, check GAUNTLET-1, build it, test it in Chrome, then commit', asUser: true })
+  expect(r.notes[0]![0]).toContain('1. read the Jira task: start an Agent with model "haiku"')
+  await stepOnce($, { model: 'claude-opus-5-5' }) // step 1 is a lookup: the main loop only briefs, at low
+  for (const [step, effort] of [[2, 'xhigh'], [4, 'medium'], [5, 'low']] as const) {
+    await $.tool.call({ tool: 'mcp__gearbox__phase', step })
+    await stepOnce($, { model: 'claude-opus-5-5' })
+    expect(r.steps.at(-1)).toBe(`claude-opus-5-5·${effort}`)
+  }
+  expect(r.steps[0]).toBe('claude-opus-5-5·low')
+  expect(r.dialogs).toHaveLength(0)
+})

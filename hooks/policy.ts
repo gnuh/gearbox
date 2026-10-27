@@ -25,7 +25,8 @@ Reply with only a JSON object with these keys:
 "aside": true if "earlier" is about some piece of work and this request is a different, unrelated piece of work.
 "cont": true if the request only continues, approves or repeats the previous turn.
 "ask": the model ("haiku", "sonnet", "opus", "fable") and/or effort ("low", "medium", "high", "xhigh", "max") the person explicitly asks to use, as {"model":...} and/or {"effort":...}; {} if none. Words inside pasted code, logs or quotes are not asks.
-"sure": false if the request is too vague to describe.`
+"sure": false if the request is too vague to describe.
+"phases": when the request asks for several distinct steps, list them in order as [{"what": "a few words", "mode": "...", "depth": 0-3}], else []. Modes as above, plus "lookup" (fetch information from a tool or service: a ticket, a page, docs) and "commit" (commit or push). Testing in a browser is "drive"; running a test suite is "wait"; writing tests is "code".`
 
 export type Reading = {
   reach: 'point' | 'area' | 'system' | 'frontier'
@@ -36,7 +37,18 @@ export type Reading = {
   cont: boolean
   ask: Partial<Gear>
   sure: boolean
+  phases: Phase[]
 }
+
+export type Phase = { what: string; mode: 'lookup' | 'code' | 'answer' | 'drive' | 'wait' | 'commit'; depth: 0 | 1 | 2 | 3 }
+const PHASE_MODES = ['lookup', 'code', 'answer', 'drive', 'wait', 'commit']
+
+// The survey's phases, kept only when well formed; at most eight.
+const readPhases = (list: unknown): Phase[] =>
+  (Array.isArray(list) ? list : [])
+    .filter((p: any) => p && PHASE_MODES.includes(p.mode) && [0, 1, 2, 3].includes(p.depth))
+    .slice(0, 8)
+    .map((p: any) => ({ what: String(p.what ?? p.mode).slice(0, 60), mode: p.mode, depth: p.depth }))
 
 const REACHES = ['point', 'area', 'system', 'frontier']
 const MODES = ['code', 'answer', 'drive', 'wait']
@@ -63,6 +75,7 @@ export const readReading = (reply: string): Reading | undefined => {
       ...(EFFORTS.includes(ask.effort) ? { effort: ask.effort } : {}),
     },
     sure: o.sure !== false,
+    phases: readPhases(o.phases),
   }
 }
 
@@ -116,6 +129,52 @@ export const stepDown = (g: Gear): Gear => ({
   effort: g.effort === 'xhigh' || g.effort === 'max' ? 'high' : g.effort,
 })
 
+// One step of a multi-step request: the main conversation does it at `gear.effort`, or a subagent does it
+// on `gear`. `mainEffort` is what the main conversation runs at during the step.
+export type Step = { what: string; mode: Phase['mode'] | 'analyze'; by: 'main' | 'agent'; gear: Gear; mainEffort: ModelEffort }
+
+// Each phase's executor and gear. The main model never changes mid-turn (that would restart the cache), so
+// other models only come in as subagents; effort changes between steps are free.
+// A browser check is two steps: Haiku navigates and only collects evidence, then the main model, a different
+// one, analyzes it, so no model judges its own clicking.
+export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean): Step[] =>
+  phases.flatMap(({ what, mode, depth }): Step[] => {
+    const floor = (e: ModelEffort) => (costly ? upTo(EFFORTS, e, 'medium') : e)
+    if (mode === 'lookup' || mode === 'wait') return [{ what, mode, by: 'agent', gear: { model: 'haiku', effort: 'low' }, mainEffort: 'low' }]
+    if (mode === 'drive') {
+      const judge = floor(upTo(EFFORTS, DEPTH_EFFORT[depth]!, 'medium'))
+      return [
+        { what: `${what}: navigate`, mode, by: 'agent', gear: { model: 'haiku', effort: 'low' }, mainEffort: 'medium' },
+        { what: `${what}: analyze`, mode: 'analyze', by: 'main', gear: { model: main, effort: judge }, mainEffort: judge },
+      ]
+    }
+    const effort = floor(mode === 'commit' || depth === 0 ? 'low' : mode === 'code' ? upTo(EFFORTS, DEPTH_EFFORT[depth]!, standing) : DEPTH_EFFORT[depth]!)
+    return [{ what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }]
+  })
+
+const STEP_TASK: Record<Step['mode'], string> = {
+  lookup: 'that fetches it and returns the full relevant content word for word (title, description, acceptance criteria, comments that change the scope), with nothing summarized away',
+  drive: 'with a checklist you write here first (where to go and what to do); it must not edit files or judge pass or fail, only report per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests',
+  wait: 'that runs only the exact command you settle here, waits until it ends, and answers with passed or failed, the lines that explain a failure, and any link or id it printed',
+  code: '',
+  answer: '',
+  commit: '',
+  analyze: '',
+}
+
+// The route the main model reads beside the prompt. It calls the phase tool as each step starts.
+export const routeNote = (steps: Step[]): string =>
+  [
+    `gearbox route for this request. As you start each step, call the tool mcp__gearbox__phase with its number: gearbox then sets your effort for it. Subagent steps keep their output out of this conversation. Skip a step that turns out unnecessary; judge results and fix problems here.`,
+    ...steps.map((s, i) =>
+      s.by === 'agent'
+        ? `${i + 1}. ${s.what}: start an Agent with model "${s.gear.model}" and effort "${s.gear.effort}" ${STEP_TASK[s.mode]}.`
+        : s.mode === 'analyze'
+          ? `${i + 1}. ${s.what}: judge the evidence yourself against what the change should do (effort ${s.gear.effort}); decide what is broken and fix it here.`
+          : `${i + 1}. ${s.what}: do it yourself (effort ${s.gear.effort}).`,
+    ),
+  ].join('\n')
+
 export type Handoff = { kind: 'drive' | 'wait' | 'aside' | 'deep'; gear: Gear }
 export type Plan = { main: Gear; handoff?: Handoff }
 
@@ -126,7 +185,7 @@ export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlie
   const base = fixed ?? floor ?? 'sonnet'
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
   const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
-  if (r.mode === 'drive') return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: 'sonnet', effort: 'medium' } } }
+  if (r.mode === 'drive') return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: 'haiku', effort: 'low' } } }
   if (r.mode === 'wait') return { main: { model: planner, effort: 'low' }, handoff: { kind: 'wait', gear: { model: 'haiku', effort: 'low' } } }
   if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'deep', gear: want } }
   if (r.aside && hasEarlier && want.model !== 'haiku') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'aside', gear: want } }
@@ -154,10 +213,10 @@ export const handoffNote = ({ kind, gear }: Handoff): string => {
   const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' ? ` and effort "${gear.effort}"` : ''}`
   switch (kind) {
     case 'drive':
-      return `gearbox handoff, browser check: keep the clicking and screenshots out of this conversation.
-1. Write the check here: where to go, what to do, and what each step should show.
-2. Start ${agent} with that checklist. It must not edit files, and it answers step by step: pass or fail, what it saw, console errors.
-3. Read its answer and decide here what is broken and how to fix it.`
+      return `gearbox handoff, browser check: a fast model navigates, and you, a different model, judge what it found.
+1. Write the check here: where to go and what to do, and note for yourself what each step should show.
+2. Start ${agent} with that checklist. It must not edit files or judge pass or fail; it reports per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests.
+3. Analyze that evidence here against what the change should do, decide what is broken, and fix it.`
     case 'wait':
       return `gearbox handoff, long command: keep its output out of this conversation.
 1. Settle the exact command and the directory it runs in here.

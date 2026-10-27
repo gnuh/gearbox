@@ -47,19 +47,34 @@ In steer mode the model column only picks subagents' models: the session itself 
 
 - **In shift mode the main model only rises, and never to Fable.** Each model switch writes the whole conversation into the new model's cache, so gearbox shifts up when needed and stays there. A toast shows what each shift costs. Effort changes keep the cache. `/clear` starts over.
 - **Fable work runs in a Fable subagent** with a self-contained brief. If you name Fable yourself ("use fable"), that one turn runs on Fable in the main conversation.
-- **Browser checks:** the main model writes the checklist, a **Sonnet** subagent clicks through it and reports pass or fail per step, and the main model judges. Screenshots never enter the main conversation.
+- **Browser checks are two steps.** A **Haiku** subagent navigates, because it is fast, and only collects evidence: what each page showed, values, console errors and failed requests, with no pass or fail. The main model, a different one, then analyzes that evidence, so no model judges its own clicking. Screenshots never enter the main conversation.
 - **Long commands** (build, deploy, publish, full test runs, log searches): a **Haiku** subagent runs the exact command and reports only the outcome.
 - **Side tasks** unrelated to your recent messages go to a subagent at their own gear, unless they are quick edits.
 - **Nods** ("ok", "go ahead", "pode seguir") keep the last gear with no survey.
 - **Asking you first.** Before Fable or xhigh/max effort, gearbox asks, offering a cheaper gear. It skips the question when the effort is your own `code_effort`, or when you asked for that model or effort yourself: the survey must report the ask *and* the word must appear in your own text, outside code and quotes.
 - **Hands off otherwise.** Prompts nobody typed (notifications, schedules) run on the current gear without a survey.
 
+## Multi-step requests
+
+A prompt with several steps ("go to Jira, check the task, build it, test it in Chrome and with Playwright, then commit") becomes a numbered route the main model reads, each step with its own executor and effort. For that prompt, on Opus with `code_effort` xhigh:
+
+| Step | Runs on | Effort |
+|---|---|---|
+| Read the Jira task | Haiku subagent, returns the task word for word | low |
+| Build the change | main conversation (Opus) | xhigh |
+| Check it in Chrome: navigate | Haiku subagent, evidence only | low |
+| Check it in Chrome: analyze | main conversation (Opus) | medium or higher |
+| Run Playwright | Haiku subagent, outcome only | low |
+| Commit | main conversation (Opus) | low |
+
+The main model calls gearbox's `phase` tool as each step starts, and gearbox sets its effort for that step; effort changes keep the prompt cache. Other models come in only as subagents, since switching the main conversation's model mid-turn would restart its cache. The status line shows the step under way, `gearbox ▸ opus·xhigh · step 2/6 build the change`.
+
 ## Live readout
 
 gearbox shows which model every loop is running on at this moment: the main conversation and each subagent, in either mode.
 
 - **Spinner:** the working loop's line names its model, `Sauteing… on opus` (Claude Code already shows the effort).
-- **Above the prompt:** while subagents run, a chip per live loop, `● main opus·high  ● browser check sonnet·medium  ● deploy haiku·low`. It stays empty otherwise.
+- **Above the prompt:** while subagents run, a chip per live loop, `● main opus·high  ● check it in Chrome haiku·low  ● deploy haiku·low`. It stays empty otherwise.
 - **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested.
 - **Status line:** the main gear plus the running subagents, `gearbox ▸ opus·high ⇢ 2 agents: sonnet·medium, haiku·low`.
 
