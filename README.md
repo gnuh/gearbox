@@ -31,15 +31,21 @@ Answer `y` to add the marketplace, then pick a scope. The user scope loads gearb
 4. Find **gearbox** in that marketplace's list and choose **Add plugin**.
 5. Start a new session. The status line under the prompt box shows `gearbox ▸ …` once the first turn runs, and `/gearbox` reports the mode and settings.
 
-To set your coding effort or navigator, open `/config` in a session and change gearbox's **Coding effort** and **Browser navigator** rows.
+The desktop app has no screen for gearbox's settings; set them from a shell (see Settings below), then start a new session.
 
 ### After installing
 
-Work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model haiku`) for shift mode. Set your coding effort in `/config` (below). To get a newer version later: `claude plugin update gearbox` from a shell, then `/reload-plugins`.
+Work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model haiku`) for shift mode. Set your coding effort as shown under Settings. To get a newer version later: `claude plugin update gearbox` from a shell, then `/reload-plugins`.
 
 ## Settings
 
-Both appear as rows in `/config` and on the install screen.
+Set them in a terminal session with `/plugin configure gearbox@gearbox`, or from a shell, which also covers the desktop app:
+
+```
+echo '{"code_effort":"xhigh","navigator":"sonnet"}' | claude plugin configure gearbox@gearbox --values-stdin
+```
+
+Settings you leave out keep their values. They apply from the next session you start. `claude plugin configure gearbox@gearbox` lists which are set.
 
 | Setting | Default | |
 |---|---|---|
