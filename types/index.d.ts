@@ -11,7 +11,7 @@ export type GearboxLoop = {
 }
 
 // What the person set through /gearbox; unset keys fall back to the plugin's options, then the defaults.
-export type GearboxSettings = { code_effort?: string; navigator?: string; steer?: boolean; strict?: boolean; log?: string; pane?: string; popup?: boolean }
+export type GearboxSettings = { code_effort?: string; navigator?: string; steer?: boolean; strict?: boolean; log?: string; pane?: string; popup?: boolean | string }
 
 declare module 'claude-code' {
   interface PluginState {
