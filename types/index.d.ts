@@ -10,8 +10,11 @@ export type GearboxLoop = {
   steps: number
 }
 
+// What the person set through /gearbox; unset keys fall back to the plugin's options, then the defaults.
+export type GearboxSettings = { code_effort?: string; navigator?: string; steer?: boolean; strict?: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
-    gearbox: { loops: Shaped<Record<string, GearboxLoop>> }
+    gearbox: { loops: Shaped<Record<string, GearboxLoop>>; settings: Shaped<GearboxSettings> }
   }
 }

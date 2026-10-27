@@ -184,6 +184,13 @@ export const workEffort = (steps: Step[]): ModelEffort =>
 // means it skipped the subagent.
 export const doesHandoffWork = (tool: string) => /^(Bash|PowerShell)$|chrome|playwright|browser|computer/i.test(tool)
 
+// What strict mode keeps out of the main conversation during a hand-off step: driving the browser in a browser
+// check, and the long command itself (a test run, a build, a deploy) in a long-command step. Other shell work,
+// such as reading a file to settle the command, stays allowed.
+export const isBrowserTool = (tool: string) => /chrome|playwright|browser|computer/i.test(tool)
+export const isLongCommand = (command: string) =>
+  /\b(test|tests|e2e|playwright|jest|vitest|cypress|mocha|pytest|build|deploy|publish|release)\b/i.test(command)
+
 export type Handoff = { kind: 'drive' | 'wait' | 'aside' | 'deep'; gear: Gear }
 export type Plan = { main: Gear; handoff?: Handoff }
 

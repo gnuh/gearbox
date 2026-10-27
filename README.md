@@ -41,8 +41,8 @@ Work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model ha
 
 The defaults are ready to use. To change one, type in any session, terminal or desktop app:
 
-- `/gearbox settings`: pick the setting, then its value, from two short questions.
-- Or directly: `/gearbox effort high`, `/gearbox navigator haiku`, `/gearbox steer off`.
+- `/gearbox settings`: a panel with a row of buttons per setting; the value in use is marked, press another to switch.
+- Or directly: `/gearbox effort high`, `/gearbox navigator haiku`, `/gearbox steer off`, `/gearbox strict off`.
 
 A change applies from your next prompt and is kept for later sessions. What you set with `/gearbox` wins over the plugin's own options, which you can also set from a shell (`claude plugin configure gearbox@gearbox --values-stdin`) where you prefer.
 
@@ -50,6 +50,7 @@ A change applies from your next prompt and is kept for later sessions. What you 
 |---|---|---|
 | coding effort (`/gearbox effort`) | `xhigh` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low`; answers and explanations follow their difficulty. gearbox never asks before using it. `xhigh` is the most thorough and makes turns longer; Anthropic suggests `medium` for Opus 5.5, which beats Opus 5 at `high` on coding, if you want faster, cheaper turns. |
 | steer (`/gearbox steer`) | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
+| strict hand-offs (`/gearbox strict`) | on | During a browser-check or long-command step, the main conversation may not drive the browser or run the test, build or deploy command itself: the call is refused with a note naming the subagent to start. Other shell work, like reading a file, still runs. Off lets the model do it itself, at least at medium effort. |
 | navigator (`/gearbox navigator`) | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
 
 ## The rules
@@ -73,7 +74,7 @@ In steer mode the model column only picks subagents' models: the session itself 
 - **Long commands** (build, deploy, publish, full test runs, log searches): a **Haiku** subagent runs the exact command and reports only the outcome.
 - **Side tasks** unrelated to your recent messages go to a subagent at their own gear, unless they are quick edits.
 - **Nods** ("ok", "go ahead", "pode seguir") keep the gear of the last real work with no survey, never the low effort of a turn that only briefed a subagent.
-- **If the model skips a hand-off** and runs a browser check or a long command itself, gearbox raises its effort to at least medium for the rest of that step.
+- **Hand-offs are enforced.** A plain subagent started during a hand-off step runs on that step's model and effort, whatever the call named (typed agents such as Explore keep theirs). With strict hand-offs on, the main conversation cannot drive the browser or run the long command itself during such a step; with it off, doing so raises its effort to at least medium.
 - **Asking you first.** Before Fable or xhigh/max effort, gearbox asks, offering a cheaper gear. It skips the question when the effort is your own `code_effort`, or when you asked for that model or effort yourself: the survey must report the ask *and* the word must appear in your own text, outside code and quotes.
 - **Hands off otherwise.** Prompts nobody typed (notifications, schedules) run on the current gear without a survey.
 
@@ -112,8 +113,8 @@ The rules, your new prompt (up to about 4,000 characters, as JSON), your last th
 | Command | |
 |---|---|
 | `/gearbox` | status: mode, settings, current gear |
-| `/gearbox settings` | change a setting from two short questions |
-| `/gearbox effort <medium\|high\|xhigh>`, `/gearbox navigator <sonnet\|haiku>`, `/gearbox steer <on\|off>` | change one setting directly |
+| `/gearbox settings` | open the settings panel |
+| `/gearbox effort <medium\|high\|xhigh>`, `/gearbox navigator <sonnet\|haiku>`, `/gearbox steer <on\|off>`, `/gearbox strict <on\|off>` | change one setting directly |
 | `/gearbox pane` | open the live table of every loop's model |
 | `/gearbox on`, `/gearbox off` | turn gearbox on or off (off leaves every session alone, no readout) |
 | `/gearbox ask on`, `/gearbox ask off` | ask before Fable or xhigh/max |

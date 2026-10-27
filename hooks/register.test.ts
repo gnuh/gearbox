@@ -266,12 +266,29 @@ test('/gearbox effort, navigator and steer change the settings, over the plugin 
   expect(r.surveys).toHaveLength(2) // steer off: no survey for the third prompt
 })
 
-test('/gearbox settings asks which setting, then its value', async ($: any, on) => {
-  const answers = ['Coding effort (now xhigh)', 'high']
-  const r = rig(on, [], { session: 'claude-opus-5-5', choose: () => answers.shift()! })
-  expect((await $.command.run({ command: 'gearbox', args: 'settings' })).text).toContain('coding effort high')
-  expect(r.dialogs).toEqual(['Which gearbox setting do you want to change?', 'Effort for ordinary coding turns?'])
-  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('/gearbox settings')
+const SETTINGS_PANE = { plugin: 'gearbox', component: 'Pane', requestId: 'gearbox-settings', props: { title: 'gearbox settings', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 12 }, view: {} } } as const
+
+test('/gearbox settings opens a panel of buttons; a press saves the value, on every surface', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  expect((await $.command.run({ command: 'gearbox', args: 'settings' })).text).toContain('settings open')
+  for (const [surface, effort] of [['terminal', 'high'], ['desktop', 'medium']] as const) {
+    const ui = await $.ui.mount({ ...SETTINGS_PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /Coding effort/ })).toBeDefined()
+    await ui.press({ key: `effort-${effort}` })
+    await ui.unmount()
+  }
+  await (await $.ui.mount({ ...SETTINGS_PANE, surface: 'terminal' })).press({ key: 'navigator-haiku' })
+  expect(r.kv.get('settings')).toEqual({ code_effort: 'medium', navigator: 'haiku' })
+  await sayOn($, 'claude-opus-5-5', 'add sorting')
+  expect(r.steps).toEqual(['claude-opus-5-5·medium'])
+  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('coding effort medium · navigator haiku')
+})
+
+test('/gearbox settings says how to set values where the panel has no room', async ($: any, on) => {
+  rig(on, [])
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'narrow' } }))
+  expect((await $.command.run({ command: 'gearbox', args: 'settings' })).text).toContain('/gearbox effort|navigator|steer')
 })
 
 test('a route the model never marks runs at the work effort, and a nod reuses it', async ($: any, on) => {
@@ -290,7 +307,7 @@ test('a hand-off turn does not set what a nod reuses', MEDIUM, async ($: any, on
   expect(r.steps).toEqual(['claude-opus-5-5·high', 'claude-opus-5-5·low', 'claude-opus-5-5·high'])
 })
 
-test('running the command itself instead of the subagent raises the effort', async ($: any, on) => {
+test('with strict off, running the command itself instead of the subagent raises the effort', { options: { strict: false } }, async ($: any, on) => {
   const r = rig(on, [{ mode: 'wait' }, { mode: 'wait' }], { session: 'claude-opus-5-5' })
   on('tool.call', () => ({ result: '' }))
   await sayOn($, 'claude-opus-5-5', 'run the e2e suite')
@@ -300,4 +317,34 @@ test('running the command itself instead of the subagent raises the effort', asy
   await $.tool.call({ tool: 'Agent', description: 'run e2e', prompt: 'p', model: 'haiku' })
   await stepOnce($, { model: 'claude-opus-5-5' })
   expect(r.steps).toEqual(['claude-opus-5-5·low', 'claude-opus-5-5·medium', 'claude-opus-5-5·low', 'claude-opus-5-5·low'])
+})
+
+test('strict hand-offs: the long command and the browser stay with subagents; other work goes on', async ($: any, on) => {
+  const r = rig(on, [{ mode: 'wait' }, { mode: 'drive' }], { session: 'claude-opus-5-5' })
+  const reached: string[] = []
+  on('tool.call', (_: unknown, e: any) => (reached.push(`${e.tool} ${e.command ?? e.url ?? ''}`.trim()), { result: '' }))
+  await sayOn($, 'claude-opus-5-5', 'run the e2e suite')
+  const refused = await $.tool.call({ tool: 'Bash', command: 'npx playwright test' })
+  await $.tool.call({ tool: 'Bash', command: 'cat package.json' })
+  expect(JSON.stringify(refused)).toContain('this step is a hand-off')
+  expect(JSON.stringify(refused)).toContain('model \\"haiku\\"')
+  await sayOn($, 'claude-opus-5-5', 'check the cart page in the browser')
+  const browser = await $.tool.call({ tool: 'mcp__claude-in-chrome__navigate', url: 'http://localhost:3000/cart' })
+  expect(JSON.stringify(browser)).toContain('this step is a hand-off')
+  expect(reached).toEqual(['Bash cat package.json'])
+  expect(r.steps.every(s => s.endsWith('·low') || s.endsWith('·medium'))).toBe(true)
+})
+
+test('a plain subagent in a hand-off runs on the step gear, whatever the call named; typed agents are left alone', async ($: any, on) => {
+  const phases = [{ what: 'read the ticket', mode: 'lookup', depth: 0 }, { what: 'build it', mode: 'code', depth: 1 }, { what: 'run e2e', mode: 'wait', depth: 0 }]
+  rig(on, [{ reach: 'area', depth: 1, phases } as any], { session: 'claude-opus-5-5' })
+  const agents: string[] = []
+  on('tool.call', (_: unknown, e: any) => (agents.push(`${e.subagent_type ?? 'plain'} ${e.model}·${e.effort ?? '-'}`), { result: '' }))
+  await sayOn($, 'claude-opus-5-5', 'read GAUNTLET-1, build it, run the e2e suite')
+  await $.tool.call({ tool: 'Agent', description: 'read', prompt: 'p', model: 'opus' }) // first subagent step: the lookup
+  await $.tool.call({ tool: 'Agent', description: 'look around', prompt: 'p', subagent_type: 'Explore' })
+  await $.tool.call({ tool: 'mcp__gearbox__phase', step: 3 })
+  await $.tool.call({ tool: 'Agent', description: 'e2e', prompt: 'p', model: 'sonnet', effort: 'high' })
+  await $.tool.call({ tool: 'Agent', description: 'extra', prompt: 'p', model: 'sonnet' }) // no hand-off left: as called
+  expect(agents).toEqual(['plain haiku·low', 'Explore undefined·-', 'plain haiku·low', 'plain sonnet·-'])
 })
