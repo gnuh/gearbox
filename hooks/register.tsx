@@ -95,14 +95,25 @@ export const popupText = (loops: Record<string, GearboxLoop>, always = false): s
   const main = loops.main
   const mainWorks = main?.state === 'working'
   if (!running.length && !(always && mainWorks)) return undefined
-  const head = main ? [`main · ${gearText(main)} · ${mainWorks ? (main.doing ?? 'thinking') : main.state}`] : []
+  // The first line carries the main conversation's live gear, so a surface that shows one line still shows it.
+  const head = main ? `gearbox · ${gearText(main)} · ${mainWorks ? (main.doing ?? 'thinking') : main.state}` : 'gearbox'
+  const agents = running.length ? ` · ${running.length} agent${running.length > 1 ? 's' : ''}` : ''
   const rows = running.map(
     ([id, l], i) => `${'   '.repeat(Math.max(0, depth(loops, id) - 1))}${i === running.length - 1 ? '└' : '├'} ${l.label} · ${gearText(l)} · ${l.doing ?? 'thinking'}`,
   )
-  return [`gearbox · ${running.length ? `${running.length} running` : 'working'}`, ...head, ...rows].join('\n')
+  return [head + agents, ...rows].join('\n')
 }
 
-type PopupState = { shown?: string }
+// Each popup asks for a short stay and is sent again while it is up: the desktop app showed a 10-minute toast
+// only once the turn was over, a 2.5-second one at once.
+const POPUP_MS = 15_000
+const RESEND_MS = 8_000
+
+// Whether to send the popup now: a new text, or the same one that has been up long enough to need renewing.
+export const shouldSend = (popup: PopupState, text: string, now: number) =>
+  text !== popup.shown || now - (popup.sentAt ?? 0) >= RESEND_MS
+
+type PopupState = { shown?: string; sentAt?: number }
 export type PopupMode = 'always' | 'agents' | 'off'
 
 // Keeps the popup (a toast, the one floating surface a mod has on every client) in step with what runs. A new
@@ -121,11 +132,13 @@ const refreshPopup = async ($: EngineInterface, popup: PopupState, mode: PopupMo
       popup.shown = undefined
       return
     }
-    if (text === popup.shown) return
+    const now = Date.now()
+    if (!shouldSend(popup, text, now)) return
     if ((await $.ui.panes()).some(p => p.id === PANE && p.isShown)) return
-    $.ui.toast(text, { timeoutMs: 10 * 60_000 })
+    $.ui.toast(text, { timeoutMs: POPUP_MS })
+    if (text !== popup.shown) note({ ev: 'popup', text })
     popup.shown = text
-    note({ ev: 'popup', text })
+    popup.sentAt = now
   } catch (err) {
     $.ui.log(`gearbox: popup not shown: ${err}`, { to: 'debug' })
   }
@@ -374,6 +387,8 @@ export const register: Register = (on, options) => {
     const stored = ((await $.store.get('settings')) ?? {}) as Partial<Settings>
     await update($, SETTINGS, () => stored)
     if (logMode !== 'off') logEvent({ ...(await sessionFacts($, options)), settings: current() })
+    // Renews the popup during long requests, when no event would; idle, it sends nothing.
+    $.clock.every(4_000, () => void refreshPopup($, popup, popupMode, logEvent))
     return next(e)
   })
 
@@ -695,13 +710,14 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // The spinner names the model of the loop that is working: "Sauteing… on opus". The engine already shows effort.
+  // The spinner names the model and effort of the loop's request in flight: "Sauteing… on opus · xhigh". The
+  // surface's own effort display shows the session setting, not what gearbox sent.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (!enabled) return next(e)
     const loops = await read($, LOOPS)
     const loop = loops[e.requestId] ?? loops.main
     if (!loop) return next(e)
-    return next({ ...e, props: { ...e.props, suffix: `${e.props.suffix ?? '…'} on ${family(loop.asked) ?? loop.asked}` } })
+    return next({ ...e, props: { ...e.props, suffix: `${e.props.suffix ?? '…'} on ${family(loop.asked) ?? loop.asked}${loop.effort ? ` · ${loop.effort}` : ''}` } })
   })
 
   // While subagents run, a chip per live loop above the prompt; otherwise the band stays empty.

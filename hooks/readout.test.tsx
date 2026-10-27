@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { shouldSend } from './register'
 
 const USAGE = { input_tokens: 5, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 const SCROLL = { offset: 0, bodyRows: 20 }
@@ -93,10 +94,10 @@ test('the spinner names the working loop’s model', async ($: any, on) => {
   const spinner = { plugin: 'gearbox', component: 'Spinner', props: { word: 'Sauteing', message: null, suffix: '…', mode: 'thinking' } } as const
   for (const surface of SURFACES) {
     const main = await $.ui.mount({ ...spinner, requestId: 'main-turn', surface })
-    expect((await main.find({ type: 'Text' }))?.text).toBe('Sauteing… on opus')
+    expect((await main.find({ type: 'Text' }))?.text).toBe('Sauteing… on opus · high')
     await main.unmount()
     const sub = await $.ui.mount({ ...spinner, requestId: 'a-check', surface })
-    expect((await sub.find({ type: 'Text' }))?.text).toBe('Sauteing… on sonnet')
+    expect((await sub.find({ type: 'Text' }))?.text).toBe('Sauteing… on sonnet · medium')
     await sub.unmount()
   }
 })
@@ -189,12 +190,12 @@ test('popup agents: the running tree, following each change, closing when the ag
   await $.tool.call({ tool: 'Bash', command: 'npm run deploy:staging\necho done', agentId: 'a-deploy' })
   const shown = await popups($)
   expect(shown.at(-1)?.text).toBe(
-    ['gearbox · 2 running', 'main · opus·high · thinking', '├ browser check · sonnet·low · navigate http://localhost:3000/cart', '└ deploy · haiku · Bash: npm run deploy:staging'].join('\n'),
+    ['gearbox · opus·high · thinking · 2 agents', '├ browser check · sonnet·low · navigate http://localhost:3000/cart', '└ deploy · haiku · Bash: npm run deploy:staging'].join('\n'),
   )
   await $.tool.call({ tool: 'Bash', command: 'npm run deploy:staging\necho done', agentId: 'a-deploy' })
   expect(await popups($)).toHaveLength(shown.length) // nothing changed: no new popup
   await complete($, 'a-check')
-  expect((await popups($)).at(-1)?.text).toContain('gearbox · 1 running')
+  expect((await popups($)).at(-1)?.text).toContain('gearbox · opus·high · thinking · 1 agent\n└ deploy')
   await complete($, 'a-deploy')
   expect((await popups($)).at(-1)).toMatchObject({ closed: true })
 })
@@ -221,12 +222,19 @@ test('popup always (the default): the main conversation alone shows its live mod
   const popups = disk(on)
   await $.command.run({ command: 'gearbox', args: 'log on' })
   await step($, 'claude-opus-5-5', { effort: 'xhigh' })
-  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·xhigh · thinking')
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · opus·xhigh · thinking')
   await $.tool.call({ tool: 'Edit', file_path: '/repo/cart/total.ts', old_string: 'a', new_string: 'b' })
-  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·xhigh · Edit total.ts')
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · opus·xhigh · Edit total.ts')
   await step($, 'claude-opus-5-5', { effort: 'low', index: 1 }) // the next request goes out at another effort
-  expect((await popups($)).at(-1)?.text).toBe('gearbox · working\nmain · opus·low · Edit total.ts')
+  expect((await popups($)).at(-1)?.text).toBe('gearbox · opus·low · Edit total.ts')
   await complete($)
   expect((await popups($)).at(-1)).toMatchObject({ closed: true })
   expect((await $.command.run({ command: 'gearbox', args: 'popup sometimes' })).text).toBe('gearbox: popup takes always, agents or off')
+})
+
+test('the popup is renewed while it is up: same text sent again after 8 s, a new text at once', () => {
+  expect(shouldSend({}, 'a', 1000)).toBe(true)
+  expect(shouldSend({ shown: 'a', sentAt: 1000 }, 'a', 5000)).toBe(false)
+  expect(shouldSend({ shown: 'a', sentAt: 1000 }, 'a', 9000)).toBe(true)
+  expect(shouldSend({ shown: 'a', sentAt: 1000 }, 'b', 1001)).toBe(true)
 })
