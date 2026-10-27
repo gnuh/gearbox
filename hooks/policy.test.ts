@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Reading, NOD, doesHandoffWork, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
+import { type Reading, NOD, doesHandoffWork, isLongCommand, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], ...o })
 
@@ -144,4 +144,13 @@ test('workEffort is the highest main step; doesHandoffWork spots tools a subagen
   expect(workEffort(steps)).toBe('xhigh')
   expect(['Bash', 'mcp__claude-in-chrome__navigate', 'mcp__playwright__browser_click'].every(doesHandoffWork)).toBe(true)
   expect(['Read', 'Edit', 'Agent', 'mcp__gearbox__phase'].some(doesHandoffWork)).toBe(false)
+})
+
+test('strict looks at the command, not its quoted text or heredocs', () => {
+  expect(isLongCommand('npm run build')).toBe(true)
+  expect(isLongCommand('npx playwright test --project=chromium')).toBe(true)
+  expect(isLongCommand('git commit -m "gearbox: lição sobre o build e os tests"')).toBe(false)
+  expect(isLongCommand("git commit -m 'deploy notes'")).toBe(false)
+  expect(isLongCommand("git commit -F - <<'EOF'\nrun the e2e build\nEOF")).toBe(false)
+  expect(isLongCommand('cat package.json')).toBe(false)
 })
