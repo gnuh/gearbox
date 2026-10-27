@@ -72,7 +72,8 @@ In steer mode the model column only picks subagents' models: the session itself 
 - **Browser checks are two steps.** A navigator subagent (**Sonnet** by default, or **Haiku** with the `navigator` setting) clicks through and only collects evidence: what each page showed, values, console errors and failed requests, with no pass or fail. The main model, a different one, then analyzes that evidence, so no model judges its own clicking. Screenshots never enter the main conversation.
 - **Long commands** (build, deploy, publish, full test runs, log searches): a **Haiku** subagent runs the exact command and reports only the outcome.
 - **Side tasks** unrelated to your recent messages go to a subagent at their own gear, unless they are quick edits.
-- **Nods** ("ok", "go ahead", "pode seguir") keep the last gear with no survey.
+- **Nods** ("ok", "go ahead", "pode seguir") keep the gear of the last real work with no survey, never the low effort of a turn that only briefed a subagent.
+- **If the model skips a hand-off** and runs a browser check or a long command itself, gearbox raises its effort to at least medium for the rest of that step.
 - **Asking you first.** Before Fable or xhigh/max effort, gearbox asks, offering a cheaper gear. It skips the question when the effort is your own `code_effort`, or when you asked for that model or effort yourself: the survey must report the ask *and* the word must appear in your own text, outside code and quotes.
 - **Hands off otherwise.** Prompts nobody typed (notifications, schedules) run on the current gear without a survey.
 
@@ -89,7 +90,7 @@ A prompt with several steps ("go to Jira, check the task, build it, test it in C
 | Run Playwright | Haiku subagent, outcome only | low |
 | Commit | main conversation (Opus) | low |
 
-Name a model for a step and it wins over the settings ("navigate with haiku"), but only if the word is in your own text, outside code and quotes. The main model calls gearbox's `phase` tool as each step starts, and gearbox sets its effort for that step; effort changes keep the prompt cache. Other models come in only as subagents, since switching the main conversation's model mid-turn would restart its cache. The status line shows the step under way, `gearbox ▸ opus·xhigh · step 2/6 build the change`.
+Name a model for a step and it wins over the settings ("navigate with haiku"), but only if the word is in your own text, outside code and quotes. The main model calls gearbox's `phase` tool as each step starts, and gearbox sets its effort for that step (until the first call, the turn runs at the effort of its main work step); effort changes keep the prompt cache. Other models come in only as subagents, since switching the main conversation's model mid-turn would restart its cache. The status line shows the step under way, `gearbox ▸ opus·xhigh · step 2/6 build the change`.
 
 ## Live readout
 

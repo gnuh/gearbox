@@ -232,7 +232,7 @@ test('one prompt with several steps: a route, and effort follows the phase tool'
     await stepOnce($, { model: 'claude-opus-5-5' })
     expect(r.steps.at(-1)).toBe(`claude-opus-5-5·${effort}`)
   }
-  expect(r.steps[0]).toBe('claude-opus-5-5·low')
+  expect(r.steps[0]).toBe('claude-opus-5-5·xhigh') // before any phase call: the work's effort, not the lookup's
   expect(r.dialogs).toHaveLength(0)
 })
 
@@ -272,4 +272,32 @@ test('/gearbox settings asks which setting, then its value', async ($: any, on) 
   expect((await $.command.run({ command: 'gearbox', args: 'settings' })).text).toContain('coding effort high')
   expect(r.dialogs).toEqual(['Which gearbox setting do you want to change?', 'Effort for ordinary coding turns?'])
   expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('/gearbox settings')
+})
+
+test('a route the model never marks runs at the work effort, and a nod reuses it', async ($: any, on) => {
+  const phases = [{ what: 'read the ticket', mode: 'lookup', depth: 0 }, { what: 'implement it', mode: 'code', depth: 1 }]
+  const r = rig(on, [{ reach: 'area', depth: 1, phases } as any], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'read GAUNTLET-1 and implement it')
+  await sayOn($, 'claude-opus-5-5', 'continue')
+  expect(r.steps).toEqual(['claude-opus-5-5·xhigh', 'claude-opus-5-5·xhigh'])
+})
+
+test('a hand-off turn does not set what a nod reuses', MEDIUM, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }, { mode: 'wait' }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'fix the session expiry bug')
+  await sayOn($, 'claude-opus-5-5', 'run the e2e suite')
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  expect(r.steps).toEqual(['claude-opus-5-5·high', 'claude-opus-5-5·low', 'claude-opus-5-5·high'])
+})
+
+test('running the command itself instead of the subagent raises the effort', async ($: any, on) => {
+  const r = rig(on, [{ mode: 'wait' }, { mode: 'wait' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  await sayOn($, 'claude-opus-5-5', 'run the e2e suite')
+  await $.tool.call({ tool: 'Bash', command: 'npx playwright test' })
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'run the e2e suite again')
+  await $.tool.call({ tool: 'Agent', description: 'run e2e', prompt: 'p', model: 'haiku' })
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  expect(r.steps).toEqual(['claude-opus-5-5·low', 'claude-opus-5-5·medium', 'claude-opus-5-5·low', 'claude-opus-5-5·low'])
 })

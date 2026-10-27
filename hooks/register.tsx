@@ -7,6 +7,10 @@ import {
   type Model,
   type Plan,
   type Step,
+  EFFORTS,
+  doesHandoffWork,
+  upTo,
+  workEffort,
   MODELS,
   NOD,
   STARTER,
@@ -223,6 +227,14 @@ export const register: Register = (on, options) => {
   let turnHandoff: Handoff | undefined
   let turnRoute: Step[] | undefined // the steps of a multi-step request, in order
   let turnStep: number | undefined // the route step under way
+  // The browser check or long command under way that a subagent should be doing, if any.
+  const handoffMode = (): 'drive' | 'wait' | undefined => {
+    if (turnRoute) {
+      const s = turnStep ? turnRoute[turnStep - 1] : undefined
+      return s?.by === 'agent' && (s.mode === 'drive' || s.mode === 'wait') ? s.mode : undefined
+    }
+    return turnHandoff?.kind === 'drive' || turnHandoff?.kind === 'wait' ? turnHandoff.kind : undefined
+  }
   const stepLabel = () => (turnRoute && turnStep ? `step ${turnStep}/${turnRoute.length} ${turnRoute[turnStep - 1]!.what}` : undefined)
   const forget = () => {
     floor = previous = turnGear = turnHandoff = turnRoute = turnStep = undefined
@@ -343,14 +355,17 @@ export const register: Register = (on, options) => {
               s.mainEffort = s.gear.effort
             }
           }
-          p = { main: { model: lead, effort: turnRoute[0]!.mainEffort } }
+          p = { main: { model: lead, effort: workEffort(turnRoute) } }
         } else {
           if (asks && needsConsent(want, ask, previous, standing)) want = await consent($, want)
           p = plan(checked, want, base, earlier.length > 0, fixed, navigator)
         }
       }
     }
-    turnGear = previous = { model: mainModel(p, ask, base), effort: p.main.effort }
+    turnGear = { model: mainModel(p, ask, base), effort: p.main.effort }
+    // What a nod, a notification or an unreadable prompt reuses: the gear of the work itself, never the low
+    // effort of a turn that only briefs a subagent.
+    if (!p.handoff || !previous) previous = turnGear
     turnHandoff = p.handoff
     const note = turnRoute ? routeNote(turnRoute) : p.handoff ? handoffNote(p.handoff) : undefined
     return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
@@ -385,7 +400,15 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    if (enabled) await patch($, e.agentId ?? 'main', l => l && { ...l, doing: String(e.tool) })
+    if (enabled) {
+      await patch($, e.agentId ?? 'main', l => l && { ...l, doing: String(e.tool) })
+      // The model skipped the hand-off and runs the browser or the command itself. Low effort only suits waiting
+      // on a subagent, so the rest of the step runs at least at medium.
+      if (!e.agentId && turnGear && handoffMode() && doesHandoffWork(String(e.tool))) {
+        turnGear = { ...turnGear, effort: upTo(EFFORTS, turnGear.effort, 'medium') }
+        await showStatus($, turnHandoff, stepLabel())
+      }
+    }
     return next(e)
   })
 
