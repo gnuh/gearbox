@@ -20,7 +20,7 @@ const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = ()
   on('store.get', (_: unknown, e: any) => ({ value: kv.get(e.key) }))
   on('store.set', (_: unknown, e: any) => (kv.set(e.key, e.value), { value: undefined }))
   on('session.model', () => ({ value: session }))
-  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'claude-sonnet-5-5', agentId: e.description === 'deploy' ? 'a-deploy' : 'a-check' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'claude-sonnet-5-5', agentId: e.description === 'deploy' ? 'a-deploy' : e.description === 'browser check' ? 'a-check' : `a-${e.description}` }))
   on('tool.call', () => ({ result: {} }))
   on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
   // Stands for the engine's own empty band, drawn when the mod passes.
@@ -61,43 +61,59 @@ test('the pane lists every loop with its model, nested under main', async ($: an
 
 const BAND_AT = (bodyColumns: number) => ({ ...BAND, props: { ...BAND.props, bodyColumns } })
 
-test('the band: one slim row of effort, live gear, agents, cost and why, above what the mods below draw', async ($: any, on) => {
+test('the band: effort tabs, actions, five live columns and a row per subagent, above what the mods below draw', async ($: any, on) => {
   const { setCost } = bench(on)
   setCost(10)
   await $.prompt.submit({ text: '/review', command: { name: 'review', args: '' } } as any) // a person's prompt starts the tally
   await step($, 'claude-opus-5-5')
-  await $.tool.call({ tool: 'Bash', command: 'npm test -- --watch=false' })
   await spawn($, 'deploy', 'haiku')
   await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await $.tool.call({ tool: 'Bash', command: './deploy.sh staging', agentId: 'a-deploy' })
   setCost(10.4)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/opus·high Bash: npm test -- --watch=false/, /1 agent haiku·low/, /\$10\.40 \+\$0\.40 this turn/, /^\/review$/, /engine band/]) {
+    for (const text of [/^coding effort$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /^⇢ deploy$/, /^Bash: \.\/deploy\.sh staging$/, /^1 request {2}\d+s$/, /engine band/]) {
       expect(await ui.find({ type: 'Text', text })).toBeDefined()
     }
-    expect(JSON.stringify(await ui.find({ key: 'band-effort' }))).toContain('• xhigh')
-    expect(await ui.find({ key: 'band-pane' })).toBeDefined()
-    expect(await ui.find({ key: 'band-settings' })).toBeDefined()
+    expect(JSON.stringify(await ui.find({ key: 'band-effort-xhigh' }))).toContain('primary') // the default coding effort
+    for (const key of ['band-pane', 'band-log', 'band-settings']) expect(await ui.find({ key })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /—/ })).toBeUndefined() // nothing unknown drawn as a dash
     await ui.unmount()
   }
   const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-  await ui.press({ key: 'band-effort' }) // xhigh → medium
+  await ui.press({ key: 'band-effort-high' })
   await ui.unmount()
-  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('coding effort medium')
+  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('coding effort high')
 })
 
-test('the band leaves out what it does not know, and steps aside when switched off', async ($: any, on) => {
+test('the band groups subagents by gear, lists five at most, and flags a fallback', async ($: any, on) => {
+  const { status } = bench(on)
+  await step($, 'claude-opus-5-5')
+  for (const n of [1, 2, 3, 4, 5, 6]) await spawn($, `c${n}`, 'sonnet')
+  expect(status.at(-1)).toBe('gearbox ▸ opus·high ⇢ 6 agents: sonnet ×6')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-c1', effort: 'low', answeredBy: 'claude-haiku-5-5' })
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
+    for (const text of [/^6 running$/, /^sonnet·low · sonnet ×5$/, /^⇢ c1$/, /^⇢ c4$/, /answered by haiku/, /^\+2 more · Pane$/]) {
+      expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    }
+    expect(await ui.find({ type: 'Text', text: /^⇢ c5$/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('the band keeps three columns in a narrow terminal, and steps aside when switched off', async ($: any, on) => {
   bench(on)
   await step($, 'claude-opus-5-5')
-  const ui = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /opus·high thinking/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /agent/ })).toBeUndefined() // no subagent runs
-  expect(await ui.find({ type: 'Text', text: /this turn/ })).toBeUndefined() // the tally never started
-  await ui.unmount()
+  const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  expect(await narrow.find({ type: 'Text', text: /^now$/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /^cost$/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /^this turn$/ })).toBeUndefined()
+  expect(await narrow.find({ type: 'Text', text: /^⇢/ })).toBeUndefined() // no subagent runs
+  await narrow.unmount()
   await $.command.run({ command: 'gearbox', args: 'band off' })
   const off = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
-  expect(await off.find({ key: 'band-effort' })).toBeUndefined()
+  expect(await off.find({ type: 'Text', text: /coding effort/ })).toBeUndefined()
   expect(await off.find({ type: 'Text', text: /engine band/ })).toBeDefined()
   await off.unmount()
 })

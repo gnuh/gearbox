@@ -102,13 +102,19 @@ Name a model for a step and it wins over the settings ("navigate with haiku"), b
 gearbox shows which model every loop is running on at this moment: the main conversation and each subagent, in either mode.
 
 - **Spinner:** the working loop's line names the model and effort of its request in flight, `Sauteing… on opus · xhigh`. Claude Code's own effort display shows the session setting, not what gearbox sent; this one is live.
-- **Band above the prompt** (terminal and desktop app): one slim row, like ponytail's compact band.
+- **Band above the prompt** (terminal and desktop app): your coding effort and three actions, five live columns, then a row per running subagent.
   ```
-  • xhigh   opus·xhigh Edit total.ts   2 agents sonnet·low · haiku·low   $43.66 +$0.18 this turn   code · area      Pane  Settings
+  coding effort  medium  high  [xhigh]                                         Pane  Log  Settings
+  now                 agents              this turn            cost                 why
+  opus·medium         3 running           18 requests          $12.87 ▂▅▁▃▆▂▄▅      route 3/5
+  Agent: browser…     sonnet·low ×2 · …   opus 4 · sonnet 11…  this turn $0.57 · ⌀… browser check · sonnet…
+  ⇢ browser check      sonnet·low    Bash: npx playwright test checkout.spec.ts     6 requests  5s
+  ⇢ mobile check       sonnet·low    read_page                                      4 requests  5s
+  ⇢ deploy to staging  haiku·low     Bash: curl -sf staging.shop.test/health        3 requests  4s
   ```
-  `• xhigh` is your coding effort (press to cycle medium → high → xhigh); then the model·effort of the main conversation's request in flight and what it is doing; the subagents while some run; the session's cost (as `/cost` counts it) and this turn's; why this gear (`code · area`, `route 2/5`, `nod`, `/review`); and two plain actions, **Pane** and **Settings**. Nothing unknown is drawn. Bands other mods draw in that slot (ponytail's, say) stay. `/gearbox band off` turns it off.
+  The effort buttons set your coding effort for the next prompt. **now** is the model·effort of the main conversation's request in flight and what it is doing; **agents**, the subagents running, grouped by gear; **this turn**, the requests sent since your prompt, per model; **cost**, the session's cost (as `/cost` counts it) with a bar per recent turn, this turn's and the average; **why**, why this gear (`route 2/5`, `code · area`, `/review`). Each running subagent gets a row: what it was asked to do, its gear, the tool it runs now, the requests it has sent and how long it has run, with `answered by …` when a fallback answered on another model. Up to five rows; past that, the last says `+N more · Pane`. A terminal under 100 columns keeps now, agents and cost. **Pane** opens the models table, **Log** turns the debug log on or off, **Settings** opens the settings panel. Nothing unknown is drawn as a dash. Bands other mods draw in that slot stay, under gearbox's. `/gearbox band off` turns it off.
 - **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested. **Hide finished** at the top keeps only what is running (the main conversation stays); **Show finished (n)** brings the rest back. The choice is kept; `/gearbox pane running` or `/gearbox pane all` sets it too.
-- **Status line:** the main gear plus the running subagents, `gearbox ▸ opus·high ⇢ 2 agents: sonnet·medium, haiku·low`.
+- **Status line:** the main gear plus the running subagents, grouped by gear, `gearbox ▸ opus·high ⇢ 3 agents: sonnet·low ×2, haiku·low`.
 
 All four read one shared record that is updated when a subagent starts, as each request leaves (so the readout is never a step late), when the reply returns, on each tool call and when a turn ends.
 

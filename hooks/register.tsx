@@ -53,7 +53,7 @@ const LOOPS = atom({ plugin: 'gearbox', key: 'loops' } as const, {}, { shape: 'l
 const SETTINGS = atom({ plugin: 'gearbox', key: 'settings' } as const, {}, { shape: 'settings-1' })
 const SETTINGS_PANE = 'gearbox-settings'
 // The band's per-turn numbers. The tag declines what another version stored.
-const TURN = atom({ plugin: 'gearbox', key: 'turn' } as const, { requests: {} }, { shape: 'turn-2' })
+const TURN = atom({ plugin: 'gearbox', key: 'turn' } as const, { requests: {}, costs: [] }, { shape: 'turn-3' })
 
 const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n))
 
@@ -98,10 +98,14 @@ const sessionCost = async ($: EngineInterface) => {
   }
 }
 
-// A person's prompt starts a new tally: no requests yet, and the session's cost as it begins.
+// A person's prompt starts a new tally; the turn before it joins the costs the band's bars draw.
 const startTurnTally = async ($: EngineInterface) => {
   const usd = await sessionCost($)
-  await update($, TURN, () => ({ requests: {}, ...(usd !== undefined ? { costAtStart: usd } : {}) }))
+  await update($, TURN, t => ({
+    requests: {},
+    ...(usd !== undefined ? { costAtStart: usd } : {}),
+    costs: t.costAtStart !== undefined && usd !== undefined && Object.keys(t.requests).length ? [...t.costs, usd - t.costAtStart].slice(-8) : t.costs,
+  }))
 }
 
 const setWhy = ($: EngineInterface, why: [string, string]) => update($, TURN, t => ({ ...t, why }))
@@ -109,8 +113,23 @@ const setWhy = ($: EngineInterface, why: [string, string]) => update($, TURN, t 
 const countRequest = ($: EngineInterface, model: string) =>
   update($, TURN, t => ({ ...t, requests: { ...t.requests, [model]: (t.requests[model] ?? 0) + 1 } }))
 
-const money = (n?: number) => (n === undefined ? '—' : `$${n.toFixed(2)}`)
-const clip1 = (text: string, n: number) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
+const money = (n: number) => `$${n.toFixed(2)}`
+const bars = (vals: number[]) => {
+  const top = Math.max(...vals, 0)
+  return top > 0 ? vals.map(v => '▁▂▃▄▅▆▇█'[Math.min(7, Math.round((v / top) * 7))]).join('') : ''
+}
+// How long a subagent has run: "42s", "3m 05s".
+const ran = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+}
+
+// Loops by gear, each gear once with its count: "sonnet·low ×2, haiku·low".
+export const gearsText = (ls: GearboxLoop[], sep: string) => {
+  const n = new Map<string, number>()
+  for (const l of ls) n.set(gearText(l), (n.get(gearText(l)) ?? 0) + 1)
+  return [...n].map(([g, c]) => (c > 1 ? `${g} ×${c}` : g)).join(sep)
+}
 
 // The status line: the main gear, then the running subagents, else what this turn hands off.
 const showStatus = async ($: EngineInterface, handoff?: Handoff, step?: string) => {
@@ -119,7 +138,7 @@ const showStatus = async ($: EngineInterface, handoff?: Handoff, step?: string) 
   if (!main) return $.ui.status(undefined)
   const subs = working(loops)
   const tail = subs.length
-    ? ` ⇢ ${subs.length} agent${subs.length > 1 ? 's' : ''}: ${subs.map(([, l]) => gearText(l)).join(', ')}`
+    ? ` ⇢ ${subs.length} agent${subs.length > 1 ? 's' : ''}: ${gearsText(subs.map(([, l]) => l), ', ')}`
     : handoff
       ? ` ⇢ ${handoff.gear.model} ${KIND[handoff.kind]}`
       : ''
@@ -360,7 +379,7 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear') {
       forget()
       await update($, LOOPS, () => ({}))
-      await update($, TURN, () => ({ requests: {} }))
+      await update($, TURN, () => ({ requests: {}, costs: [] }))
     }
     logEvent({ ev: 'end', reason: e.reason })
     await flushLog($, log)
@@ -577,7 +596,7 @@ export const register: Register = (on, options) => {
     const started = await next(routed)
     if (enabled && !started.deny && started.agentId) {
       // Its first steps may land before this, so keep what they recorded.
-      await patch($, started.agentId, l => ({ steps: 0, state: 'working', asked: started.model, ...l, label: e.description, parent: e.parentAgentId ?? 'main' }))
+      await patch($, started.agentId, l => ({ steps: 0, state: 'working', asked: started.model, since: Date.now(), ...l, label: e.description, parent: e.parentAgentId ?? 'main' }))
       await showStatus($, turnHandoff, stepLabel())
     }
     return started
@@ -657,7 +676,7 @@ export const register: Register = (on, options) => {
     if (enabled) {
       await patch($, id, l => ({
         label: e.agentId ? 'agent' : 'main',
-        ...(e.agentId ? { parent: 'main' } : {}),
+        ...(e.agentId ? { parent: 'main', since: Date.now() } : {}),
         steps: 0,
         ...l,
         asked: step.model,
@@ -694,8 +713,8 @@ export const register: Register = (on, options) => {
     return next({ ...e, props: { ...e.props, suffix: `${e.props.suffix ?? '…'} on ${family(loop.asked) ?? loop.asked}${loop.effort ? ` · ${loop.effort}` : ''}` } })
   })
 
-  // The band above the prompt: coding-effort tabs and actions, then five live columns of what gearbox does now.
-  // Whatever the mods below draw in this slot (ponytail's band, say) stays, under it.
+  // The band above the prompt: coding-effort tabs and actions, five live columns of what gearbox does now, then a
+  // row per running subagent. Whatever the mods below draw in this slot stays, under it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!enabled || !bandOn || e.props.hasSurvey) return next(e)
     const below = await next(e)
@@ -708,43 +727,91 @@ export const register: Register = (on, options) => {
     const works = main?.state === 'working'
     const subs = working(loops)
     const thisTurn = usd !== undefined && turn.costAtStart !== undefined ? usd - turn.costAtStart : undefined
-    const total = Object.values(turn.requests).reduce((n, c) => n + c, 0)
-    const levels = ['medium', 'high', 'xhigh'] as const
-    const nextLevel = levels[(levels.indexOf(s.code_effort as (typeof levels)[number]) + 1) % levels.length]!
+    const turnCosts = thisTurn !== undefined ? [...turn.costs, thisTurn] : turn.costs
+    const requests = Object.entries(turn.requests)
+    const total = requests.reduce((n, [, c]) => n + c, 0)
+    const avg = turnCosts.length ? turnCosts.reduce((a, b) => a + b, 0) / turnCosts.length : undefined
+    // [label, value, the line under it, the value's colour]. Nothing unknown is drawn as a dash.
+    const cols: [string, string, string, string | undefined][] = [
+      ['now', works ? gearText(main!) : 'idle', works ? (main!.doing ?? 'thinking') : main ? `last ${gearText(main)}` : 'waiting for a prompt', works ? hue(main!) : undefined],
+      ['agents', subs.length ? `${subs.length} running` : 'none', subs.length ? gearsText(subs.map(([, l]) => l), ' · ') : 'no hand-off running', undefined],
+      ['this turn', `${total} request${total === 1 ? '' : 's'}`, requests.map(([m, c]) => `${m} ${c}`).join(' · ') || 'none sent yet', undefined],
+      [
+        'cost',
+        usd !== undefined ? `${money(usd)} ${bars(turnCosts)}`.trim() : 'not known',
+        [thisTurn !== undefined ? `this turn ${money(thisTurn)}` : '', avg !== undefined ? `⌀ ${money(avg)}` : ''].filter(Boolean).join(' · '),
+        undefined,
+      ],
+      ['why', turn.why?.[0] ?? 'waiting for a prompt', turn.why?.[1] ?? '', '#E9A23B'],
+    ]
+    // A narrow terminal keeps what matters most, so nothing wraps.
+    const shown = e.props.bodyColumns < 100 ? [cols[0]!, cols[1]!, cols[3]!] : cols
+    const width = Math.max(12, Math.floor((e.props.bodyColumns - 2 * (shown.length - 1)) / shown.length))
+    // Up to five subagent rows; past that, four and a count of the rest.
+    const listed = subs.length > 5 ? subs.slice(0, 4) : subs
+    const labelW = Math.min(24, Math.max(0, ...listed.map(([, l]) => l.label.length)) + 2)
+    // shortcut: the run time is as of the band's last redraw (any loop's request or tool call); add a clock tick if a long silent tool makes it look stuck.
+    const now = Date.now()
     const choose = async (change: Partial<Settings>) => {
       await saveSetting($, change)
       apply(await loadSettings($, options))
     }
-    const doing = works ? clip1(main!.doing ?? 'thinking', 40) : main ? `idle · last ${gearText(main)}` : 'idle'
-    // One slim row, like ponytail's compact band: the coding effort (press to cycle), the live gear and what it does,
-    // subagents only while some run, cost, why, then two plain actions. Nothing unknown is drawn as a dash.
     const mine = (
-      <Box flexDirection="row" flexWrap="wrap" columnGap={3} alignItems="center">
-        <Button key="band-effort" plain label={`• ${s.code_effort}`} onPress={() => choose({ code_effort: nextLevel })} />
-        <Text wrap="truncate">
-          {works ? (
-            <Text bold color={hue(main!)}>
-              {gearText(main!)}{' '}
-            </Text>
-          ) : null}
-          <Text dimColor>{doing}</Text>
-        </Text>
-        {subs.length ? (
-          <Text wrap="truncate">
-            {`${subs.length} agent${subs.length > 1 ? 's' : ''} `}
-            <Text dimColor>{subs.map(([, l]) => gearText(l)).join(' · ')}</Text>
-          </Text>
-        ) : null}
-        {usd !== undefined ? (
-          <Text>
-            {money(usd)}
-            {thisTurn !== undefined && total > 0 ? <Text dimColor>{` +${money(thisTurn)} this turn`}</Text> : null}
-          </Text>
-        ) : null}
-        {turn.why?.[0] ? <Text color="#E9A23B">{turn.why[0]}</Text> : null}
-        <Box flexGrow={1} />
-        <Button key="band-pane" plain label="Pane" onPress={() => void $.ui.open({ id: PANE, title: 'gearbox: models now' })} />
-        <Button key="band-settings" plain label="Settings" onPress={() => void $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })} />
+      <Box flexDirection="column">
+        <Box flexDirection="row" columnGap={1} alignItems="center">
+          <Text dimColor>coding effort</Text>
+          {(['medium', 'high', 'xhigh'] as const).map(level => (
+            <Button key={`band-effort-${level}`} label={level} variant={level === s.code_effort ? 'primary' : 'secondary'} onPress={() => choose({ code_effort: level })} />
+          ))}
+          <Box flexGrow={1} />
+          <Button key="band-pane" label="Pane" onPress={() => void $.ui.open({ id: PANE, title: 'gearbox: models now' })} />
+          <Button
+            key="band-log"
+            label={s.log === 'off' ? 'Log' : 'Log ✓'}
+            onPress={async () => {
+              await choose({ log: s.log === 'off' ? 'on' : 'off' })
+              if (s.log === 'off') {
+                logEvent({ ...(await sessionFacts($, options)), settings: current() })
+                await flushLog($, log)
+              }
+            }}
+          />
+          <Button key="band-settings" label="Settings" onPress={() => void $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })} />
+        </Box>
+        <Box flexDirection="row" columnGap={2}>
+          {shown.map(([k, v, sub, color]) => (
+            <Box flexDirection="column" width={width}>
+              <Text dimColor wrap="truncate">
+                {k}
+              </Text>
+              <Text bold wrap="truncate" {...(color ? { color } : {})}>
+                {v}
+              </Text>
+              <Text dimColor wrap="truncate">
+                {sub}
+              </Text>
+            </Box>
+          ))}
+        </Box>
+        {listed.map(([id, l]) => (
+          <Box key={`band-agent-${id}`} flexDirection="row" columnGap={2}>
+            <Box width={labelW} flexShrink={0}>
+              <Text wrap="truncate">{`⇢ ${l.label}`}</Text>
+            </Box>
+            <Box width={14} flexShrink={0}>
+              <Text bold wrap="truncate" color={hue(l)}>
+                {gearText(l)}
+              </Text>
+            </Box>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text dimColor wrap="truncate">
+                {swapped(l) ? `${l.doing ?? 'thinking'} · answered by ${family(l.answered!) ?? l.answered}` : (l.doing ?? 'thinking')}
+              </Text>
+            </Box>
+            <Text dimColor>{`${l.steps} request${l.steps === 1 ? '' : 's'}${l.since !== undefined ? `  ${ran(now - l.since)}` : ''}`}</Text>
+          </Box>
+        ))}
+        {subs.length > listed.length ? <Text dimColor>{`+${subs.length - listed.length} more · Pane`}</Text> : null}
       </Box>
     )
     return below ? (
