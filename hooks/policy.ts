@@ -17,16 +17,21 @@ export const STARTER: Gear = { model: 'sonnet', effort: 'medium' }
 // The survey describes a request; it never picks a model. The mapping from description to gear is code below.
 export const SURVEY = `You describe a request that a person sent to a coding assistant. Do not answer or perform it.
 The input is JSON: "request" is the new message, "earlier" lists the person's recent messages (may be empty), "previous" is how the last turn was run (may be null).
-Reply with only a JSON object with these keys:
-"reach": how much of the project the work must understand. "point": one spot (a question, a lookup, a rename, a one-line edit). "area": one feature or a few related files (build a feature, fix a contained bug, write tests, explain code). "system": many files, or a bug whose location is unknown. "frontier": open-ended (designing a system, research, inventing an algorithm).
-"care": "costly" if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, deleting or migrating data), else "routine".
-"depth": how much careful reasoning correctness needs. 0 mechanical, 1 ordinary, 2 subtle (concurrency, time zones, money arithmetic, cache or state invalidation, changing error or async behavior), 3 exceptionally hard.
-"mode": what the turn will mostly do. "code": write or change code. "answer": explain, answer, review or plan without changing code. "drive": operate a browser or an app's UI to check behavior. "wait": run one long command and wait for it (build, deploy, publish, a full test run, a log search). Committing or pushing alone is "code".
-"aside": true if "earlier" is about some piece of work and this request is a different, unrelated piece of work.
-"cont": true if the request only continues, approves or repeats the previous turn.
-"ask": the model ("haiku", "sonnet", "opus", "fable") and/or effort ("low", "medium", "high", "xhigh", "max") the person explicitly asks to use, as {"model":...} and/or {"effort":...}; {} if none. Words inside pasted code, logs or quotes are not asks.
-"sure": false if the request is too vague to describe.
-"phases": when the request asks for several distinct steps, list them in order as [{"what": "a few words", "mode": "...", "depth": 0-3, "ask": "haiku|sonnet|opus"}], else []. Add "ask" to a step only when the request names the model for that step ("navigate with sonnet"). Modes as above, plus "lookup" (fetch information from a tool or service: a ticket, a page, docs, or a search of notes such as an Obsidian vault) and "commit" (commit or push). Testing in a browser is "drive"; running a test suite is "wait"; writing tests is "code". List only steps the "request" itself asks for: "earlier" is context, never a source of steps.`
+
+Reply with exactly one JSON object and nothing else: no notes, no corrections, no other keys. For example:
+{"reach":"area","care":"routine","depth":1,"mode":"code","aside":false,"cont":false,"ask":{},"sure":true,"phases":[]}
+
+The keys and the values each may take:
+- reach: how much of the project the work must understand. One of: point (one spot: a question, a lookup, a rename, a one-line edit); area (one feature or a few related files: build a feature, fix a contained bug, write tests, explain code); system (many files, or a bug whose location is unknown); frontier (open-ended: designing a system, research, inventing an algorithm).
+- care: costly if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, deleting or migrating data), else routine.
+- depth: how much careful reasoning correctness needs, a number. 0 mechanical, 1 ordinary, 2 subtle (concurrency, time zones, money arithmetic, cache or state invalidation, changing error or async behavior), 3 exceptionally hard.
+- mode: what the turn will mostly do. One of: code (write or change code; committing or pushing alone is code too); answer (explain, answer, look something up, review or plan without changing code); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search).
+- aside: true if "earlier" is about some piece of work and this request is a different, unrelated piece of work.
+- cont: true if the request only continues, approves or repeats the previous turn.
+- ask: the model (haiku, sonnet, opus, fable) and/or effort (low, medium, high, xhigh, max) the person explicitly asks to use, as {"model":"..."} and/or {"effort":"..."}; {} if none. Words inside pasted code, logs or quotes are not asks.
+- sure: false only if the request is too vague to describe at all; otherwise true, with your best guess.
+- phases: when the request asks for several distinct steps, list them in order as [{"what":"a few words","mode":"...","depth":1}], else []. A step's mode is one of the modes above, or lookup (fetch information from a tool or service: a ticket, a page, docs, or a search of notes such as an Obsidian vault) or commit (commit or push). Testing in a browser is drive; running a test suite is wait; writing tests is code. Add "ask":"haiku|sonnet|opus" to a step only when the request names the model for that step ("navigate with sonnet"). List only steps the "request" itself asks for: "earlier" is context, never a source of steps.
+`
 
 export type Reading = {
   reach: 'point' | 'area' | 'system' | 'frontier'
@@ -54,20 +59,44 @@ const REACHES = ['point', 'area', 'system', 'frontier']
 const MODES = ['code', 'answer', 'drive', 'wait']
 
 // The survey's reply as a reading: undefined without a valid reach and depth; other keys fall back to plain values.
-export const readReading = (reply: string): Reading | undefined => {
-  let o: any
-  try {
-    o = JSON.parse(reply.slice(reply.indexOf('{'), reply.lastIndexOf('}') + 1))
-  } catch {
-    return undefined
+// Every top-level {...} in a reply, in order: a model that corrects itself writes more than one.
+export const jsonObjects = (text: string): string[] => {
+  const found: string[] = []
+  let depth = 0
+  let start = -1
+  let quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (quoted) {
+      if (c === '\\') i++
+      else if (c === '"') quoted = false
+    } else if (c === '"') quoted = true
+    else if (c === '{' && depth++ === 0) start = i
+    else if (c === '}' && depth > 0 && --depth === 0) found.push(text.slice(start, i + 1))
   }
+  return found
+}
+
+// The survey's reply as a reading: its last valid object, so a reply that corrects itself is read by its correction.
+export const readReading = (reply: string): Reading | undefined => {
+  for (const candidate of jsonObjects(reply).reverse()) {
+    try {
+      const reading = toReading(JSON.parse(candidate))
+      if (reading) return reading
+    } catch {}
+  }
+  return undefined
+}
+
+const toReading = (o: any): Reading | undefined => {
   if (!o || !REACHES.includes(o.reach) || ![0, 1, 2, 3].includes(o.depth)) return undefined
   const ask = o.ask && typeof o.ask === 'object' ? o.ask : {}
   return {
     reach: o.reach,
     care: o.care === 'costly' ? 'costly' : 'routine',
     depth: o.depth,
-    mode: MODES.includes(o.mode) ? o.mode : 'code',
+    // A single-step lookup is answering: it reads, it changes nothing.
+    mode: o.mode === 'lookup' ? 'answer' : MODES.includes(o.mode) ? o.mode : 'code',
     aside: o.aside === true,
     cont: o.cont === true,
     ask: {

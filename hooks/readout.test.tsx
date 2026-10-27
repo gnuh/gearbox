@@ -7,12 +7,15 @@ const PANE = { plugin: 'gearbox', component: 'Pane', requestId: 'gearbox', props
 const SURFACES = ['terminal', 'desktop'] as const
 
 // The engine beneath the mod, faked for a session that is not on Haiku: gearbox only watches here.
-const bench = (on: any, session = 'claude-opus-5-5') => {
+const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = () => []) => {
   const kv = new Map<string, unknown>()
   const status: (string | undefined)[] = []
-  for (const quiet of ['ui.toast', 'ui.log']) on(quiet, () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.toast', (_: unknown, e: any) => (toasts.push(e.text), { value: undefined }))
   on('ui.status', (_: unknown, e: any) => (status.push(e.text), { value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: panes() }))
   on('store.get', (_: unknown, e: any) => ({ value: kv.get(e.key) }))
   on('store.set', (_: unknown, e: any) => (kv.set(e.key, e.value), { value: undefined }))
   on('session.model', () => ({ value: session }))
@@ -27,7 +30,7 @@ const bench = (on: any, session = 'claude-opus-5-5') => {
   on('turn.step', async function* (_: unknown, e: any) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, model: e.answeredBy ?? e.model } }
   })
-  return { status }
+  return { status, toasts }
 }
 
 const step = async ($: any, model: string, extra: object = {}) => {
@@ -153,4 +156,61 @@ test('the pane can hide finished subagents and keep only what is running', async
   expect(await back.find({ type: 'Text', text: /browser check/ })).toBeDefined()
   await back.unmount()
   expect((await $.command.run({ command: 'gearbox', args: 'pane done' })).text).toBe('gearbox: pane takes running or all')
+})
+
+
+// A file system and session id beneath the mod, so the popup can be checked through gearbox's debug log.
+const disk = (on: any) => {
+  const files = new Map<string, string>()
+  on('fs.write', (_: unknown, e: any) => (files.set(e.path, e.text), { value: undefined }))
+  on('fs.exists', (_: unknown, e: any) => ({ value: files.has(e.path) }))
+  on('fs.read', (_: unknown, e: any) => ({ value: e.path.endsWith('plugin.json') ? '{"version":"9.9.9"}' : files.get(e.path) ?? '' }))
+  on('env.get', () => ({ value: '/home/tester' }))
+  on('session.id', () => ({ value: 's-1' }))
+  on('session.version', () => ({ value: { version: '2.1.311', base: '2.1.311' } }))
+  return async ($: any) => {
+    await $.command.run({ command: 'gearbox', args: 'log' }) // writes what is pending
+    const body = files.get('/home/tester/.claude/gearbox/logs/s-1.jsonl') ?? ''
+    return body.trim().split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(r => r.ev === 'popup')
+  }
+}
+
+test('the popup shows the running tree, follows each change, and closes when the agents finish', async ($: any, on) => {
+  bench(on)
+  const popups = disk(on)
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await step($, 'claude-opus-5-5')
+  expect(await popups($)).toEqual([]) // the main conversation alone: the status line covers it
+  await spawn($, 'browser check', 'sonnet')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-check', effort: 'low' })
+  await $.tool.call({ tool: 'mcp__claude-in-chrome__navigate', url: 'http://localhost:3000/cart', agentId: 'a-check' })
+  await spawn($, 'deploy', 'haiku')
+  await $.tool.call({ tool: 'Bash', command: 'npm run deploy:staging\necho done', agentId: 'a-deploy' })
+  const shown = await popups($)
+  expect(shown.at(-1)?.text).toBe(
+    ['gearbox · 2 running', 'main · opus·high · thinking', '├ browser check · sonnet·low · navigate http://localhost:3000/cart', '└ deploy · haiku · Bash: npm run deploy:staging'].join('\n'),
+  )
+  await $.tool.call({ tool: 'Bash', command: 'npm run deploy:staging\necho done', agentId: 'a-deploy' })
+  expect(await popups($)).toHaveLength(shown.length) // nothing changed: no new popup
+  await complete($, 'a-check')
+  expect((await popups($)).at(-1)?.text).toContain('gearbox · 1 running')
+  await complete($, 'a-deploy')
+  expect((await popups($)).at(-1)).toMatchObject({ closed: true })
+})
+
+test('the popup stays quiet while the gearbox pane is shown, and when switched off', async ($: any, on) => {
+  let paneShown = true
+  bench(on, 'claude-opus-5-5', () => (paneShown ? [{ id: 'gearbox', title: 'gearbox: models now', isShown: true, isFocused: false, isPlaced: true }] : []))
+  const popups = disk(on)
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'browser check', 'sonnet')
+  expect(await popups($)).toEqual([])
+  paneShown = false
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-check', effort: 'low' })
+  expect((await popups($)).at(-1)?.text).toContain('browser check')
+  expect((await $.command.run({ command: 'gearbox', args: 'popup off' })).text).toContain('popup off')
+  const before = (await popups($)).length
+  await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a-check' })
+  expect(await popups($)).toHaveLength(before)
 })

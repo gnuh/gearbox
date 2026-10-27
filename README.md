@@ -51,6 +51,7 @@ A change applies from your next prompt and is kept for later sessions. What you 
 | coding effort (`/gearbox effort`) | `xhigh` | Effort for ordinary coding turns: `medium`, `high` or `xhigh`. Trivial turns still run `low`; answers and explanations follow their difficulty. gearbox never asks before using it. `xhigh` is the most thorough and makes turns longer; Anthropic suggests `medium` for Opus 5.5, which beats Opus 5 at `high` on coding, if you want faster, cheaper turns. |
 | steer (`/gearbox steer`) | on | Steer sessions not on Haiku. Off leaves them alone apart from the readout. |
 | strict hand-offs (`/gearbox strict`) | on | During a browser-check or long-command step, the main conversation may not drive the browser or run the test, build or deploy command itself: the call is refused with a note naming the subagent to start. Other shell work, like reading a file or a commit whose message mentions a build, still runs: only the command itself counts, not its quoted text. Off lets the model do it itself, at least at medium effort. |
+| popup (`/gearbox popup`) | on | While subagents run, a popup with the tree of what is running (see Live readout). Quiet while the gearbox pane is open. |
 | debug log (`/gearbox log`) | off | `on` writes what gearbox decides to a log file (below); `full` also keeps the first 200 characters of each prompt. |
 | navigator (`/gearbox navigator`) | `sonnet` | Model of the subagent that clicks through browser checks and only collects evidence: `sonnet` or `haiku` (cheaper). In a side-by-side run on one page both gave identical, correct evidence; Sonnet took 78 s against Haiku's 84 s and Haiku lost a tab once. The main model always does the analysis. |
 
@@ -103,13 +104,14 @@ gearbox shows which model every loop is running on at this moment: the main conv
 - **Spinner:** the working loop's line names its model, `Sauteing… on opus` (Claude Code already shows the effort).
 - **Above the prompt:** while subagents run, a chip per live loop, `● main opus·high  ● check it in Chrome haiku·low  ● deploy haiku·low`. It stays empty otherwise.
 - **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested. **Hide finished** at the top keeps only what is running (the main conversation stays); **Show finished (n)** brings the rest back. The choice is kept; `/gearbox pane running` or `/gearbox pane all` sets it too.
+- **Popup:** while subagents run, a popup (a toast, in the terminal and the desktop app) shows the tree of what is running: main, then each subagent with its model·effort and what it is doing, down to the Bash command, file or URL. It follows every change and is replaced by a short "subagents finished" when the last one ends. It stays quiet while the gearbox pane is open, which shows the same; `/gearbox popup off` turns it off.
 - **Status line:** the main gear plus the running subagents, `gearbox ▸ opus·high ⇢ 2 agents: sonnet·medium, haiku·low`.
 
 All four read one shared record that is updated when a subagent starts, as each request leaves (so the readout is never a step late), when the reply returns, on each tool call and when a turn ends.
 
 ## What the survey sees
 
-The rules, your new prompt (up to about 4,000 characters, as JSON), your last three messages (200 characters each), and the previous gear. Never files, tool output or the model's replies. It is one Haiku call at low effort, about a second per prompt. If the reply is unusable, the turn keeps the previous gear (sonnet · medium on a first prompt).
+The rules, your new prompt (up to about 4,000 characters, as JSON), your last three messages (200 characters each), and the previous gear. Never files, tool output or the model's replies. It is one Haiku call at low effort, about a second per prompt, with no cap on the length of Haiku's answer. If Haiku corrects itself mid-reply, its corrected answer is used. If it is unsure, its best guess sets the effort but nothing is handed off; if its reply is unusable, the turn keeps the previous gear, or your coding effort on a first prompt.
 
 ## Commands
 
@@ -139,7 +141,7 @@ The survey prompt and the rules are in `hooks/policy.ts` (`SURVEY`, `gearFor`, `
 - `prompt`: its kind (typed, command, notification, ultrathink) and length. The text itself is kept only with `/gearbox log full`, first 200 characters.
 - `survey`: the quick Haiku check's reply, how long it took, and how it was read.
 - `gear`: the gear chosen and why (for example `survey: code, area, depth 1`, `nod: reused the last work gear`, `survey unreadable: previous gear`), plus any hand-off or route.
-- `phase`, `agent` (a subagent re-geared: asked versus set), `strict` (a refused call), `raise` (effort raised because the model did a hand-off step itself).
+- `phase`, `agent` (a subagent re-geared: asked versus set), `strict` (a refused call), `raise` (effort raised because the model did a hand-off step itself), `popup` (what the popup showed, or that it closed).
 - `step`: every request, main conversation and subagents: the model and effort gearbox **sent**, what Claude Code's own setting would have sent, the model that answered, and tokens.
 
 `/gearbox log` shows the file's path, the last decision and the last request. Claude Code's own effort display shows its session setting, not what gearbox sent per request; the log's `step` lines show both. `bench/compare.py` reads the log to add the effort sent per request to its comparison. The log stays on your machine; delete the folder whenever you like.
