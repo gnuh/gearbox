@@ -1,7 +1,10 @@
 {
   "name": "gearbox",
-  "version": "0.1.0",
-  "description": "Haiku sessions shift gears per prompt: each turn runs on the model and effort it needs, and tool-heavy work goes to cheap subagents.",
-  "author": { "name": "Magno Chiabai" },
-  "license": "MIT"
+  "version": "0.2.0",
+  "description": "Haiku sessions shift gears per prompt, and a live readout shows which model every agent and subagent runs on.",
+  "author": {
+    "name": "Magno Chiabai"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
 }

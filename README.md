@@ -34,7 +34,18 @@ Then start a session on Haiku (`/model haiku`) and work as usual.
 - **Side tasks** unrelated to your recent messages go to a subagent at their own gear, unless they are quick edits.
 - **Nods** ("ok", "go ahead", "pode seguir") keep the last gear with no survey.
 - **Asking you first.** Before Fable or xhigh/max effort, gearbox asks, offering a cheaper gear. It skips the question when you asked for that model or effort yourself: the survey must report the ask *and* the word must appear in your own text, outside code and quotes.
-- **Hands off otherwise.** Nothing happens unless the session's model is Haiku. Prompts nobody typed (notifications, schedules) run on the current main model without a survey.
+- **Hands off otherwise.** Routing happens only when the session's model is Haiku (the readout below works in any session). Prompts nobody typed (notifications, schedules) run on the current main model without a survey.
+
+## Live readout
+
+gearbox shows which model every loop is running on at this moment: the main conversation and each subagent. It does this in any session while gearbox is on; routing still needs Haiku.
+
+- **Spinner:** the working loop's line names its model, `Sauteing… on opus` (Claude Code already shows the effort).
+- **Above the prompt:** while subagents run, a chip per live loop, `● main opus·high  ● browser check sonnet·medium  ● deploy haiku·low`. It stays empty otherwise.
+- **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested.
+- **Status line:** the main gear plus the running subagents, `gearbox ▸ opus·high ⇢ 2 agents: sonnet·medium, haiku·low`.
+
+All four read one shared record that is updated when a subagent starts, as each request leaves (so the readout is never a step late), when the reply returns, on each tool call and when a turn ends.
 
 ## What the survey sees
 
@@ -45,16 +56,17 @@ The rules, your new prompt (up to about 4,000 characters, as JSON), your last th
 | Command | |
 |---|---|
 | `/gearbox` | status |
-| `/gearbox on`, `/gearbox off` | turn gearbox on or off (off is plain Haiku) |
+| `/gearbox pane` | open the live table of every loop's model |
+| `/gearbox on`, `/gearbox off` | turn gearbox on or off (off is plain Haiku, no readout) |
 | `/gearbox ask on`, `/gearbox ask off` | ask before Fable or xhigh/max |
 | `/gearbox usage` | calls, tokens and estimated cost per model, subagents included |
 | `/gearbox usage reset` | clear the usage ledger |
 
-The status line shows the gear, for example `gearbox ▸ opus·medium ⇢ sonnet browser check`. Each survey reply goes to the debug log (`claude --debug`).
+Each survey reply goes to the debug log (`claude --debug`).
 
 ## Tuning
 
-The survey prompt and the rules are in `hooks/policy.ts` (`SURVEY`, `gearFor`, `plan`). The prices behind the cost estimates are `PRICES` in `hooks/register.ts`. Run the tests with `claude plugin test .`.
+The survey prompt and the rules are in `hooks/policy.ts` (`SURVEY`, `gearFor`, `plan`). The prices behind the cost estimates are `PRICES` in `hooks/register.tsx`. Run the tests with `claude plugin test .`.
 
 ## License
 
