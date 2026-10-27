@@ -13,6 +13,7 @@ const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choos
   const r: Rig = { steps: [], surveys: [], dialogs: [], notes: [], kv: new Map() }
   const queue = [...readings]
   for (const quiet of ['ui.status', 'ui.toast', 'ui.log']) on(quiet, () => ({ value: undefined }))
+  on('ui.panes', () => ({ value: [] }))
   on('store.get', (_: unknown, e: any) => ({ value: r.kv.get(e.key) }))
   on('store.set', (_: unknown, e: any) => (r.kv.set(e.key, e.value), { value: undefined }))
   on('session.model', () => ({ value: o.session ?? 'claude-haiku-5-5' }))
@@ -100,10 +101,10 @@ test('the main model only rises; effort follows each reading; an unusable survey
   expect(r.steps).toEqual(['opus·high', 'opus·low', 'opus·low'])
 })
 
-test('a first prompt the survey cannot read starts in sonnet·medium', async ($: any, on) => {
+test('a first prompt the survey cannot read starts at your coding effort', async ($: any, on) => {
   const r = rig(on, [])
   await say($, 'hmm')
-  expect(r.steps).toEqual(['sonnet·medium'])
+  expect(r.steps).toEqual(['sonnet·xhigh'])
 })
 
 test('a nod keeps the gear without a survey', MEDIUM, async ($: any, on) => {
@@ -419,4 +420,11 @@ test('a full log keeps the first 200 characters of each prompt; a nod says it re
   const prompts = events(files).filter(e => e.ev === 'prompt')
   expect(prompts[0].text).toHaveLength(200)
   expect(events(files).filter(e => e.ev === 'gear').map(e => e.why)).toEqual(['survey: code, area, depth 1', 'nod: reused the last work gear'])
+})
+
+test('an unsure survey still sets the effort from its best guess, but hands nothing off', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2, mode: 'drive', sure: false }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'look at the thing')
+  expect(r.notes[0]).toEqual([])
+  expect(r.steps).toEqual(['claude-opus-5-5·xhigh'])
 })

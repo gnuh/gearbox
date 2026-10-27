@@ -154,3 +154,16 @@ test('strict looks at the command, not its quoted text or heredocs', () => {
   expect(isLongCommand("git commit -F - <<'EOF'\nrun the e2e build\nEOF")).toBe(false)
   expect(isLongCommand('cat package.json')).toBe(false)
 })
+
+test('a reply that corrects itself is read by its correction; echoed keys and a top-level lookup are tolerated', () => {
+  // Word for word what Haiku sent in a real desktop session (from the gearbox log).
+  const reply = `{"reach":"system","point":null,"area":null,"system":"many files","frontier":null,"care":"routine","depth":2,"mode":"code","aside":false,"cont":true,"ask":{},"sure":false,"phases":[]}
+
+Wait, the output above has a problem: it uses "system" as both the reach key's value and a separate key. Here is the corrected object:
+
+{"reach":"system","care":"routine","depth":2,"mode":"code","aside":false,"cont":false,"ask":{},"sure":true,"phases":[]}`
+  expect(readReading(reply)).toMatchObject({ reach: 'system', depth: 2, cont: false, sure: true })
+  expect(readReading('{"reach":"point","point":"look up the PR url","care":"routine","depth":0,"mode":"lookup","sure":true}')?.mode).toBe('answer')
+  expect(readReading('{"reach":"area","depth":1} and a stray } brace')?.reach).toBe('area')
+  expect(readReading('Here: {"reach":"area","depth":1,"note":"a } inside a string"}')?.reach).toBe('area')
+})

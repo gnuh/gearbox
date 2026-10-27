@@ -75,6 +75,59 @@ const patch = ($: EngineInterface, id: string, fn: (l: GearboxLoop | undefined) 
 const working = (loops: Record<string, GearboxLoop>) =>
   Object.entries(loops).filter(([id, l]) => id !== 'main' && l.state === 'working')
 
+// What a loop is doing, for the pane and the popup: the tool, with its target where that says something.
+export const describeTool = (tool: string, input: Record<string, unknown>): string => {
+  const name = tool.includes('__') ? tool.split('__').pop()! : tool
+  const first = (v: unknown, n: number) => String(v ?? '').trim().split('\n')[0]!.slice(0, n)
+  if (tool === 'Bash' || tool === 'PowerShell') return `${name}: ${first(input.command, 48)}`
+  if (tool === 'Agent') return `Agent: ${first(input.description, 40)}`
+  if (typeof input.file_path === 'string') return `${name} ${input.file_path.split('/').pop()}`
+  if (typeof input.url === 'string') return `${name} ${first(input.url, 40)}`
+  if (typeof input.pattern === 'string') return `${name} ${first(input.pattern, 32)}`
+  return name
+}
+
+// The popup's text: main, then every running subagent as a tree, each with its model·effort and what it is doing.
+// Undefined while no subagent runs: the status line covers the main conversation alone.
+export const popupText = (loops: Record<string, GearboxLoop>): string | undefined => {
+  const running = Object.entries(loops).filter(([id, l]) => id !== 'main' && l.state === 'working')
+  if (!running.length) return undefined
+  const main = loops.main
+  const head = main ? [`main · ${gearText(main)} · ${main.state === 'working' ? (main.doing ?? 'thinking') : main.state}`] : []
+  const rows = running.map(
+    ([id, l], i) => `${'   '.repeat(Math.max(0, depth(loops, id) - 1))}${i === running.length - 1 ? '└' : '├'} ${l.label} · ${gearText(l)} · ${l.doing ?? 'thinking'}`,
+  )
+  return [`gearbox · ${running.length} running`, ...head, ...rows].join('\n')
+}
+
+type PopupState = { shown?: string }
+
+// Keeps the popup (a toast, the one floating surface a mod has on every client) in step with what runs. A new
+// toast takes the place of the mod's own last one, so each change redraws it; it holds while agents run, and a
+// short closing toast replaces it when the last one ends. Quiet while the gearbox pane is shown: it says the same.
+const refreshPopup = async ($: EngineInterface, popup: PopupState, on: boolean, note: (rec: Record<string, unknown>) => void) => {
+  if (!on) return
+  // A display, never a gate: whatever fails here must not take the hook that called it down with it.
+  try {
+    const text = popupText(await read($, LOOPS))
+    if (!text) {
+      if (popup.shown) {
+        $.ui.toast('gearbox · subagents finished', { timeoutMs: 2500 })
+        note({ ev: 'popup', closed: true })
+      }
+      popup.shown = undefined
+      return
+    }
+    if (text === popup.shown) return
+    if ((await $.ui.panes()).some(p => p.id === PANE && p.isShown)) return
+    $.ui.toast(text, { timeoutMs: 10 * 60_000 })
+    popup.shown = text
+    note({ ev: 'popup', text })
+  } catch (err) {
+    $.ui.log(`gearbox: popup not shown: ${err}`, { to: 'debug' })
+  }
+}
+
 // The status line: the main gear, then the running subagents, else what this turn hands off.
 const showStatus = async ($: EngineInterface, handoff?: Handoff, step?: string) => {
   const loops = await read($, LOOPS)
@@ -117,8 +170,9 @@ const survey = async ($: EngineInterface, request: string, earlier: string[], pr
     system: SURVEY,
     prompt: JSON.stringify({ request: trimRequest(request), earlier, previous: previous ?? null }),
     effort: 'low',
-    maxTokens: 400,
-    timeoutMs: 12_000,
+    // No cap on Haiku's answer: a reply that stops mid-correction is unreadable, and Haiku costs little.
+    maxTokens: 64_000,
+    timeoutMs: 30_000,
   })
   $.ui.log(`gearbox survey: ${r.isAnswered ? r.text.trim() : `no reply (${r.reason})`}`, { to: 'debug' })
   return { reading: r.isAnswered ? readReading(r.text) : undefined, reply: r.isAnswered ? r.text.trim() : `no reply (${r.reason})` }
@@ -199,7 +253,7 @@ export const usageReport = (ledger: Ledger) => {
 const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh']
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running' }
+export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; popup: boolean }
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit.
@@ -212,6 +266,7 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
     strict: o.strict !== false,
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
     pane: o.pane === 'running' ? 'running' : 'all',
+    popup: o.popup !== false,
   }
 }
 
@@ -223,12 +278,13 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
   if (word === 'pane' && (value === 'all' || value === 'running')) return { pane: value }
+  if (word === 'popup' && (value === 'on' || value === 'off')) return { popup: value === 'on' }
   return undefined
 }
 
-const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full' }
+const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full', popup: 'on or off' }
 const settingsText = (s: Settings) =>
-  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log}`
+  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · popup ${s.popup ? 'on' : 'off'}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -243,7 +299,9 @@ export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
   let { code_effort: standing, steer: steers, navigator, strict, log: logMode } = settingsFrom(options, undefined)
   let paneShows: Settings['pane'] = 'all'
-  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode, pane: paneShows })
+  let popupOn = true
+  const popup: PopupState = {}
+  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode, pane: paneShows, popup: popupOn })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
@@ -256,6 +314,7 @@ export const register: Register = (on, options) => {
     strict = s.strict
     logMode = s.log
     paneShows = s.pane
+    popupOn = s.popup
   }
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
@@ -442,20 +501,21 @@ export const register: Register = (on, options) => {
       const earlier = await recentAsks($)
       const started = Date.now()
       const { reading: r, reply } = await survey($, e.text, earlier, previous)
-      logEvent({ ev: 'survey', ms: Date.now() - started, reply: reply.slice(0, 400), reading: r ?? null })
-      if (!r || !r.sure) {
-        p = { main: previous ?? STARTER }
-        why = `survey ${r ? 'unsure' : 'unreadable'}: ${previous ? 'previous gear' : 'starting gear'}`
+      logEvent({ ev: 'survey', ms: Date.now() - started, reply, reading: r ?? null })
+      if (!r) {
+        // Unreadable: the last gear, else the person's coding effort; never a lower default.
+        p = { main: previous ?? { model: fixed ?? STARTER.model, effort: standing } }
+        why = `survey unreadable: ${previous ? 'previous gear' : 'your coding effort'}`
       } else if (r.cont && previous) {
         p = { main: previous }
         why = 'continuation: previous gear'
       } else {
-        why = `survey: ${r.mode}, ${r.reach}, depth ${r.depth}${r.care === 'costly' ? ', costly' : ''}`
+        why = `survey: ${r.mode}, ${r.reach}, depth ${r.depth}${r.care === 'costly' ? ', costly' : ''}${r.sure ? '' : ' (unsure: its best guess, no hand-off)'}`
         ask = verifyAsk(r.ask, e.text)
         const checked = { ...r, ask }
         const asks = (await $.store.get('consent')) !== false
         let want = gearFor(checked, standing)
-        if (r.phases.length >= 2) {
+        if (r.sure && r.phases.length >= 2) {
           // Several steps: one route, each step on its own executor and effort. Fable only as a subagent.
           const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
           // A model named for a step counts only where the person's own words say it.
@@ -475,7 +535,8 @@ export const register: Register = (on, options) => {
             want = await consent($, want)
             why += `; you chose ${label(want)} over ${proposed}`
           }
-          p = plan(checked, want, base, earlier.length > 0, fixed, navigator)
+          // Unsure: its best guess for the effort, but nothing handed off on a guess.
+          p = r.sure ? plan(checked, want, base, earlier.length > 0, fixed, navigator) : { main: fixed ? { model: fixed, effort: want.effort } : want }
           if (ask.model || ask.effort) why += `; you asked for ${[ask.model, ask.effort].filter(Boolean).join(' ')}`
         }
       }
@@ -521,13 +582,15 @@ export const register: Register = (on, options) => {
       // Its first steps may land before this, so keep what they recorded.
       await patch($, started.agentId, l => ({ steps: 0, state: 'working', asked: started.model, ...l, label: e.description, parent: e.parentAgentId ?? 'main' }))
       await showStatus($, turnHandoff, stepLabel())
+      await refreshPopup($, popup, popupOn, logEvent)
     }
     return started
   })
 
   on('tool.call', async ($, e, next) => {
     if (!enabled) return next(e)
-    await patch($, e.agentId ?? 'main', l => l && { ...l, doing: String(e.tool) })
+    await patch($, e.agentId ?? 'main', l => l && { ...l, doing: describeTool(String(e.tool), e as unknown as Record<string, unknown>) })
+    await refreshPopup($, popup, popupOn, logEvent)
     if (e.agentId) return next(e) // subagents do the hand-off work; never stand in their way
     // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named.
     if (e.tool === 'Agent' && (!e.subagent_type || e.subagent_type === 'general-purpose')) {
@@ -568,6 +631,7 @@ export const register: Register = (on, options) => {
         return { ...rest, state: e.agentId ? 'done' : 'idle' }
       })
       await showStatus($, turnHandoff, stepLabel())
+      await refreshPopup($, popup, popupOn, logEvent)
     }
     if (!e.agentId) {
       logEvent({ ev: 'turn', ms: e.durationMs, aborted: e.isAborted })
@@ -607,6 +671,7 @@ export const register: Register = (on, options) => {
         state: 'working',
       }))
       if (!e.agentId) await showStatus($, turnHandoff, stepLabel())
+      await refreshPopup($, popup, popupOn, logEvent)
     }
     const result = yield* next(step)
     if (enabled) await patch($, id, l => l && { ...l, ...(result.usage ? { answered: result.usage.model } : {}), steps: l.steps + 1 })
@@ -667,6 +732,7 @@ export const register: Register = (on, options) => {
       ['Strict hand-offs', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
       ['Debug log', 'log', ['off', 'on', 'full'], s.log],
       ['Models pane shows', 'pane', ['all', 'running'], s.pane],
+      ['Popup while agents run', 'popup', ['on', 'off'], s.popup ? 'on' : 'off'],
     ]
     return (
       <Box flexDirection="column" rowGap={1}>
