@@ -11,15 +11,31 @@ Built and tested on Claude Code 2.1.311. The mod API is early access and may cha
 
 ## Install
 
-At the prompt of a Claude Code terminal session:
+### Claude Code in a terminal
+
+At the prompt of a terminal session:
 
 ```
 /plugin install gearbox --marketplace gnuh/gearbox
 ```
 
-Answer `y` to add the marketplace, then pick a scope (user scope loads it in every session). From a shell: `claude plugin install gearbox --marketplace gnuh/gearbox`. In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `gnuh/gearbox`, then Add plugin.
+Answer `y` to add the marketplace, then pick a scope. The user scope loads gearbox in every session, including the desktop app's local Code sessions. From a shell instead: `claude plugin install gearbox --marketplace gnuh/gearbox`.
 
-Then work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model haiku`) for shift mode. Set your coding effort in `/config` (below).
+### Claude desktop app
+
+`/plugin` does not run in the desktop app's Code tab; use the Plugins menu instead:
+
+1. Open the **Code** tab and start or open a session.
+2. Click **+** next to the prompt box, then **Plugins**.
+3. Choose **Add marketplace** and enter `gnuh/gearbox`.
+4. Find **gearbox** in that marketplace's list and choose **Add plugin**.
+5. Start a new session. The status line under the prompt box shows `gearbox ▸ …` once the first turn runs, and `/gearbox` reports the mode and settings.
+
+To set your coding effort or navigator, open `/config` in a session and change gearbox's **Coding effort** and **Browser navigator** rows.
+
+### After installing
+
+Work as usual: on Opus (or Sonnet) for steer mode, or start on Haiku (`/model haiku`) for shift mode. Set your coding effort in `/config` (below). To get a newer version later: `claude plugin update gearbox` from a shell, then `/reload-plugins`.
 
 ## Settings
 
