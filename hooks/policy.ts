@@ -25,19 +25,19 @@ The keys and the values each may take:
 - reach: how much of the project the work must understand. One of: point (one spot: a question, a lookup, a rename, a one-line edit); area (one feature or a few related files: build a feature, fix a contained bug, write tests, explain code); system (many files, or a bug whose location is unknown); frontier (open-ended: designing a system, research, inventing an algorithm).
 - care: costly if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, deleting or migrating data), else routine.
 - depth: how much careful reasoning correctness needs, a number. 0 mechanical, 1 ordinary, 2 subtle (concurrency, time zones, money arithmetic, cache or state invalidation, changing error or async behavior), 3 exceptionally hard.
-- mode: what the turn will mostly do. One of: code (write or change code; committing or pushing alone is code too); answer (explain, answer, look something up, review or plan without changing code); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search).
+- mode: what the turn will mostly do. One of: code (write or change code); commit (git and GitHub chores with no code to write: commit, push, tag, open or edit a pull request or its description, comment on a pull request or ticket); answer (explain, answer, look something up, review or plan without changing code); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search).
 - aside: true if "earlier" is about some piece of work and this request is a different, unrelated piece of work.
 - cont: true if the request only continues, approves or repeats the previous turn.
 - ask: the model (haiku, sonnet, opus, fable) and/or effort (low, medium, high, xhigh, max) the person explicitly asks to use, as {"model":"..."} and/or {"effort":"..."}; {} if none. Words inside pasted code, logs or quotes are not asks.
 - sure: false only if the request is too vague to describe at all; otherwise true, with your best guess.
-- phases: when the request asks for several distinct steps, list them in order as [{"what":"a few words","mode":"...","depth":1}], else []. A step's mode is one of the modes above, or lookup (fetch information from a tool or service: a ticket, a page, docs, or a search of notes such as an Obsidian vault) or commit (commit or push). Testing in a browser is drive; running a test suite is wait; writing tests is code. Add "ask":"haiku|sonnet|opus" to a step only when the request names the model for that step ("navigate with sonnet"). List only steps the "request" itself asks for: "earlier" is context, never a source of steps.
+- phases: when the request asks for several distinct steps, list them in order as [{"what":"a few words","mode":"...","depth":1}], else []. A step's mode is one of the modes above, or lookup (fetch information from a tool or service: a ticket, a page, docs, or a search of notes such as an Obsidian vault). Testing in a browser is drive; running a test suite is wait; writing tests is code. Add "ask":"haiku|sonnet|opus" to a step only when the request names the model for that step ("navigate with sonnet"). List only steps the "request" itself asks for: "earlier" is context, never a source of steps.
 `
 
 export type Reading = {
   reach: 'point' | 'area' | 'system' | 'frontier'
   care: 'routine' | 'costly'
   depth: 0 | 1 | 2 | 3
-  mode: 'code' | 'answer' | 'drive' | 'wait'
+  mode: 'code' | 'commit' | 'answer' | 'drive' | 'wait'
   aside: boolean
   cont: boolean
   ask: Partial<Gear>
@@ -56,7 +56,7 @@ const readPhases = (list: unknown): Phase[] =>
     .map((p: any) => ({ what: String(p.what ?? p.mode).slice(0, 60), mode: p.mode, depth: p.depth, ...(['haiku', 'sonnet', 'opus'].includes(p.ask) ? { ask: p.ask } : {}) }))
 
 const REACHES = ['point', 'area', 'system', 'frontier']
-const MODES = ['code', 'answer', 'drive', 'wait']
+const MODES = ['code', 'commit', 'answer', 'drive', 'wait']
 
 // The survey's reply as a reading: undefined without a valid reach and depth; other keys fall back to plain values.
 // Every top-level {...} in a reply, in order: a model that corrects itself writes more than one.
@@ -111,14 +111,25 @@ const toReading = (o: any): Reading | undefined => {
 const REACH_MODEL: Record<Reading['reach'], Model> = { point: 'haiku', area: 'sonnet', system: 'opus', frontier: 'fable' }
 const DEPTH_EFFORT: readonly ModelEffort[] = ['low', 'medium', 'high', 'xhigh'] // max only when asked for
 
+// A max coding effort is for the big jobs: subtle or hard code (depth 2 and up). Everything else that follows the
+// coding effort (small code, nods, failed reads, a turn that starts editing, code-writing subagents) stops at xhigh.
+export const everyday = (standing: ModelEffort): ModelEffort => (standing === 'max' ? 'xhigh' : standing)
+const codeFloor = (depth: number, standing: ModelEffort): ModelEffort => (depth >= 2 ? standing : everyday(standing))
+
 // The gear a reading calls for. `standing` is the person's effort for ordinary coding (the code_effort setting):
-// code turns never run below it past depth 0, answers follow depth alone. A costly mistake lifts the gear to at
-// least opus·medium; the person's own ask wins.
+// code never runs below it, at any depth, since "a small edit" is a guess made before anyone read the code;
+// other work past depth 0 doesn't either; answers and git chores follow depth alone. A costly mistake lifts the
+// gear to at least opus·medium; the person's own ask wins.
 export const gearFor = (r: Reading, standing: ModelEffort = 'medium'): Gear => {
   const costly = r.care === 'costly'
   const model = costly ? upTo(MODELS, REACH_MODEL[r.reach], 'opus') : REACH_MODEL[r.reach]
   const byDepth = DEPTH_EFFORT[r.depth]!
-  const base = r.depth > 0 && r.mode !== 'answer' ? upTo(EFFORTS, byDepth, standing) : byDepth
+  const base =
+    r.mode === 'code'
+      ? upTo(EFFORTS, byDepth, codeFloor(r.depth, standing))
+      : r.depth > 0 && r.mode !== 'answer' && r.mode !== 'commit'
+        ? upTo(EFFORTS, byDepth, everyday(standing))
+        : byDepth
   const effort = costly ? upTo(EFFORTS, base, 'medium') : base
   return { model: r.ask.model ?? model, effort: r.ask.effort ?? effort }
 }
@@ -151,7 +162,8 @@ export const verifyAsk = (ask: Partial<Gear>, text: string): Partial<Gear> => {
 // or the person's own standing effort.
 export const needsConsent = (g: Gear, ask: Partial<Gear>, previous?: Gear, standing?: ModelEffort) =>
   (g.model === 'fable' && !ask.model && previous?.model !== 'fable') ||
-  ((g.effort === 'xhigh' || g.effort === 'max') && !ask.effort && previous?.effort !== g.effort && g.effort !== standing)
+  // Never for an effort at or under the person's own coding effort: they chose it.
+  ((g.effort === 'xhigh' || g.effort === 'max') && !ask.effort && previous?.effort !== g.effort && !(standing && EFFORTS.indexOf(g.effort) <= EFFORTS.indexOf(standing)))
 
 export const stepDown = (g: Gear): Gear => ({
   model: g.model === 'fable' ? 'opus' : g.model,
@@ -166,10 +178,11 @@ export type Step = { what: string; mode: Phase['mode'] | 'analyze'; by: 'main' |
 // other models only come in as subagents; effort changes between steps are free.
 // A browser check is two steps: the navigator (Sonnet, or Haiku by setting) only collects evidence, then the main model, a different
 // one, analyzes it, so no model judges its own clicking.
-export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet'): Step[] =>
+export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet', long = false): Step[] =>
   phases.flatMap(({ what, mode, depth, ask }): Step[] => {
     const floor = (e: ModelEffort) => (costly ? upTo(EFFORTS, e, 'medium') : e)
     if (mode === 'lookup' || mode === 'wait') return [{ what, mode, by: 'agent', gear: { model: ask ?? 'haiku', effort: 'low' }, mainEffort: 'low' }]
+    if (mode === 'commit' && long) return [{ what, mode, by: 'agent', gear: choreGear(depth), mainEffort: 'low' }]
     if (mode === 'drive') {
       const judge = floor(upTo(EFFORTS, DEPTH_EFFORT[depth]!, 'medium'))
       return [
@@ -177,7 +190,7 @@ export const route = (phases: Phase[], main: Model, standing: ModelEffort, costl
         { what: `${what}: analyze`, mode: 'analyze', by: 'main', gear: { model: main, effort: judge }, mainEffort: judge },
       ]
     }
-    const effort = floor(mode === 'commit' || depth === 0 ? 'low' : mode === 'code' ? upTo(EFFORTS, DEPTH_EFFORT[depth]!, standing) : DEPTH_EFFORT[depth]!)
+    const effort = floor(mode === 'commit' ? 'low' : mode === 'code' ? upTo(EFFORTS, DEPTH_EFFORT[depth]!, codeFloor(depth, standing)) : DEPTH_EFFORT[depth]!)
     return [{ what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }]
   })
 
@@ -185,9 +198,9 @@ const STEP_TASK: Record<Step['mode'], string> = {
   lookup: 'that fetches it and returns the full relevant content word for word (for a ticket: title, description, acceptance criteria, comments that change the scope; for notes: each matching note\'s title and full text), with nothing summarized away',
   drive: 'with a checklist you write here first (where to go and what to do); it must not edit files or judge pass or fail, only report per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests',
   wait: 'that runs only the exact command you settle here, waits until it ends, and answers with passed or failed, the lines that explain a failure, and any link or id it printed',
+  commit: 'with a brief that stands on its own: the repository path and branch, the commits, the pull request and any text to write, in full; it runs only that, changes nothing else, and reports what it did with any link, hash or id',
   code: '',
   answer: '',
-  commit: '',
   analyze: '',
 }
 
@@ -223,18 +236,30 @@ const unquoted = (command: string) =>
 export const isLongCommand = (command: string) =>
   /\b(test|tests|e2e|playwright|jest|vitest|cypress|mocha|pytest|build|deploy|publish|release)\b/i.test(unquoted(command))
 
-export type Handoff = { kind: 'drive' | 'wait' | 'aside' | 'deep'; gear: Gear }
+// Git and GitHub chores on a long conversation: every request here re-reads the whole context, so past this size a
+// fresh subagent does the chore for less. Below it, the main conversation does it itself, at low or medium.
+export const CHORE_CONTEXT = 100_000
+// Plain git work on Haiku; writing (a pull request section, a ticket comment) on Sonnet.
+export const choreGear = (depth: number): Gear => (depth === 0 ? { model: 'haiku', effort: 'low' } : { model: 'sonnet', effort: 'medium' })
+
+// A git or GitHub command that does a chore's work: the main conversation running one during a chore hand-off
+// skipped the subagent. Reading (git status, git log, gh pr view) stays allowed.
+export const isChoreCommand = (command: string) =>
+  /\bgit\s+(commit|push|tag)\b|\bgh\s+(pr|issue|release)\s+(create|edit|comment|merge|close|review)\b/.test(unquoted(command))
+
+export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep'; gear: Gear }
 export type Plan = { main: Gear; handoff?: Handoff }
 
 // Splits a turn between the main conversation and a subagent. `floor` is the main model so far;
 // `hasEarlier` says whether there is earlier work for the request to be unrelated to. With `fixed`, the
 // session keeps that model (steer mode): only effort and handoffs change.
-export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet'): Plan => {
+export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet', long = false): Plan => {
   const base = fixed ?? floor ?? 'sonnet'
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
   const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
   if (r.mode === 'drive') return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: r.ask.model === 'haiku' || r.ask.model === 'sonnet' ? r.ask.model : navigator, effort: 'low' } } }
   if (r.mode === 'wait') return { main: { model: planner, effort: 'low' }, handoff: { kind: 'wait', gear: { model: 'haiku', effort: 'low' } } }
+  if (r.mode === 'commit' && long) return { main: { model: planner, effort: 'low' }, handoff: { kind: 'chore', gear: choreGear(r.depth) } }
   if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'deep', gear: want } }
   if (r.aside && hasEarlier && want.model !== 'haiku') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'aside', gear: want } }
   return { main: fixed ? { model: fixed, effort: want.effort } : want }
@@ -258,7 +283,7 @@ export const trimRequest = (text: string) => (text.length <= 4000 ? text : `${te
 
 // What the main model reads beside the prompt (the person does not) when part of the turn belongs to a subagent.
 export const handoffNote = ({ kind, gear }: Handoff): string => {
-  const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' ? ` and effort "${gear.effort}"` : ''}`
+  const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' || kind === 'chore' ? ` and effort "${gear.effort}"` : ''}`
   switch (kind) {
     case 'drive':
       return `gearbox handoff, browser check: a fast model navigates, and you, a different model, judge what it found.
@@ -270,6 +295,11 @@ export const handoffNote = ({ kind, gear }: Handoff): string => {
 1. Settle the exact command and the directory it runs in here.
 2. Start ${agent} to run only that, wait until it ends, and answer with: passed or failed, the lines that explain a failure, and any link or id it printed.
 3. If it failed, investigate here.`
+    case 'chore':
+      return `gearbox handoff, git chore: this conversation is long, and every request here re-reads all of it, so a fresh subagent does the chore for less.
+1. Settle exactly what to do here: the repository path and branch, the commits, the pull request, and any text to write, in full.
+2. Start ${agent} with that brief. It runs only that, changes nothing else, and reports what it did with any link, hash or id.
+3. Tell the person the outcome.`
     case 'aside':
       return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.`
     case 'deep':

@@ -8,7 +8,10 @@ import {
   type Plan,
   type Step,
   isBrowserTool,
+  isChoreCommand,
   isLongCommand,
+  CHORE_CONTEXT,
+  everyday,
   EFFORTS,
   doesHandoffWork,
   upTo,
@@ -42,7 +45,7 @@ const PRICES: Record<Model, { fresh: number; written: number; cached: number; ou
   fable: { fresh: 10, written: 12.5, cached: 0.25, out: 50 },
 }
 
-const KIND: Record<Handoff['kind'], string> = { drive: 'browser check', wait: 'long command', aside: 'side task', deep: 'deep work' }
+const KIND: Record<Handoff['kind'], string> = { drive: 'browser check', wait: 'long command', chore: 'git chore', aside: 'side task', deep: 'deep work' }
 const HUE: Record<Model, string> = { haiku: '#2BB3A0', sonnet: '#5B8DEF', opus: '#D99A2B', fable: '#D062B5' }
 const PANE = 'gearbox'
 const KEEP_LOOPS = 40
@@ -142,7 +145,8 @@ const showStatus = async ($: EngineInterface, handoff?: Handoff, step?: string) 
     : handoff
       ? ` ⇢ ${handoff.gear.model} ${KIND[handoff.kind]}`
       : ''
-  $.ui.status(`gearbox ▸ ${gearText(main)}${step ? ` · ${step}` : ''}${tail}`)
+  // Claude Code heads a plugin's status line with its name ("gearbox: …"), so the text starts at the gear.
+  $.ui.status(`${gearText(main)}${step ? ` · ${step}` : ''}${tail}`)
 }
 
 // How deep a loop sits under main, for the pane's indent.
@@ -165,20 +169,30 @@ const recentAsks = async ($: EngineInterface) =>
     .slice(-3)
     .map(m => m.text.slice(0, 200))
 
-// One low-effort Haiku call that describes the request; undefined when the reply is unusable.
+// One low-effort call that describes the request; undefined when the reply is unusable. A person's prompt is read
+// by Sonnet: replaying 79 real prompts, Haiku took main work for side tasks 8 times (Sonnet once) and made a
+// question into a route; Sonnet costs about a second more. A subagent's brief only needs its kind of job: Haiku.
 // The request travels inside JSON, so nothing pasted into it can pose as another field.
-const survey = async ($: EngineInterface, request: string, earlier: string[], previous?: Gear) => {
+const survey = async ($: EngineInterface, request: string, earlier: string[], previous?: Gear, model: 'sonnet' | 'haiku' = 'sonnet') => {
   const r = await $.model.complete({
-    model: 'haiku',
+    model,
     system: SURVEY,
     prompt: JSON.stringify({ request: trimRequest(request), earlier, previous: previous ?? null }),
     effort: 'low',
-    // No cap on Haiku's answer: a reply that stops mid-correction is unreadable, and Haiku costs little.
+    // No cap on the answer: a reply that stops mid-correction is unreadable, and a read costs little.
     maxTokens: 64_000,
     timeoutMs: 30_000,
   })
   $.ui.log(`gearbox survey: ${r.isAnswered ? r.text.trim() : `no reply (${r.reason})`}`, { to: 'debug' })
   return { reading: r.isAnswered ? readReading(r.text) : undefined, reply: r.isAnswered ? r.text.trim() : `no reply (${r.reason})` }
+}
+
+// A subagent's effort by its job, read as a prompt is: browsing and long commands run low, code at the coding
+// effort, questions and searches by depth. Undefined when the read fails: the call goes as it was.
+const jobEffort = async ($: EngineInterface, brief: string, standing: ModelEffort): Promise<ModelEffort | undefined> => {
+  const { reading: r } = await survey($, brief, [], undefined, 'haiku')
+  if (!r) return undefined
+  return r.mode === 'drive' || r.mode === 'wait' ? 'low' : gearFor({ ...r, ask: {} }, standing).effort
 }
 
 // The debug log: one JSON line per event in ~/.claude/gearbox/logs/<session>.jsonl. The mod file API replaces a
@@ -253,7 +267,7 @@ export const usageReport = (ledger: Ledger) => {
   return [...lines, `total ≈ $${total.toFixed(2)} at API list prices, subagents included`].join('\n')
 }
 
-const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh']
+const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh', 'max']
 
 export type LogMode = 'off' | 'on' | 'full'
 export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; band: boolean }
@@ -285,7 +299,7 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   return undefined
 }
 
-const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high or xhigh', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full', band: 'on or off' }
+const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high, xhigh or max', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full', band: 'on or off' }
 const settingsText = (s: Settings) =>
   `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · band ${s.band ? 'on' : 'off'}`
 
@@ -343,12 +357,12 @@ export const register: Register = (on, options) => {
   // The gear of the hand-off step under way, for the refusal that points the model at it.
   const handoffGear = (): Gear | undefined =>
     turnRoute ? (turnStep ? turnRoute[turnStep - 1]?.gear : undefined) : turnHandoff?.gear
-  const handoffMode = (): 'drive' | 'wait' | undefined => {
+  const handoffMode = (): 'drive' | 'wait' | 'chore' | undefined => {
     if (turnRoute) {
       const s = turnStep ? turnRoute[turnStep - 1] : undefined
-      return s?.by === 'agent' && (s.mode === 'drive' || s.mode === 'wait') ? s.mode : undefined
+      return s?.by !== 'agent' ? undefined : s.mode === 'drive' || s.mode === 'wait' ? s.mode : s.mode === 'commit' ? 'chore' : undefined
     }
-    return turnHandoff?.kind === 'drive' || turnHandoff?.kind === 'wait' ? turnHandoff.kind : undefined
+    return turnHandoff?.kind === 'drive' || turnHandoff?.kind === 'wait' || turnHandoff?.kind === 'chore' ? turnHandoff.kind : undefined
   }
   const stepLabel = (): string | undefined =>
     ownEffort ? `${ownEffort} sets its own effort` : routeLabel()
@@ -497,25 +511,29 @@ export const register: Register = (on, options) => {
       return next(e)
     }
     const base = fixed ?? floor
+    // A long conversation hands git chores to a fresh subagent: every request here re-reads the whole context.
+    const context = (await $.session.usage()).context.tokens ?? 0
+    const long = context >= CHORE_CONTEXT
     let why = ''
     let brief: [string, string] = ['', '']
 
     let p: Plan
     let ask: Partial<Gear> = {}
     if (previous && NOD.test(e.text.trim())) {
-      p = { main: previous }
-      why = 'nod: reused the last work gear'
-      brief = ['nod', 'kept the last work gear']
+      // A nod after a proposal is usually the go-ahead to write it: never below the coding effort.
+      p = { main: { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } }
+      why = 'nod: the last work gear, at least your coding effort'
+      brief = ['nod', 'last gear, at least your coding effort']
     } else {
       const earlier = await recentAsks($)
       const started = Date.now()
       const { reading: r, reply } = await survey($, e.text, earlier, previous)
       logEvent({ ev: 'survey', ms: Date.now() - started, reply, reading: r ?? null })
       if (!r) {
-        // Unreadable: the last gear, else the person's coding effort; never a lower default.
-        p = { main: previous ?? { model: fixed ?? STARTER.model, effort: standing } }
-        why = `survey unreadable: ${previous ? 'previous gear' : 'your coding effort'}`
-        brief = ['unreadable', previous ? 'kept the previous gear' : 'your coding effort']
+        // Unreadable: the last gear, never below the person's coding effort; a failed read errs up.
+        p = { main: previous ? { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } : { model: fixed ?? STARTER.model, effort: everyday(standing) } }
+        why = `survey unreadable: ${previous ? 'previous gear, at least your coding effort' : 'your coding effort'}`
+        brief = ['unreadable', previous ? 'last gear, at least your coding effort' : 'your coding effort']
       } else if (r.cont && previous) {
         p = { main: previous }
         why = 'continuation: previous gear'
@@ -532,7 +550,7 @@ export const register: Register = (on, options) => {
           const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
           // A model named for a step counts only where the person's own words say it.
           const phases = r.phases.map(ph => ({ ...ph, ask: ph.ask && verifyAsk({ model: ph.ask }, e.text).model === ph.ask ? ph.ask : undefined }))
-          turnRoute = route(phases, lead, standing, r.care === 'costly', navigator)
+          turnRoute = route(phases, lead, standing, r.care === 'costly', navigator, long)
           for (const s of turnRoute) {
             if (s.by === 'main' && asks && needsConsent(s.gear, ask, previous, standing)) {
               s.gear = await consent($, s.gear)
@@ -549,7 +567,7 @@ export const register: Register = (on, options) => {
             why += `; you chose ${label(want)} over ${proposed}`
           }
           // Unsure: its best guess for the effort, but nothing handed off on a guess.
-          p = r.sure ? plan(checked, want, base, earlier.length > 0, fixed, navigator) : { main: fixed ? { model: fixed, effort: want.effort } : want }
+          p = r.sure ? plan(checked, want, base, earlier.length > 0, fixed, navigator, long) : { main: fixed ? { model: fixed, effort: want.effort } : want }
           if (ask.model || ask.effort) why += `; you asked for ${[ask.model, ask.effort].filter(Boolean).join(' ')}`
         }
       }
@@ -562,6 +580,7 @@ export const register: Register = (on, options) => {
     logEvent({
       ev: 'gear',
       gear: label(turnGear),
+      context,
       why: ownEffort ? `${why}; ultrathink: Claude Code sets the effort` : why,
       ...(p.handoff ? { handoff: `${p.handoff.kind} → ${label(p.handoff.gear)}` } : {}),
       ...(turnRoute ? { route: turnRoute.map((s, i) => `${i + 1}. ${s.what}: ${s.by} ${label(s.gear)}`) } : {}),
@@ -606,23 +625,32 @@ export const register: Register = (on, options) => {
     if (!enabled) return next(e)
     await patch($, e.agentId ?? 'main', l => l && { ...l, doing: describeTool(String(e.tool), e as unknown as Record<string, unknown>) })
     if (e.agentId) return next(e) // subagents do the hand-off work; never stand in their way
-    // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named.
+    // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named; any
+    // other plain one keeps its model and gets an effort by its job, not the session's.
     if (e.tool === 'Agent' && (!e.subagent_type || e.subagent_type === 'general-purpose')) {
+      const asked = `${e.model ?? 'default'}·${e.effort ?? 'default'}`
       const h = nextHandoff()
-      if (!h) return next(e)
-      handedOff.add(h.slot)
-      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked: `${e.model ?? 'default'}·${e.effort ?? 'default'}`, set: label(h.gear) })
-      return next({ ...e, model: h.gear.model, effort: h.gear.effort })
+      if (h) {
+        handedOff.add(h.slot)
+        logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: label(h.gear) })
+        return next({ ...e, model: h.gear.model, effort: h.gear.effort })
+      }
+      const effort = await jobEffort($, String(e.prompt ?? e.description ?? ''), standing)
+      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: effort ? `${e.model ?? 'default'}·${effort}` : 'unchanged', why: 'its job' })
+      return next(effort ? { ...e, effort } : e)
     }
+    const tool = String(e.tool)
     const mode = handoffMode()
     if (mode && turnGear) {
-      const tool = String(e.tool)
-      const inline = mode === 'drive' ? isBrowserTool(tool) : /^(Bash|PowerShell)$/.test(tool) && isLongCommand(String((e as any).command ?? ''))
+      const command = String((e as any).command ?? '')
+      const shell = /^(Bash|PowerShell)$/.test(tool)
+      const inline = mode === 'drive' ? isBrowserTool(tool) : mode === 'wait' ? shell && isLongCommand(command) : shell && isChoreCommand(command)
       // Strict: the main conversation may not do a hand-off step's work itself; the refusal says what to start.
       if (strict && inline) {
         const g = handoffGear()
         logEvent({ ev: 'strict', tool, mode, refused: true })
-        const job = mode === 'drive' ? 'click through the browser check and report only what it saw' : 'run the command and report only the outcome'
+        const job =
+          mode === 'drive' ? 'click through the browser check and report only what it saw' : mode === 'wait' ? 'run the command and report only the outcome' : 'do the git or GitHub work and report what it did'
         return {
           deny: `gearbox: this step is a hand-off. Start an Agent${g ? ` with model "${g.model}" and effort "${g.effort}"` : ''} to ${job}, then judge its report here. (The person can allow doing it here with /gearbox strict off.)`,
         }
@@ -634,7 +662,23 @@ export const register: Register = (on, options) => {
         await showStatus($, turnHandoff, stepLabel())
       }
     }
-    return next(e)
+    // What the turn does outranks the survey's guess: editing files is writing code, and a failed test or build
+    // means debugging. Either way the rest of the turn runs at least at the coding effort.
+    const below = () => turnGear !== undefined && !ownEffort && EFFORTS.indexOf(turnGear.effort) < EFFORTS.indexOf(everyday(standing))
+    const lift = (why: string) => {
+      turnGear = previous = { ...turnGear!, effort: everyday(standing) }
+      logEvent({ ev: 'raise', tool, effort: everyday(standing), why })
+    }
+    if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(tool) && below()) {
+      lift('the turn edits files')
+      await showStatus($, turnHandoff, stepLabel())
+    }
+    const result = await next(e)
+    if (/^(Bash|PowerShell)$/.test(tool) && isLongCommand(String((e as any).command ?? '')) && 'isError' in result && result.isError && below()) {
+      lift('a test or build failed')
+      await showStatus($, turnHandoff, stepLabel())
+    }
+    return result
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -748,8 +792,12 @@ export const register: Register = (on, options) => {
       ['why', turn.why?.[0] ?? 'waiting for a prompt', turn.why?.[1] ?? '', '#E9A23B'],
     ]
     // A narrow band keeps what matters most, so nothing wraps. The desktop app counts fewer, wider cells than a terminal.
-    const shown = e.props.bodyColumns < (e.surface === 'terminal' ? 100 : 60) ? [cols[0]!, cols[1]!, cols[3]!] : cols
-    const width = Math.max(12, Math.floor((e.props.bodyColumns - 2 * (shown.length - 1)) / shown.length))
+    const term = e.surface === 'terminal'
+    const shown = e.props.bodyColumns < (term ? 100 : 60) ? [cols[0]!, cols[1]!, cols[3]!] : cols
+    // The terminal draws a │ between columns, a cell of gap on each side of it.
+    const width = Math.max(12, Math.floor((e.props.bodyColumns - (term ? 3 : 2) * (shown.length - 1)) / shown.length))
+    // Rules only where text draws them as lines: the terminal. A desktop draws the band as a card.
+    const rule = (glyph: string) => (term ? <Text dimColor wrap="truncate">{glyph.repeat(Math.max(1, e.props.bodyColumns))}</Text> : null)
     // Up to five subagent rows; past that, four and a count of the rest.
     const listed = subs.length > 5 ? subs.slice(0, 4) : subs
     const labelW = Math.min(24, Math.max(0, ...listed.map(([, l]) => l.label.length)) + 2)
@@ -761,19 +809,8 @@ export const register: Register = (on, options) => {
     }
     const mine = (
       <Box flexDirection="column" rowGap="sm">
-        <Box flexDirection="row" columnGap={1} alignItems="center">
-          <Text dimColor size="caption">
-            coding effort
-          </Text>
-          {(['medium', 'high', 'xhigh'] as const).map(level => (
-            <Button
-              key={`band-effort-${level}`}
-              label={level}
-              variant={level === s.code_effort ? 'primary' : 'secondary'}
-              {...(level === s.code_effort ? {} : { dimColor: true })}
-              onPress={() => choose({ code_effort: level })}
-            />
-          ))}
+        <Box flexDirection="row" columnGap={term ? 2 : 1} alignItems="center">
+          <Text weight="bold">GearBox</Text>
           <Box flexGrow={1} />
           <Button key="band-pane" dimColor label="Panel" onPress={() => void $.ui.open({ id: PANE, title: 'gearbox: models now' })} />
           <Button
@@ -790,8 +827,16 @@ export const register: Register = (on, options) => {
           />
           <Button key="band-settings" dimColor label="Settings" onPress={() => void $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })} />
         </Box>
-        <Box flexDirection="row" columnGap={2}>
-          {shown.map(([k, v, sub, color, extra]) => (
+        {rule('─')}
+        <Box flexDirection="row" columnGap={term ? 1 : 2}>
+          {shown.flatMap(([k, v, sub, color, extra], i) => [
+            term && i > 0 ? (
+              <Box flexDirection="column" width={1} flexShrink={0}>
+                <Text dimColor>│</Text>
+                <Text dimColor>│</Text>
+                <Text dimColor>│</Text>
+              </Box>
+            ) : null,
             <Box flexDirection="column" width={width} flexGrow={1} flexShrink={1}>
               <Text dimColor size="caption" wrap="truncate">
                 {k}
@@ -807,11 +852,12 @@ export const register: Register = (on, options) => {
               <Text dimColor size="caption" wrap="truncate">
                 {sub}
               </Text>
-            </Box>
-          ))}
+            </Box>,
+          ])}
         </Box>
         {listed.length ? (
           <Box flexDirection="column">
+            {rule('┄')}
             {listed.map(([id, l]) => (
               <Box key={`band-agent-${id}`} flexDirection="row" columnGap={2}>
                 <Box width={labelW} flexShrink={0}>
@@ -850,12 +896,12 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const s = settingsFrom(options, await read($, SETTINGS))
     const rows: [string, string, readonly string[], string][] = [
-      ['Coding effort', 'effort', ['medium', 'high', 'xhigh'], s.code_effort],
+      ['Coding effort', 'effort', ['medium', 'high', 'xhigh', 'max'], s.code_effort],
       ['Browser navigator', 'navigator', ['sonnet', 'haiku'], s.navigator],
       ['Steer non-Haiku', 'steer', ['on', 'off'], s.steer ? 'on' : 'off'],
       ['Strict hand-offs', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
       ['Debug log', 'log', ['off', 'on', 'full'], s.log],
-      ['Models pane shows', 'pane', ['all', 'running'], s.pane],
+      ['Models panel shows', 'pane', ['all', 'running'], s.pane],
       ['Band', 'band', ['on', 'off'], s.band ? 'on' : 'off'],
     ]
     return (

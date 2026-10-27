@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -11,11 +11,12 @@
     "code_effort": {
       "type": "string",
       "title": "Coding effort",
-      "description": "Effort for ordinary coding turns. Trivial turns still run low; answers and explanations follow their difficulty. Default xhigh, the most thorough; Anthropic suggests medium for Opus 5.5 if you prefer faster, cheaper turns. Also settable with /gearbox settings.",
+      "description": "Effort for writing code: every code turn runs at least at it, small edits included; answers and explanations follow their difficulty. Default xhigh; max is the most thorough, the slowest and the costliest; Anthropic suggests medium for Opus 5.5 if you prefer faster, cheaper turns. Also settable with /gearbox settings.",
       "options": [
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "default": "xhigh"
     },
@@ -55,7 +56,7 @@
     "band": {
       "type": "boolean",
       "title": "Band above the prompt",
-      "description": "A slim band above the prompt box: your coding effort (press to cycle), the live model\u00b7effort and what it does, subagents, cost and why, with Pane and Settings. Bands other mods draw stay under it. Also settable with /gearbox band.",
+      "description": "The band above the prompt box: GearBox, the live model·effort and what it does, subagents, cost and why, then a row per running subagent, with Panel, Log and Settings. Bands other mods draw stay under it. Also settable with /gearbox band.",
       "default": true
     }
   }
