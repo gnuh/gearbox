@@ -165,7 +165,7 @@ test('the status line counts running subagents, and a fallback is flagged in the
 test('/gearbox off clears the readout; /gearbox pane opens it', async ($: any, on) => {
   const { status } = bench(on)
   await step($, 'claude-opus-5-5')
-  expect((await $.command.run({ command: 'gearbox', args: 'pane' })).text).toBe('gearbox: pane open')
+  expect((await $.command.run({ command: 'gearbox', args: 'pane' })).text).toBe('pane open')
   await $.command.run({ command: 'gearbox', args: 'off' })
   expect(status.at(-1)).toBeUndefined()
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -198,11 +198,11 @@ test('the pane can hide finished subagents and keep only what is running', async
     expect(JSON.stringify(await view.find({ key: 'pane-filter' }))).toContain('Show finished (1)')
     await view.unmount()
   }
-  expect((await $.command.run({ command: 'gearbox', args: 'pane all' })).text).toBe('gearbox: pane open')
+  expect((await $.command.run({ command: 'gearbox', args: 'pane all' })).text).toBe('pane open')
   const back = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await back.find({ type: 'Text', text: /browser check/ })).toBeDefined()
   await back.unmount()
-  expect((await $.command.run({ command: 'gearbox', args: 'pane done' })).text).toBe('gearbox: pane takes running or all')
+  expect((await $.command.run({ command: 'gearbox', args: 'pane done' })).text).toBe('pane takes running or all')
 })
 
 

@@ -236,9 +236,9 @@ const unquoted = (command: string) =>
 export const isLongCommand = (command: string) =>
   /\b(test|tests|e2e|playwright|jest|vitest|cypress|mocha|pytest|build|deploy|publish|release)\b/i.test(unquoted(command))
 
-// Git and GitHub chores on a long conversation: every request here re-reads the whole context, so past this size a
-// fresh subagent does the chore for less. Below it, the main conversation does it itself, at low or medium.
-export const CHORE_CONTEXT = 100_000
+// A long conversation: every request here re-reads the whole context, so past this size git chores go to a fresh
+// subagent and runs of reads to Haiku. Below it, the main conversation does both itself.
+export const LONG_CONTEXT = 100_000
 // Plain git work on Haiku; writing (a pull request section, a ticket comment) on Sonnet.
 export const choreGear = (depth: number): Gear => (depth === 0 ? { model: 'haiku', effort: 'low' } : { model: 'sonnet', effort: 'medium' })
 
@@ -246,6 +246,69 @@ export const choreGear = (depth: number): Gear => (depth === 0 ? { model: 'haiku
 // skipped the subagent. Reading (git status, git log, gh pr view) stays allowed.
 export const isChoreCommand = (command: string) =>
   /\bgit\s+(commit|push|tag)\b|\bgh\s+(pr|issue|release)\s+(create|edit|comment|merge|close|review)\b/.test(unquoted(command))
+
+// Shell commands that only read: a list or pipeline of them, with no redirection into a file and no command
+// substitution. Anything it cannot tell is not a read.
+const READERS = new Set(['cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'ls', 'tree', 'find', 'wc', 'sort', 'uniq', 'cut', 'tr', 'jq', 'awk', 'sed', 'diff', 'stat', 'file', 'du', 'pwd', 'echo', 'printf', 'which', 'basename', 'dirname', 'realpath', 'nl', 'column', 'date', 'cd', 'true'])
+const readsOne = (words: string[]): boolean => {
+  while (/^\w+=/.test(words[0] ?? '')) words = words.slice(1)
+  const [cmd = '', ...args] = words
+  if (!cmd) return true
+  if (cmd === 'git') {
+    while (args[0] === '-C' || args[0] === '-c' || args[0] === '--no-pager') args.splice(0, args[0] === '--no-pager' ? 1 : 2)
+    const [sub = '', ...rest] = args
+    // Listing branches, remotes or tags takes only flags; a name creates, renames or deletes one.
+    if (/^(branch|remote|tag)$/.test(sub)) return rest.every(a => a.startsWith('-') && !/^(-[dDmMcCfu]|--(delete|move|copy|force|set-upstream|unset-upstream|edit-description))/.test(a))
+    return /^(status|log|show|diff|blame|grep|ls-files|ls-tree|rev-parse|describe|shortlog|cat-file|merge-base|name-rev|for-each-ref)$/.test(sub)
+  }
+  if (cmd === 'gh') {
+    const [group = '', sub = ''] = args
+    if (group === 'api') return !args.some(a => /^(-X|--method|-f|-F|--field|--raw-field|--input)/.test(a))
+    if (group === 'auth') return sub === 'status'
+    return group === 'search' || (/^(pr|issue|run|release|repo|workflow|label)$/.test(group) && /^(view|list|checks|diff|status)$/.test(sub))
+  }
+  if (cmd === 'sed') return !args.some(a => /^-[^-]*i|^--in-place/.test(a))
+  if (cmd === 'find') return !args.some(a => /^-(delete|exec|execdir|ok|okdir|fprint0?|fprintf|fls)$/.test(a))
+  if (cmd === 'sort') return !args.some(a => /^(-o|--output)/.test(a))
+  return READERS.has(cmd)
+}
+export const isReadOnlyCommand = (command: string): boolean => {
+  const bare = unquoted(command)
+  if (/\$\(|`|[<>]\(/.test(bare)) return false
+  // Into another stream or /dev/null is no write.
+  if (/>/.test(bare.replace(/\d*>&\d+|[&\d]?>>?\s*\/dev\/null/g, ' '))) return false
+  return bare.split(/&&|\|\||[;|\n]/).every(part => {
+    const words = part.trim().replace(/^(do|then|else)\s+/, '').split(/\s+/).filter(Boolean)
+    if (words[0] === 'done' || words[0] === 'fi') return words.length === 1
+    if (words[0] === 'for') return words[2] === 'in'
+    return readsOne(words)
+  })
+}
+
+// A tool call, as a request's response asks for it.
+export type Use = { name: string; input: unknown }
+const LOOKS = /^(Read|Grep|Glob|LS|NotebookRead|WebFetch|WebSearch)$/
+// Tools that neither look nor change anything: they keep a run of reads going without counting as one.
+const ASIDE = /^(TodoWrite|mcp__gearbox__phase)$|__update_plan$/
+const looks = (u: Use) => LOOKS.test(u.name) || (u.name === 'Bash' && isReadOnlyCommand(String((u.input as { command?: unknown } | null)?.command ?? '')))
+// What a response did: only read (asides allowed), only asides, or anything else (an edit, a command that changes
+// something, an answer with no call).
+export const readKind = (uses: readonly Use[]): 'read' | 'aside' | 'other' => {
+  const own = uses.filter(u => !ASIDE.test(u.name))
+  return !uses.length ? 'other' : !own.length ? 'aside' : own.every(looks) ? 'read' : 'other'
+}
+
+// Scouting: on a long conversation, a run of reads (fetching logs, reading files, grepping) goes to Haiku, whose
+// cached input costs a quarter of Opus's. The main model still decides anything that matters: Haiku's reply is
+// kept only if it calls nothing but reads and says little; any other reply is thrown away and the same request
+// goes to the main model.
+export const SCOUT: Gear = { model: 'haiku', effort: 'low' }
+// Its first request caches the whole conversation for Haiku, which Claude Code keeps for an hour: so scouting
+// starts on the second read in a row, or on the first while that cache is warm.
+export const SCOUT_WARM_MS = 55 * 60_000
+export const scouts = (streak: number, warm: boolean) => streak >= 2 || (streak >= 1 && warm)
+export const keepsScout = (r: { stopReason: string | null; answer: string; toolUses: readonly Use[]; serverToolUses?: readonly unknown[] }) =>
+  r.stopReason === 'tool_use' && r.answer.length <= 600 && !r.serverToolUses?.length && r.toolUses.length > 0 && r.toolUses.every(looks)
 
 export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep'; gear: Gear }
 export type Plan = { main: Gear; handoff?: Handoff }
