@@ -199,7 +199,7 @@ export const usageReport = (ledger: Ledger) => {
 const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh']
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode }
+export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running' }
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit.
@@ -211,6 +211,7 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
     navigator: o.navigator === 'haiku' ? 'haiku' : 'sonnet',
     strict: o.strict !== false,
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
+    pane: o.pane === 'running' ? 'running' : 'all',
   }
 }
 
@@ -221,6 +222,7 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'steer' && (value === 'on' || value === 'off')) return { steer: value === 'on' }
   if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
+  if (word === 'pane' && (value === 'all' || value === 'running')) return { pane: value }
   return undefined
 }
 
@@ -240,7 +242,8 @@ const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
   let { code_effort: standing, steer: steers, navigator, strict, log: logMode } = settingsFrom(options, undefined)
-  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode })
+  let paneShows: Settings['pane'] = 'all'
+  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode, pane: paneShows })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
@@ -252,6 +255,7 @@ export const register: Register = (on, options) => {
     navigator = s.navigator
     strict = s.strict
     logMode = s.log
+    paneShows = s.pane
   }
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
@@ -359,7 +363,14 @@ export const register: Register = (on, options) => {
       }
       return { text: `gearbox: ${settingsText(current())} (from your next prompt)` }
     }
-    if (arg === 'pane') {
+    if (word === 'pane') {
+      // /gearbox pane running|all also sets what the pane lists, then opens it.
+      if (value) {
+        const change = settingPatch('pane', value)
+        if (!change) return { text: 'gearbox: pane takes running or all' }
+        await saveSetting($, change)
+        apply(await loadSettings($, options))
+      }
       const { isPlaced } = await $.ui.open({ id: PANE, title: 'gearbox: models now' })
       return { text: isPlaced ? 'gearbox: pane open' : 'gearbox: the pane opens once the window has room for it' }
     }
@@ -655,6 +666,7 @@ export const register: Register = (on, options) => {
       ['Steer non-Haiku', 'steer', ['on', 'off'], s.steer ? 'on' : 'off'],
       ['Strict hand-offs', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
       ['Debug log', 'log', ['off', 'on', 'full'], s.log],
+      ['Models pane shows', 'pane', ['all', 'running'], s.pane],
     ]
     return (
       <Box flexDirection="column" rowGap={1}>
@@ -678,17 +690,30 @@ export const register: Register = (on, options) => {
 
   // /gearbox pane: every loop of the session, nested under the loop that started it.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     if (!enabled) return <Text dimColor>gearbox is off. /gearbox on turns it back on.</Text>
     const loops = await read($, LOOPS)
-    const rows = Object.entries(loops).sort(([a], [b]) => (a === 'main' ? -1 : b === 'main' ? 1 : 0))
-    if (!rows.length) return <Text dimColor>No model calls yet. Rows appear as the session works.</Text>
+    // Reading the settings here redraws the pane when the filter changes.
+    const runningOnly = settingsFrom(options, await read($, SETTINGS)).pane === 'running'
+    const all = Object.entries(loops).sort(([a], [b]) => (a === 'main' ? -1 : b === 'main' ? 1 : 0))
+    if (!all.length) return <Text dimColor>No model calls yet. Rows appear as the session works.</Text>
+    // Running only: finished subagents leave; the main conversation stays as the anchor.
+    const rows = runningOnly ? all.filter(([id, l]) => id === 'main' || l.state === 'working') : all
+    const finished = all.filter(([, l]) => l.state === 'done').length
+    const toggle = (
+      <Button
+        key="pane-filter"
+        label={runningOnly ? `Show finished (${finished})` : 'Hide finished'}
+        onPress={() => saveSetting($, { pane: runningOnly ? 'all' : 'running' })}
+      />
+    )
     const width = Math.max(40, e.props.bodyColumns)
     const [gearW, stepsW] = [15, 6]
     const nameW = Math.min(30, Math.max(12, Math.floor((width - gearW - stepsW) * 0.45)))
     const nowW = Math.max(8, width - nameW - gearW - stepsW)
     return (
       <Box flexDirection="column">
+        {finished > 0 || runningOnly ? toggle : null}
         {/* mono keeps the padded columns aligned on the desktop; the terminal is monospaced anyway */}
         <Text dimColor mono>
           {fit('LOOP', nameW)}
