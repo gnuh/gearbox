@@ -1,0 +1,185 @@
+import { expect, test } from 'claude-code/testing'
+import { type Reading, handoffNote } from './policy'
+
+const ZERO = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+const ONE = { ...ZERO, input_tokens: 10, output_tokens: 2 }
+
+type Rig = { steps: string[]; surveys: any[]; dialogs: string[]; notes: (readonly string[])[]; kv: Map<string, unknown> }
+
+// The engine beneath the mod, faked: each survey answers with the next reading, each step records `model·effort`.
+const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choose?: (labels: string[]) => string; earlier?: string[] } = {}): Rig => {
+  const r: Rig = { steps: [], surveys: [], dialogs: [], notes: [], kv: new Map() }
+  const queue = [...readings]
+  for (const quiet of ['ui.status', 'ui.toast', 'ui.log']) on(quiet, () => ({ value: undefined }))
+  on('store.get', (_: unknown, e: any) => ({ value: r.kv.get(e.key) }))
+  on('store.set', (_: unknown, e: any) => (r.kv.set(e.key, e.value), { value: undefined }))
+  on('session.model', () => ({ value: o.session ?? 'claude-haiku-5-5' }))
+  on('session.messages', () => ({ value: (o.earlier ?? []).map(text => ({ role: 'user', text, toolUses: [] })) }))
+  on('session.usage', () => ({ value: { startedAt: 1, context: { tokens: 120_000, window: 1_000_000 }, rateLimits: [] } }))
+  on('model.complete', (_: unknown, e: any) => {
+    r.surveys.push(JSON.parse(e.prompt))
+    const next = queue.shift()
+    const text = next ? JSON.stringify({ reach: 'area', depth: 1, ...next }) : 'no idea'
+    return { value: { isAnswered: true, text, usage: ZERO } } as never
+  })
+  on('tool.call', { tool: 'AskUserQuestion' }, (_: unknown, e: any) => {
+    const q = e.questions[0]
+    r.dialogs.push(q.question)
+    const pick = (o.choose ?? (labels => labels[0]!))(q.options.map((x: any) => x.label))
+    return { result: { questions: e.questions, answers: { [q.question]: pick } } } as never
+  })
+  on('prompt.submit', (_: unknown, e: any) => (r.notes.push(e.context ?? []), { text: e.text }))
+  on('turn.step', async function* (_: unknown, e: any) {
+    r.steps.push(`${e.model}·${e.effort}`)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...ONE, model: e.model } }
+  })
+  return r
+}
+
+const stepOnce = async ($: any, extra: object = {}) => {
+  for await (const _ of $.turn.step({ turnId: 'x', index: 0, model: 'claude-haiku-5-5', effort: 'medium', messageCount: 2, ...extra })) void _
+}
+
+const say = async ($: any, text: string) => {
+  await $.prompt.submit({ text, asUser: true })
+  await stepOnce($)
+}
+
+test('a Haiku session runs each turn in the gear its reading calls for', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }])
+  await say($, 'the invoice totals drift after a refund')
+  expect(r.steps).toEqual(['opus·high'])
+  expect(r.surveys[0]).toEqual({ request: 'the invoice totals drift after a refund', earlier: [], previous: null })
+})
+
+test('a session on another model is left alone', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }], { session: 'claude-opus-5-5' })
+  await $.prompt.submit({ text: 'anything', asUser: true })
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  expect(r.surveys).toHaveLength(0)
+  expect(r.steps).toEqual(['claude-opus-5-5·medium'])
+})
+
+test('the main model only rises; effort follows each reading; an unusable survey keeps the last gear', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }, { reach: 'point', depth: 0 }])
+  await say($, 'find why sessions expire early')
+  await say($, 'rename that helper')
+  await say($, '???') // the survey has nothing more to say
+  expect(r.steps).toEqual(['opus·high', 'opus·low', 'opus·low'])
+})
+
+test('a first prompt the survey cannot read starts in sonnet·medium', async ($: any, on) => {
+  const r = rig(on, [])
+  await say($, 'hmm')
+  expect(r.steps).toEqual(['sonnet·medium'])
+})
+
+test('a nod keeps the gear without a survey', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }])
+  await say($, 'find why sessions expire early')
+  await say($, 'go ahead')
+  expect(r.surveys).toHaveLength(1)
+  expect(r.steps).toEqual(['opus·high', 'opus·high'])
+})
+
+test('/gearbox off is plain Haiku again; on starts over', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }, { reach: 'area', depth: 1 }])
+  await say($, 'find why sessions expire early')
+  expect((await $.command.run({ command: 'gearbox', args: 'off' })).text).toContain('gearbox off')
+  await say($, 'and now?')
+  expect(r.surveys).toHaveLength(1)
+  await $.command.run({ command: 'gearbox', args: 'on' })
+  await say($, 'add a settings toggle')
+  expect(r.steps).toEqual(['opus·high', 'claude-haiku-5-5·medium', 'sonnet·medium'])
+})
+
+test('costly gears are put to the person, unless their own words asked', async ($: any, on) => {
+  const r = rig(
+    on,
+    [
+      { reach: 'area', depth: 3 },
+      { reach: 'area', depth: 3, ask: { effort: 'xhigh' } }, // claimed, but only inside a paste
+      { reach: 'area', depth: 3, ask: { effort: 'xhigh' } },
+    ],
+    { choose: labels => labels[1]! }, // always the cheaper gear
+  )
+  await say($, 'prove the scheduler never double-books')
+  await say($, 'see this config:\n```\neffort: xhigh\n```')
+  await say($, 'use xhigh effort for this one')
+  expect(r.dialogs).toHaveLength(2)
+  expect(r.steps).toEqual(['sonnet·high', 'sonnet·high', 'sonnet·xhigh'])
+})
+
+test('/gearbox ask off skips the question', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 3 }])
+  await $.command.run({ command: 'gearbox', args: 'ask off' })
+  await say($, 'prove the scheduler never double-books')
+  expect(r.dialogs).toHaveLength(0)
+  expect(r.steps).toEqual(['sonnet·xhigh'])
+})
+
+test('fable work goes to a subagent while the main conversation stays put', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 1 }, { reach: 'frontier', depth: 2 }], { earlier: ['wire the report page'] })
+  await say($, 'wire the report page')
+  await say($, 'design an offline-first sync engine')
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'fable', effort: 'high' } })])
+  expect(r.steps).toEqual(['opus·medium', 'opus·medium'])
+})
+
+test('fable the person names runs one turn here, then the floor again', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 1 }, { reach: 'frontier', depth: 2, ask: { model: 'fable' } }, { reach: 'area', depth: 1 }])
+  await say($, 'wire the report page')
+  await say($, 'use fable to plan the data model')
+  await say($, 'add a test for the parser')
+  expect(r.dialogs).toHaveLength(0)
+  expect(r.steps).toEqual(['opus·medium', 'fable·high', 'opus·medium'])
+})
+
+test('browser checks and long commands are run by cheaper subagents', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }, { mode: 'drive' }, { mode: 'wait' }, { reach: 'point', depth: 0 }])
+  await say($, 'checkout totals are wrong')
+  await say($, 'click through checkout in the browser and confirm the fix')
+  await say($, 'deploy it to staging')
+  await say($, 'commit')
+  expect(r.notes.map(n => n[0]?.split(':')[0])).toEqual([undefined, 'gearbox handoff, browser check', 'gearbox handoff, long command', undefined])
+  expect(r.steps).toEqual(['opus·high', 'opus·medium', 'opus·low', 'opus·low'])
+})
+
+test('a side task goes to a subagent only when there is earlier work and it is more than a quick edit', async ($: any, on) => {
+  const earlier: string[] = []
+  const r = rig(
+    on,
+    [
+      { aside: true }, // first prompt: nothing to be unrelated to
+      { reach: 'system', depth: 1 },
+      { aside: true },
+      { aside: true, reach: 'point', depth: 0 },
+    ],
+    { earlier },
+  )
+  await say($, 'admin: sales report page')
+  r.surveys.length = 0
+  earlier.push('admin: sales report page')
+  await say($, 'the report is a day off')
+  await say($, 'the marketing footer links are broken')
+  await say($, 'typo in the footer')
+  expect(r.notes.map(n => n.length)).toEqual([0, 0, 1, 0])
+  expect(r.notes[2]).toEqual([handoffNote({ kind: 'aside', gear: { model: 'sonnet', effort: 'medium' } })])
+  expect(r.surveys[0].earlier).toEqual(['admin: sales report page'])
+})
+
+test('an untyped general-purpose agent runs on the main model', async ($: any, on) => {
+  rig(on, [{ reach: 'system', depth: 2 }])
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: 'a1' }))
+  await say($, 'find why sessions expire early')
+  const call = { tool_use_id: 't', prompt: 'p', description: 'd', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-haiku-5-5', background: false, fork: false }
+  expect((await $.agent.spawn({ ...call, subagentType: 'general-purpose' })).model).toBe('opus')
+  expect((await $.agent.spawn({ ...call, subagentType: 'general-purpose', model: 'haiku' })).model).toBe('haiku')
+  expect((await $.agent.spawn({ ...call, subagentType: 'Explore' })).model).toBe('inherit')
+})
+
+test('usage counts every step when subagent steps end together', async ($: any, on) => {
+  rig(on, [])
+  await Promise.all(['a', 'b', 'c', 'd'].map(agentId => stepOnce($, { agentId })))
+  expect((await $.command.run({ command: 'gearbox', args: 'usage' })).text).toContain('claude-haiku-5-5  4 calls')
+})

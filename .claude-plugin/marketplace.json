@@ -1,0 +1,6 @@
+{
+  "name": "gearbox",
+  "owner": { "name": "Magno Chiabai" },
+  "metadata": { "description": "gearbox: per-prompt model and effort routing for Claude Code sessions on Haiku" },
+  "plugins": [{ "name": "gearbox", "source": "./" }]
+}
