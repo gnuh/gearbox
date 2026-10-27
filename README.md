@@ -104,16 +104,16 @@ gearbox shows which model every loop is running on at this moment: the main conv
 - **Spinner:** the working loop's line names the model and effort of its request in flight, `Sauteing… on opus · xhigh`. Claude Code's own effort display shows the session setting, not what gearbox sent; this one is live.
 - **Band above the prompt** (terminal and desktop app): your coding effort and three actions, five live columns, then a row per running subagent.
   ```
-  coding effort  medium  high  [xhigh]                                         Pane  Log  Settings
+  coding effort  medium  high  [xhigh]                                        Panel  Log  Settings
   now                 agents              this turn            cost                 why
   opus·medium         3 running           18 requests          $12.87 ▂▅▁▃▆▂▄▅      route 3/5
-  Agent: browser…     sonnet·low ×2 · …   opus 4 · sonnet 11…  this turn $0.57 · ⌀… browser check · sonnet…
+  Agent: browser…     sonnet·low ×2 · …   opus 4 · sonnet 11…  this turn $0.57 · avg…browser check · sonnet…
   ⇢ browser check      sonnet·low    Bash: npx playwright test checkout.spec.ts     6 requests  5s
   ⇢ mobile check       sonnet·low    read_page                                      4 requests  5s
   ⇢ deploy to staging  haiku·low     Bash: curl -sf staging.shop.test/health        3 requests  4s
   ```
-  The effort buttons set your coding effort for the next prompt. **now** is the model·effort of the main conversation's request in flight and what it is doing; **agents**, the subagents running, grouped by gear; **this turn**, the requests sent since your prompt, per model; **cost**, the session's cost (as `/cost` counts it) with a bar per recent turn, this turn's and the average; **why**, why this gear (`route 2/5`, `code · area`, `/review`). Each running subagent gets a row: what it was asked to do, its gear, the tool it runs now, the requests it has sent and how long it has run, with `answered by …` when a fallback answered on another model. Up to five rows; past that, the last says `+N more · Pane`. A terminal under 100 columns keeps now, agents and cost. **Pane** opens the models table, **Log** turns the debug log on or off, **Settings** opens the settings panel. Nothing unknown is drawn as a dash. Bands other mods draw in that slot stay, under gearbox's. `/gearbox band off` turns it off.
-- **Pane:** `/gearbox pane` opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested. **Hide finished** at the top keeps only what is running (the main conversation stays); **Show finished (n)** brings the rest back. The choice is kept; `/gearbox pane running` or `/gearbox pane all` sets it too.
+  The effort buttons set your coding effort for the next prompt. **now** is the model·effort of the main conversation's request in flight and what it is doing; **agents**, the subagents running, grouped by gear; **this turn**, the requests sent since your prompt, per model; **cost**, the session's cost (as `/cost` counts it) with a bar per recent turn, this turn's and the average; **why**, why this gear (`route 2/5`, `code · area`, `/review`). Each running subagent gets a row: what it was asked to do, its gear, the tool it runs now, the requests it has sent and how long it has run, with `answered by …` when a fallback answered on another model. Up to five rows; past that, the last says `+N more · Panel`. A terminal under 100 columns keeps now, agents and cost. **Panel** opens the models table, **Log** turns the debug log on or off, **Settings** opens the settings panel. Nothing unknown is drawn as a dash. Bands other mods draw in that slot stay, under gearbox's. `/gearbox band off` turns it off.
+- **Panel:** `/gearbox panel` (or `/gearbox pane`) opens a table of every loop in the session, nested under the loop that started it, with its model, effort, the tool it is running and its step count. A row says `answered by …` when a fallback answered on a different model than the one requested. **Hide finished** at the top keeps only what is running (the main conversation stays); **Show finished (n)** brings the rest back. The choice is kept; `/gearbox panel running` or `/gearbox panel all` sets it too.
 - **Status line:** the main gear plus the running subagents, grouped by gear, `gearbox ▸ opus·high ⇢ 3 agents: sonnet·low ×2, haiku·low`.
 
 All four read one shared record that is updated when a subagent starts, as each request leaves (so the readout is never a step late), when the reply returns, on each tool call and when a turn ends.
@@ -130,7 +130,7 @@ The rules, your new prompt (up to about 4,000 characters, as JSON), your last th
 | `/gearbox settings` | open the settings panel |
 | `/gearbox log` | show the debug log's path, last decision and last request; `/gearbox log on\|off\|full` turns it on or off |
 | `/gearbox effort <medium\|high\|xhigh>`, `/gearbox navigator <sonnet\|haiku>`, `/gearbox steer <on\|off>`, `/gearbox strict <on\|off>` | change one setting directly |
-| `/gearbox pane` | open the live table of every loop's model; `/gearbox pane running` lists only what is running, `/gearbox pane all` everything |
+| `/gearbox panel` | open the live table of every loop's model (`/gearbox pane` works too); `/gearbox panel running` lists only what is running, `/gearbox panel all` everything |
 | `/gearbox on`, `/gearbox off` | turn gearbox on or off (off leaves every session alone, no readout) |
 | `/gearbox ask on`, `/gearbox ask off` | ask before Fable or xhigh/max |
 | `/gearbox usage` | calls, tokens and estimated cost per model, subagents included |
