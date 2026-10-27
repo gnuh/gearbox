@@ -425,8 +425,8 @@ export const register: Register = (on, options) => {
       }
       return { text: `gearbox: ${settingsText(current())} (from your next prompt)` }
     }
-    if (word === 'pane') {
-      // /gearbox pane running|all also sets what the pane lists, then opens it.
+    if (word === 'pane' || word === 'panel') {
+      // /gearbox panel (or pane) running|all also sets what the pane lists, then opens it.
       if (value) {
         const change = settingPatch('pane', value)
         if (!change) return { text: 'gearbox: pane takes running or all' }
@@ -453,7 +453,7 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'gearbox: usage cleared' }
     } else if (arg) {
-      return { text: `gearbox: unknown "${arg}". Try settings, effort, navigator, steer, strict, pane, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `gearbox: unknown "${arg}". Try settings, panel, effort, navigator, steer, strict, log, band, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
@@ -731,21 +731,24 @@ export const register: Register = (on, options) => {
     const requests = Object.entries(turn.requests)
     const total = requests.reduce((n, [, c]) => n + c, 0)
     const avg = turnCosts.length ? turnCosts.reduce((a, b) => a + b, 0) / turnCosts.length : undefined
-    // [label, value, the line under it, the value's colour]. Nothing unknown is drawn as a dash.
-    const cols: [string, string, string, string | undefined][] = [
+    // Bars and an average only once there are turns to compare.
+    const compare = turnCosts.length > 1
+    // [label, value, the line under it, the value's colour, bars after the value]. Nothing unknown is drawn as a dash.
+    const cols: [string, string, string, string | undefined, string?][] = [
       ['now', works ? gearText(main!) : 'idle', works ? (main!.doing ?? 'thinking') : main ? `last ${gearText(main)}` : 'waiting for a prompt', works ? hue(main!) : undefined],
       ['agents', subs.length ? `${subs.length} running` : 'none', subs.length ? gearsText(subs.map(([, l]) => l), ' · ') : 'no hand-off running', undefined],
       ['this turn', `${total} request${total === 1 ? '' : 's'}`, requests.map(([m, c]) => `${m} ${c}`).join(' · ') || 'none sent yet', undefined],
       [
         'cost',
-        usd !== undefined ? `${money(usd)} ${bars(turnCosts)}`.trim() : 'not known',
-        [thisTurn !== undefined ? `this turn ${money(thisTurn)}` : '', avg !== undefined ? `⌀ ${money(avg)}` : ''].filter(Boolean).join(' · '),
+        usd !== undefined ? money(usd) : 'not known',
+        [thisTurn !== undefined ? `this turn ${money(thisTurn)}` : '', compare && avg !== undefined ? `avg ${money(avg)}` : ''].filter(Boolean).join(' · '),
         undefined,
+        compare ? bars(turnCosts) : undefined,
       ],
       ['why', turn.why?.[0] ?? 'waiting for a prompt', turn.why?.[1] ?? '', '#E9A23B'],
     ]
-    // A narrow terminal keeps what matters most, so nothing wraps.
-    const shown = e.props.bodyColumns < 100 ? [cols[0]!, cols[1]!, cols[3]!] : cols
+    // A narrow band keeps what matters most, so nothing wraps. The desktop app counts fewer, wider cells than a terminal.
+    const shown = e.props.bodyColumns < (e.surface === 'terminal' ? 100 : 60) ? [cols[0]!, cols[1]!, cols[3]!] : cols
     const width = Math.max(12, Math.floor((e.props.bodyColumns - 2 * (shown.length - 1)) / shown.length))
     // Up to five subagent rows; past that, four and a count of the rest.
     const listed = subs.length > 5 ? subs.slice(0, 4) : subs
@@ -757,16 +760,25 @@ export const register: Register = (on, options) => {
       apply(await loadSettings($, options))
     }
     const mine = (
-      <Box flexDirection="column">
+      <Box flexDirection="column" rowGap="sm">
         <Box flexDirection="row" columnGap={1} alignItems="center">
-          <Text dimColor>coding effort</Text>
+          <Text dimColor size="caption">
+            coding effort
+          </Text>
           {(['medium', 'high', 'xhigh'] as const).map(level => (
-            <Button key={`band-effort-${level}`} label={level} variant={level === s.code_effort ? 'primary' : 'secondary'} onPress={() => choose({ code_effort: level })} />
+            <Button
+              key={`band-effort-${level}`}
+              label={level}
+              variant={level === s.code_effort ? 'primary' : 'secondary'}
+              {...(level === s.code_effort ? {} : { dimColor: true })}
+              onPress={() => choose({ code_effort: level })}
+            />
           ))}
           <Box flexGrow={1} />
-          <Button key="band-pane" label="Pane" onPress={() => void $.ui.open({ id: PANE, title: 'gearbox: models now' })} />
+          <Button key="band-pane" dimColor label="Panel" onPress={() => void $.ui.open({ id: PANE, title: 'gearbox: models now' })} />
           <Button
             key="band-log"
+            dimColor
             label={s.log === 'off' ? 'Log' : 'Log ✓'}
             onPress={async () => {
               await choose({ log: s.log === 'off' ? 'on' : 'off' })
@@ -776,42 +788,51 @@ export const register: Register = (on, options) => {
               }
             }}
           />
-          <Button key="band-settings" label="Settings" onPress={() => void $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })} />
+          <Button key="band-settings" dimColor label="Settings" onPress={() => void $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })} />
         </Box>
         <Box flexDirection="row" columnGap={2}>
-          {shown.map(([k, v, sub, color]) => (
-            <Box flexDirection="column" width={width}>
-              <Text dimColor wrap="truncate">
+          {shown.map(([k, v, sub, color, extra]) => (
+            <Box flexDirection="column" width={width} flexGrow={1} flexShrink={1}>
+              <Text dimColor size="caption" wrap="truncate">
                 {k}
               </Text>
-              <Text bold wrap="truncate" {...(color ? { color } : {})}>
+              <Text size="heading" weight="semibold" wrap="truncate" {...(color ? { color } : {})}>
                 {v}
+                {extra ? (
+                  <Text dimColor mono weight="regular" size="caption">
+                    {` ${extra}`}
+                  </Text>
+                ) : null}
               </Text>
-              <Text dimColor wrap="truncate">
+              <Text dimColor size="caption" wrap="truncate">
                 {sub}
               </Text>
             </Box>
           ))}
         </Box>
-        {listed.map(([id, l]) => (
-          <Box key={`band-agent-${id}`} flexDirection="row" columnGap={2}>
-            <Box width={labelW} flexShrink={0}>
-              <Text wrap="truncate">{`⇢ ${l.label}`}</Text>
-            </Box>
-            <Box width={14} flexShrink={0}>
-              <Text bold wrap="truncate" color={hue(l)}>
-                {gearText(l)}
-              </Text>
-            </Box>
-            <Box flexGrow={1} flexShrink={1}>
-              <Text dimColor wrap="truncate">
-                {swapped(l) ? `${l.doing ?? 'thinking'} · answered by ${family(l.answered!) ?? l.answered}` : (l.doing ?? 'thinking')}
-              </Text>
-            </Box>
-            <Text dimColor>{`${l.steps} request${l.steps === 1 ? '' : 's'}${l.since !== undefined ? `  ${ran(now - l.since)}` : ''}`}</Text>
+        {listed.length ? (
+          <Box flexDirection="column">
+            {listed.map(([id, l]) => (
+              <Box key={`band-agent-${id}`} flexDirection="row" columnGap={2}>
+                <Box width={labelW} flexShrink={0}>
+                  <Text wrap="truncate">{`⇢ ${l.label}`}</Text>
+                </Box>
+                <Box width={14} flexShrink={0}>
+                  <Text weight="semibold" wrap="truncate" color={hue(l)}>
+                    {gearText(l)}
+                  </Text>
+                </Box>
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text dimColor wrap="truncate">
+                    {swapped(l) ? `${l.doing ?? 'thinking'} · answered by ${family(l.answered!) ?? l.answered}` : (l.doing ?? 'thinking')}
+                  </Text>
+                </Box>
+                <Text dimColor tabular>{`${l.steps} request${l.steps === 1 ? '' : 's'}${l.since !== undefined ? `  ${ran(now - l.since)}` : ''}`}</Text>
+              </Box>
+            ))}
+            {subs.length > listed.length ? <Text dimColor>{`+${subs.length - listed.length} more · Panel`}</Text> : null}
           </Box>
-        ))}
-        {subs.length > listed.length ? <Text dimColor>{`+${subs.length - listed.length} more · Pane`}</Text> : null}
+        ) : null}
       </Box>
     )
     return below ? (

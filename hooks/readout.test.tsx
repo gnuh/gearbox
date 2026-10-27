@@ -77,9 +77,16 @@ test('the band: effort tabs, actions, five live columns and a row per subagent, 
     }
     expect(JSON.stringify(await ui.find({ key: 'band-effort-xhigh' }))).toContain('primary') // the default coding effort
     for (const key of ['band-pane', 'band-log', 'band-settings']) expect(await ui.find({ key })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /—/ })).toBeUndefined() // nothing unknown drawn as a dash
+    expect(await ui.find({ type: 'Text', text: /—|⌀|avg/ })).toBeUndefined() // no dash, and no average of one turn
     await ui.unmount()
   }
+  // A second turn brings the bars and the average.
+  await $.prompt.submit({ text: 'and the coupon too' })
+  setCost(10.9)
+  const two = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  expect(await two.find({ type: 'Text', text: /^ [▁▂▃▄▅▆▇█]{2}$/ })).toBeDefined()
+  expect(await two.find({ type: 'Text', text: /this turn \$0\.50 · avg \$0\.45/ })).toBeDefined()
+  await two.unmount()
   const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
   await ui.press({ key: 'band-effort-high' })
   await ui.unmount()
@@ -94,7 +101,7 @@ test('the band groups subagents by gear, lists five at most, and flags a fallbac
   await step($, 'claude-sonnet-5-5', { agentId: 'a-c1', effort: 'low', answeredBy: 'claude-haiku-5-5' })
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^6 running$/, /^sonnet·low · sonnet ×5$/, /^⇢ c1$/, /^⇢ c4$/, /answered by haiku/, /^\+2 more · Pane$/]) {
+    for (const text of [/^6 running$/, /^sonnet·low · sonnet ×5$/, /^⇢ c1$/, /^⇢ c4$/, /answered by haiku/, /^\+2 more · Panel$/]) {
       expect(await ui.find({ type: 'Text', text })).toBeDefined()
     }
     expect(await ui.find({ type: 'Text', text: /^⇢ c5$/ })).toBeUndefined()
@@ -111,6 +118,10 @@ test('the band keeps three columns in a narrow terminal, and steps aside when sw
   expect(await narrow.find({ type: 'Text', text: /^this turn$/ })).toBeUndefined()
   expect(await narrow.find({ type: 'Text', text: /^⇢/ })).toBeUndefined() // no subagent runs
   await narrow.unmount()
+  // The desktop app counts fewer, wider cells: the same count there still holds all five.
+  const desk = await $.ui.mount({ ...BAND_AT(80), surface: 'desktop' })
+  for (const text of [/^this turn$/, /^why$/]) expect(await desk.find({ type: 'Text', text })).toBeDefined()
+  await desk.unmount()
   await $.command.run({ command: 'gearbox', args: 'band off' })
   const off = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
   expect(await off.find({ type: 'Text', text: /coding effort/ })).toBeUndefined()
