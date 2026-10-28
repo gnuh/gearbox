@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, runs of reads on long conversations go to Haiku, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"

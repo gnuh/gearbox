@@ -1,0 +1,24 @@
+[
+  {
+    "c": {
+      "id": "admin-only",
+      "expect": "opus",
+      "prompt": "Only admins may change price tables: add role checks and enforce them in both the gateway and the price service, with tests."
+    },
+    "turns": [
+      {
+        "prompt": "Only admins may change price tables: add role checks and enforce them in both the gateway and the price service, with tests.",
+        "v": {
+          "got": "opus",
+          "handoff": "deep → opus·xhigh",
+          "spawned": [
+            "claude-opus-5-5 (deep)"
+          ],
+          "why": "survey: code, system, depth 2, costly"
+        },
+        "usd": 0.7315885999999999
+      }
+    ],
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-fixture-TZDuOu"
+  }
+]

@@ -1,0 +1,2142 @@
+[
+  {
+    "id": "quote-mismatch",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007549,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007549,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007549,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "random-logout",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007448,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007448,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007448,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "event-schema",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007442,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007442,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007442,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "refunds",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007446,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007446,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007446,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "rbac",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007435,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007435,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007435,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "double-label",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007436,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007436,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007436,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "partition-migration",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 3,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":3,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007441,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 3,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":3,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007441,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 3,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":3,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007441,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "frete-arredondamento",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007466,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007466,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007466,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "review-concurrency",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007536,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007536,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007536,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "correios-timeouts",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": [
+            {
+              "what": "profile courier services",
+              "mode": "answer",
+              "depth": 2
+            },
+            {
+              "what": "add retries, timeouts, circuit breaker",
+              "mode": "code",
+              "depth": 2
+            }
+          ]
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[{\"what\":\"profile courier services\",\"mode\":\"answer\",\"depth\":2},{\"what\":\"add retries, timeouts, circuit breaker\",\"mode\":\"code\",\"depth\":2}]}",
+        "usd": 0.0012963,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "route: profile courier services → opus·high; add retries, timeouts, circuit breaker → opus·xhigh"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007463,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": [
+            {
+              "what": "profile the two courier services",
+              "mode": "answer",
+              "depth": 2
+            },
+            {
+              "what": "add retries, timeouts, circuit breaker",
+              "mode": "code",
+              "depth": 2
+            }
+          ]
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[{\"what\":\"profile the two courier services\",\"mode\":\"answer\",\"depth\":2},{\"what\":\"add retries, timeouts, circuit breaker\",\"mode\":\"code\",\"depth\":2}]}",
+        "usd": 0.0013163,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "route: profile the two courier services → opus·high; add retries, timeouts, circuit breaker → opus·xhigh"
+        }
+      }
+    ]
+  },
+  {
+    "id": "rotate-jwt",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007432000000000001,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007432000000000001,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 3,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":3,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007432000000000001,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pickup-feature",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007444,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007444,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007444,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "cache-invalidation",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007448,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007448,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007448,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "monolith-split",
+    "expect": [
+      "opus",
+      "fable"
+    ],
+    "runs": [
+      {
+        "reading": {
+          "reach": "frontier",
+          "care": "routine",
+          "depth": 3,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"frontier\",\"care\":\"routine\",\"depth\":3,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.000774,
+        "outcome": {
+          "worker": "fable",
+          "gear": "fable·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "frontier",
+          "care": "routine",
+          "depth": 3,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"frontier\",\"care\":\"routine\",\"depth\":3,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.000774,
+        "outcome": {
+          "worker": "fable",
+          "gear": "fable·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "frontier",
+          "care": "routine",
+          "depth": 3,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"frontier\",\"care\":\"routine\",\"depth\":3,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.000774,
+        "outcome": {
+          "worker": "fable",
+          "gear": "fable·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "browser-hard",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "area",
+          "care": "costly",
+          "depth": 2,
+          "mode": "drive",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"costly\",\"depth\":2,\"mode\":\"drive\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007552,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "browser check, judged by opus·high"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "costly",
+          "depth": 2,
+          "mode": "drive",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"costly\",\"depth\":2,\"mode\":\"drive\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007552,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "browser check, judged by opus·high"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "costly",
+          "depth": 2,
+          "mode": "drive",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"costly\",\"depth\":2,\"mode\":\"drive\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007552,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "browser check, judged by opus·high"
+        }
+      }
+    ]
+  },
+  {
+    "id": "route-multi",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": [
+            {
+              "what": "read ticket TASK-123",
+              "mode": "lookup",
+              "depth": 0
+            },
+            {
+              "what": "implement change in both services",
+              "mode": "code",
+              "depth": 1
+            },
+            {
+              "what": "run tests",
+              "mode": "wait",
+              "depth": 0
+            },
+            {
+              "what": "commit changes",
+              "mode": "commit",
+              "depth": 0
+            }
+          ]
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[{\"what\":\"read ticket TASK-123\",\"mode\":\"lookup\",\"depth\":0},{\"what\":\"implement change in both services\",\"mode\":\"code\",\"depth\":1},{\"what\":\"run tests\",\"mode\":\"wait\",\"depth\":0},{\"what\":\"commit changes\",\"mode\":\"commit\",\"depth\":0}]}",
+        "usd": 0.0016844000000000002,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "route: read ticket TASK-123 → haiku·low; implement change in both services → opus·xhigh; run tests → haiku·low; commit changes → main low"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": [
+            {
+              "what": "read ticket TASK-123",
+              "mode": "lookup",
+              "depth": 0
+            },
+            {
+              "what": "implement change in both services",
+              "mode": "code",
+              "depth": 1
+            },
+            {
+              "what": "run tests",
+              "mode": "wait",
+              "depth": 0
+            },
+            {
+              "what": "commit changes",
+              "mode": "commit",
+              "depth": 0
+            }
+          ]
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[{\"what\":\"read ticket TASK-123\",\"mode\":\"lookup\",\"depth\":0},{\"what\":\"implement change in both services\",\"mode\":\"code\",\"depth\":1},{\"what\":\"run tests\",\"mode\":\"wait\",\"depth\":0},{\"what\":\"commit changes\",\"mode\":\"commit\",\"depth\":0}]}",
+        "usd": 0.0016844000000000002,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "route: read ticket TASK-123 → haiku·low; implement change in both services → opus·xhigh; run tests → haiku·low; commit changes → main low"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": [
+            {
+              "what": "read ticket TASK-123",
+              "mode": "lookup",
+              "depth": 0
+            },
+            {
+              "what": "implement change in both services",
+              "mode": "code",
+              "depth": 1
+            },
+            {
+              "what": "run tests",
+              "mode": "wait",
+              "depth": 0
+            },
+            {
+              "what": "commit changes",
+              "mode": "commit",
+              "depth": 0
+            }
+          ]
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[{\"what\":\"read ticket TASK-123\",\"mode\":\"lookup\",\"depth\":0},{\"what\":\"implement change in both services\",\"mode\":\"code\",\"depth\":1},{\"what\":\"run tests\",\"mode\":\"wait\",\"depth\":0},{\"what\":\"commit changes\",\"mode\":\"commit\",\"depth\":0}]}",
+        "usd": 0.0016844000000000002,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "route: read ticket TASK-123 → haiku·low; implement change in both services → opus·xhigh; run tests → haiku·low; commit changes → main low"
+        }
+      }
+    ]
+  },
+  {
+    "id": "explain-auth",
+    "expect": "any",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007536,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 1,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":1,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007536,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·medium",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007536,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "orders-column",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007429,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007429,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007429,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "rename-fn",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007431,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007431,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007431,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "flag-question",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007527,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007527,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007527,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "unit-tests",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007424,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007424,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007424,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "readme-typo",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007422,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007422,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007422,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pagination",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007428000000000001,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007428000000000001,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007428000000000001,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "undefined-fn",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007538,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007538,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007538,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "bump-axios",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007427,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007427,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007427,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "csv-export",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007433,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007433,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007433,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "ask-opus",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {
+            "model": "opus"
+          },
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{\"model\":\"opus\"},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0008129,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {
+            "model": "opus"
+          },
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{\"model\":\"opus\"},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0008129,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {
+            "model": "opus"
+          },
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{\"model\":\"opus\"},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0008129,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "pasted-opus",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007469,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007469,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "area",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007469,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "commit-push",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "commit",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"commit\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007516000000000001,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "commit",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"commit\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007516000000000001,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "commit",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"commit\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007516000000000001,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·low",
+          "how": "main conversation"
+        }
+      }
+    ]
+  },
+  {
+    "id": "costly-mechanical",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "area",
+          "care": "costly",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"area\",\"care\":\"costly\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007445,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007445,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      },
+      {
+        "reading": {
+          "reach": "system",
+          "care": "costly",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"costly\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007445,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·xhigh",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "browser-simple",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "drive",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"drive\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007529,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·medium",
+          "how": "drive hand-off to sonnet·low, main does the rest"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "drive",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"drive\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007529,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·medium",
+          "how": "drive hand-off to sonnet·low, main does the rest"
+        }
+      },
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "drive",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"drive\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.0007529,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·medium",
+          "how": "drive hand-off to sonnet·low, main does the rest"
+        }
+      }
+    ]
+  }
+]

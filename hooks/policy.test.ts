@@ -113,12 +113,14 @@ test('a route below the model it calls for hands its subtle and costly steps to 
     'read the ticket → agent haiku·low',
     'plan it → agent opus·high',
     'build it → agent opus·xhigh',
-    'tidy up → main sonnet·xhigh',
+    'tidy up → agent opus·xhigh',
     'check it in Chrome: navigate → agent sonnet·low',
     'check it in Chrome: analyze → agent opus·high',
     'commit → main sonnet·low',
   ])
-  expect(steps.filter(escalated).map(s => s.mainEffort)).toEqual(['high', 'high', 'high'])
+  expect(steps.filter(escalated).map(s => s.mainEffort)).toEqual(['high', 'high', 'high', 'high'])
+  // Code goes up past a mechanical edit, as a single request's does; a mechanical step stays here.
+  expect(route([{ what: 'rename it', mode: 'code', depth: 0 }], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus').map(s => `${s.by} ${label(s.gear)}`)).toEqual(['main sonnet·xhigh'])
   const note = routeNote(steps)
   expect(note).toContain('3. build it: start a plain Agent (no subagent_type) with model "opus" and effort "xhigh" with a brief that stands on its own')
   expect(note).toContain('6. check it in Chrome: analyze: start a plain Agent (no subagent_type) with model "opus" and effort "high"')

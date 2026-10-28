@@ -1,0 +1,143 @@
+[
+  {
+    "c": {
+      "id": "trace-mismatch",
+      "expect": "opus",
+      "prompt": "Why do quotes differ between the gateway and the price service for the same package? Trace both flows and find the root cause. Do not change code."
+    },
+    "turns": [
+      {
+        "prompt": "Why do quotes differ between the gateway and the price service for the same package? Trace both flows and find the root cause. Do not change code.",
+        "v": {
+          "got": "opus",
+          "handoff": "deep → opus·high",
+          "spawned": [
+            "claude-opus-5-5 (deep)"
+          ],
+          "why": "survey: answer, system, depth 2"
+        },
+        "usd": 0.44918890000000006
+      }
+    ],
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-fixture-5OQjWX"
+  },
+  {
+    "c": {
+      "id": "fix-mismatch",
+      "expect": "opus",
+      "fix": true,
+      "prompt": "Quotes differ by a few cents between the gateway and the price service when there is a discount and insurance. Find the root cause, fix it so every service agrees with the price service, and add a test."
+    },
+    "turns": [
+      {
+        "prompt": "Quotes differ by a few cents between the gateway and the price service when there is a discount and insurance. Find the root cause, fix it so every service agrees with the price service, and add a test.",
+        "v": {
+          "got": "opus",
+          "handoff": "deep → opus·xhigh",
+          "spawned": [
+            "claude-opus-5-5 (deep)"
+          ],
+          "why": "survey: code, system, depth 2, costly"
+        },
+        "usd": 0.48348240000000003
+      }
+    ],
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-fixture-6N0lSD",
+    "fixed": true
+  },
+  {
+    "c": {
+      "id": "trace-then-fix",
+      "expect": "opus",
+      "fix": true,
+      "then": "go ahead and fix it",
+      "prompt": "Why do quotes differ between the gateway and the price service for the same package? Trace both flows and find the root cause, then tell me how you would fix it."
+    },
+    "turns": [
+      {
+        "prompt": "Why do quotes differ between the gateway and the price service for the same package? Trace both flows and find the root cause, then tell me how you would fix it.",
+        "v": {
+          "got": "opus",
+          "handoff": "deep → opus·high",
+          "spawned": [
+            "claude-opus-5-5 (deep)"
+          ],
+          "why": "survey: answer, system, depth 2"
+        },
+        "usd": 0.47295639999999994
+      },
+      {
+        "prompt": "go ahead and fix it",
+        "v": {
+          "got": "opus",
+          "handoff": "deep → opus·xhigh",
+          "spawned": [
+            "claude-opus-5-5 (deep)"
+          ],
+          "why": "survey: code, system, depth 2, costly"
+        },
+        "usd": 0.8900095999999998
+      }
+    ],
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-fixture-vv3F6x",
+    "fixed": true
+  },
+  {
+    "c": {
+      "id": "admin-only",
+      "expect": "opus",
+      "prompt": "Only admins may change price tables: add role checks and enforce them in both the gateway and the price service, with tests."
+    },
+    "turns": [
+      {
+        "prompt": "Only admins may change price tables: add role checks and enforce them in both the gateway and the price service, with tests.",
+        "v": {
+          "got": "skipped",
+          "handoff": "deep → opus·xhigh",
+          "spawned": [],
+          "why": "survey: code, system, depth 2, costly"
+        },
+        "usd": 0.1436638
+      }
+    ],
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-fixture-iSZG9k"
+  },
+  {
+    "c": {
+      "id": "currency-field",
+      "expect": "sonnet",
+      "prompt": "Add a currency field, always \"BRL\", to the response of handleQuote in services/gateway/routes.ts."
+    },
+    "turns": [
+      {
+        "prompt": "Add a currency field, always \"BRL\", to the response of handleQuote in services/gateway/routes.ts.",
+        "v": {
+          "got": "sonnet",
+          "spawned": [],
+          "why": "survey: code, point, depth 1"
+        },
+        "usd": 0.1399319
+      }
+    ],
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-fixture-vyot0K"
+  },
+  {
+    "c": {
+      "id": "what-format",
+      "expect": "sonnet",
+      "prompt": "What does formatMoney in services/shared/money.ts return for 1234.5?"
+    },
+    "turns": [
+      {
+        "prompt": "What does formatMoney in services/shared/money.ts return for 1234.5?",
+        "v": {
+          "got": "sonnet",
+          "spawned": [],
+          "why": "survey: answer, point, depth 1"
+        },
+        "usd": 0.12220719999999999
+      }
+    ],
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-fixture-EFlRvC"
+  }
+]

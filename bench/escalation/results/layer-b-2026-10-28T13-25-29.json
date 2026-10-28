@@ -1,0 +1,21 @@
+[
+  {
+    "c": {
+      "id": "what-format",
+      "expect": "sonnet",
+      "prompt": "What does formatMoney in services/shared/money.ts return for 1234.5?"
+    },
+    "turns": [
+      {
+        "prompt": "What does formatMoney in services/shared/money.ts return for 1234.5?",
+        "v": {
+          "got": "sonnet",
+          "spawned": [],
+          "why": "survey: answer, point, depth 1"
+        },
+        "usd": 0.1224368
+      }
+    ],
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-fixture-ZcyFni"
+  }
+]

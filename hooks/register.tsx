@@ -7,7 +7,10 @@ import {
   type Gear,
   type Handoff,
   BRIEFING,
+  BRIEFING_TOOLS,
+  BRIEF_READS,
   ESCALATES,
+  looksUp,
   ownBrief,
   resumable,
   type Model,
@@ -383,6 +386,7 @@ export const register: Register = (on, options) => {
   let deepAgent: DeepAgent | undefined
   // The Agent call of a deep or handed-up step, by its tool_use_id: the agent it starts becomes `deepAgent`.
   let spawningDeep: { useId?: string; gear: Gear } | undefined
+  let deepReads = 0 // reads the main model made this turn while deep work waits for its agent
   // The browser check or long command under way that a subagent should be doing, if any.
   // The hand-off the next plain Agent call belongs to: the step marked with phase if it is a subagent step,
   // else the first subagent step not yet started; a single-hand-off turn has its one.
@@ -414,6 +418,15 @@ export const register: Register = (on, options) => {
       return s?.by !== 'agent' ? undefined : s.mode === 'drive' || s.mode === 'wait' ? s.mode : s.mode === 'commit' ? 'chore' : undefined
     }
     return turnHandoff?.kind === 'drive' || turnHandoff?.kind === 'wait' || turnHandoff?.kind === 'chore' ? turnHandoff.kind : undefined
+  }
+  // Work owed to a stronger model's agent that has not started yet: the turn's deep hand-off, or the route step
+  // under way when it is one that goes up.
+  const deepPending = (): boolean => {
+    if (turnRoute) {
+      const s = turnStep ? turnRoute[turnStep - 1] : undefined
+      return !!s && escalated(s) && !handedOff.has(turnStep! - 1)
+    }
+    return turnHandoff?.kind === 'deep' && !handedOff.has(-1)
   }
   const stepLabel = (): string | undefined =>
     ownEffort ? `${ownEffort} sets its own effort` : routeLabel()
@@ -554,6 +567,7 @@ export const register: Register = (on, options) => {
     turnGear = turnHandoff = turnRoute = turnStep = undefined
     handedOff = new Set()
     turnText = e.text
+    deepReads = 0
     // "ultrathink" in the person's own words raises this turn's effort in Claude Code; gearbox leaves it be.
     ownEffort = /\bultrathink\b/i.test(ownWords(e.text)) ? 'ultrathink' : undefined
     apply(await loadSettings($, options))
@@ -739,6 +753,17 @@ export const register: Register = (on, options) => {
       return sent
     }
     const tool = String(e.tool)
+    // Strict: deep work is the stronger model's. Until its agent starts, the main model may read a little to write
+    // the brief, but not edit, run commands or keep reading: a note alone was ignored (bench/escalation, layer B).
+    if (strict && deepPending() && !BRIEFING_TOOLS.test(tool)) {
+      if (!looksUp(tool, String((e as any).command ?? '')) || ++deepReads > BRIEF_READS) {
+        const g = handoffGear()
+        logEvent({ ev: 'strict', tool, mode: 'deep', refused: true })
+        return {
+          deny: `gearbox: this work is owed to an ${g?.model ?? 'opus'} agent. Start an Agent with no subagent_type, model "${g?.model ?? 'opus'}" and effort "${g?.effort ?? 'high'}", with a brief that stands on its own${turnHandoff?.resume ? ` (or SendMessage to "${turnHandoff.resume}", the agent that already holds it)` : ''}; it does the work, and you review what it returns. Until then edits, commands and more reads are refused here. (The person can allow doing it here with /gearbox strict off.)`,
+        }
+      }
+    }
     const mode = handoffMode()
     if (mode && turnGear) {
       const command = String((e as any).command ?? '')
