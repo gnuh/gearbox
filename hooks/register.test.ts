@@ -97,7 +97,112 @@ test('steering: fable-level work still goes to a Fable subagent', MEDIUM, async 
   const r = rig(on, [{ reach: 'frontier', depth: 2 }], { session: 'claude-opus-5-5' })
   await sayOn($, 'claude-opus-5-5', 'design an offline-first sync engine')
   expect(r.notes[0]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'fable', effort: 'high' } })])
-  expect(r.steps).toEqual(['claude-opus-5-5·medium'])
+  expect(r.steps).toEqual(['claude-opus-5-5·high'])
+})
+
+test('steering Sonnet: Opus-level work goes to an Opus subagent at its effort; the rest stays on Sonnet', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2, mode: 'answer' }, { reach: 'area', depth: 1 }], { session: 'claude-sonnet-5-5' })
+  const agents: string[] = []
+  on('tool.call', (_: unknown, e: any) => (agents.push(`${e.model}·${e.effort ?? '-'}`), { result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'why do the shipping quotes differ between the gateway and the price service?')
+  expect(r.notes[0]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'opus', effort: 'high' } })])
+  await $.tool.call({ tool: 'Agent', description: 'analyze', prompt: 'p' })
+  await sayOn($, 'claude-sonnet-5-5', 'add a test for the quote mapper')
+  expect(r.notes[1]).toEqual([])
+  expect(agents).toEqual(['opus·high'])
+  expect(r.steps).toEqual(['claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh'])
+})
+
+test('steering Sonnet: a hard browser check is navigated by the navigator and judged by an Opus subagent', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2, mode: 'drive' }], { session: 'claude-sonnet-5-5' })
+  const agents: string[] = []
+  on('tool.call', (_: unknown, e: any) => (agents.push(`${e.model}·${e.effort ?? '-'}`), { result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'check the multi-carrier quote flow in the browser')
+  expect(r.notes[0]![0]).toContain('3. Start a plain Agent (no subagent_type) with model "opus" and effort "high"')
+  await $.tool.call({ tool: 'Agent', description: 'navigate', prompt: 'p' })
+  await $.tool.call({ tool: 'Agent', description: 'judge', prompt: 'p' })
+  expect(agents).toEqual(['sonnet·low', 'opus·high'])
+  expect(r.steps).toEqual(['claude-sonnet-5-5·medium'])
+})
+
+test('steering Sonnet: a route hands its subtle steps to Opus subagents, asking first above the coding effort', MEDIUM, async ($: any, on) => {
+  const phases = [{ what: 'read the ticket', mode: 'lookup', depth: 0 }, { what: 'build it', mode: 'code', depth: 3 }, { what: 'commit', mode: 'commit', depth: 0 }]
+  const r = rig(on, [{ reach: 'system', depth: 3, phases } as any], { session: 'claude-sonnet-5-5', choose: labels => labels[1]! })
+  const agents: string[] = []
+  on('tool.call', (_: unknown, e: any) => (agents.push(`${e.model}·${e.effort ?? '-'}`), { result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'read GAUNTLET-7, rebuild the quote cache, commit')
+  expect(r.dialogs).toHaveLength(1) // opus·xhigh is above a medium coding effort
+  expect(r.notes[0]![0]).toContain('2. build it: start a plain Agent (no subagent_type) with model "opus" and effort "high"')
+  await $.tool.call({ tool: 'Agent', description: 'read', prompt: 'p' })
+  await $.tool.call({ tool: 'mcp__gearbox__phase', step: 2 })
+  await $.tool.call({ tool: 'Agent', description: 'build', prompt: 'p' })
+  expect(agents).toEqual(['haiku·low', 'opus·high'])
+  expect(r.steps).toEqual(['claude-sonnet-5-5·high'])
+})
+
+const spawnCall = (tool_use_id: string, extra: object = {}) => ({ tool_use_id, prompt: 'p', description: 'd', subagentType: 'general-purpose', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-sonnet-5-5', background: false, fork: false, ...extra })
+
+test('steering Sonnet: deep work goes on in the Opus agent that holds it, on a nod or a continuation; unrelated work starts clean', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2, mode: 'answer' }, { reach: 'area', depth: 1, cont: true }, { reach: 'system', depth: 2, mode: 'answer', aside: true }], { session: 'claude-sonnet-5-5', earlier: ['why do the quotes differ?'] })
+  const calls: string[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push(`${e.tool} ${e.model ?? ''}`.trim()), { result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: e.resume?.agentId ?? 'a-deep' }))
+  const opusHigh = { model: 'opus', effort: 'high' } as const
+  await sayOn($, 'claude-sonnet-5-5', 'why do the shipping quotes differ between the gateway and the price service?')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'analyze', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t1', { model: 'opus' }))
+  // "go ahead": no survey, and the same agent takes it, not Sonnet in the main conversation.
+  await sayOn($, 'claude-sonnet-5-5', 'go ahead')
+  expect(r.surveys).toHaveLength(1)
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: opusHigh, resume: 'a-deep' })])
+  await $.tool.call({ tool: 'SendMessage', to: 'a-deep', message: 'go ahead with the fix' })
+  // A continuation the survey reads goes on there too.
+  await sayOn($, 'claude-sonnet-5-5', 'and what about the cache?')
+  expect(r.notes[2]).toEqual([handoffNote({ kind: 'deep', gear: opusHigh, resume: 'a-deep' })])
+  // Unrelated work is a fresh agent.
+  await sayOn($, 'claude-sonnet-5-5', 'separately: why are refunds slow?')
+  expect(r.notes[3]![0]).toContain('gearbox handoff, side task')
+  expect(r.steps).toEqual(['claude-sonnet-5-5·high', 'claude-sonnet-5-5·high', 'claude-sonnet-5-5·high', 'claude-sonnet-5-5·medium'])
+  expect(calls).toEqual(['Agent opus', 'SendMessage'])
+})
+
+test('steering Sonnet: deep work started fresh goes on fresh; with escalate off a nod stays here', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2, mode: 'answer' }, { reach: 'system', depth: 2, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'why do the quotes differ?')
+  // No agent was started (the model skipped it): a nod still hands the work up, to a new agent.
+  await sayOn($, 'claude-sonnet-5-5', 'ok')
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'opus', effort: 'high' } })])
+  await $.command.run({ command: 'gearbox', args: 'escalate off' })
+  await sayOn($, 'claude-sonnet-5-5', 'why do the totals differ?')
+  await sayOn($, 'claude-sonnet-5-5', 'ok')
+  expect(r.notes.slice(2)).toEqual([[], []])
+  expect(r.steps).toEqual(['claude-sonnet-5-5·high', 'claude-sonnet-5-5·high', 'claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh'])
+})
+
+test('steering Sonnet: the Opus brief carries the person’s words, and a typed agent that works still runs on Opus; a search agent does not', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 1 }], { session: 'claude-sonnet-5-5', earlier: ['the quotes differ by a cent'] })
+  const calls: { type: string; model: string; prompt: string }[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push({ type: e.subagent_type ?? 'plain', model: `${e.model ?? '-'}·${e.effort ?? '-'}`, prompt: e.prompt }), { result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'fix the rounding in the quote mapper')
+  await $.tool.call({ tool: 'Agent', description: 'look', prompt: 'find the mapper', subagent_type: 'Explore' })
+  await $.tool.call({ tool: 'Agent', description: 'fix', prompt: 'Fix the rounding in src/quote.ts.', subagent_type: 'coder' })
+  expect(calls.map(c => `${c.type} ${c.model}`)).toEqual(['Explore -·-', 'coder opus·xhigh'])
+  expect(calls[1]!.prompt).toStartWith('Fix the rounding in src/quote.ts.')
+  expect(calls[1]!.prompt).toContain('> the quotes differ by a cent')
+  expect(calls[1]!.prompt).toContain('> fix the rounding in the quote mapper')
+  expect(r.notes[0]![0]).toContain('start a plain Agent (no subagent_type)')
+})
+
+test('/gearbox escalate code keeps questions on the session and still hands code up', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2, mode: 'answer' }, { reach: 'system', depth: 1 }], { session: 'claude-sonnet-5-5' })
+  expect((await $.command.run({ command: 'gearbox', args: 'escalate code' })).text).toContain('escalate code')
+  expect((await $.command.run({ command: 'gearbox', args: 'escalate sometimes' })).text).toBe('escalate takes on, code or off')
+  await sayOn($, 'claude-sonnet-5-5', 'why do the quotes differ?')
+  await sayOn($, 'claude-sonnet-5-5', 'fix the rounding in the quote mapper')
+  expect(r.notes[0]).toEqual([])
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'opus', effort: 'xhigh' } })])
+  expect(r.steps).toEqual(['claude-sonnet-5-5·high', 'claude-sonnet-5-5·high'])
 })
 
 test('the main model only rises; effort follows each reading; an unusable survey keeps the last gear, never below the coding effort', MEDIUM, async ($: any, on) => {
@@ -198,7 +303,7 @@ test('fable work goes to a subagent while the main conversation stays put', MEDI
   await say($, 'wire the report page')
   await say($, 'design an offline-first sync engine')
   expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'fable', effort: 'high' } })])
-  expect(r.steps).toEqual(['opus·medium', 'opus·medium'])
+  expect(r.steps).toEqual(['opus·medium', 'opus·high'])
 })
 
 test('fable the person names runs one turn here, then the floor again', MEDIUM, async ($: any, on) => {

@@ -2,8 +2,14 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelEffort, PluginOptions, PromptOrigin, Register, TurnStepChunk, TurnStepResult, TurnUsage } from 'claude-code'
 import type { GearboxLoop } from '../types'
 import {
+  type DeepAgent,
+  type Escalate,
   type Gear,
   type Handoff,
+  BRIEFING,
+  ESCALATES,
+  ownBrief,
+  resumable,
   type Model,
   type Plan,
   type Step,
@@ -19,6 +25,9 @@ import {
   everyday,
   EFFORTS,
   doesHandoffWork,
+  escalated,
+  handoffLabel,
+  upFor,
   upTo,
   workEffort,
   MODELS,
@@ -177,6 +186,12 @@ const recentAsks = async ($: EngineInterface) =>
     .slice(-3)
     .map(m => m.text.slice(0, 200))
 
+// What the person said lately, `latest` (their turn's prompt) last, for the brief of a stronger model's subagent.
+const personSaid = async ($: EngineInterface, latest: string): Promise<string[]> => {
+  const said = (await $.session.messages()).filter(m => m.role === 'user' && m.text.trim()).map(m => m.text)
+  return latest.trim() && said.at(-1)?.trim() !== latest.trim() ? [...said, latest] : said
+}
+
 // One low-effort call that describes the request; undefined when the reply is unusable. A person's prompt is read
 // by Sonnet: replaying 79 real prompts, Haiku took main work for side tasks 8 times (Sonnet once) and made a
 // question into a route; Sonnet costs about a second more. A subagent's brief only needs its kind of job: Haiku.
@@ -278,9 +293,11 @@ export const usageReport = (ledger: Ledger) => {
 }
 
 const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh', 'max']
+// Typed agents that only search or plan: work handed up never takes them over.
+const SEARCHERS = /^(Explore|Plan|claude-code-guide|statusline-setup)$/
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_effort: ModelEffort; steer: boolean; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; band: boolean }
+export type Settings = { code_effort: ModelEffort; steer: boolean; escalate: Escalate; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; band: boolean }
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit.
@@ -289,6 +306,7 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
   return {
     code_effort: CODE_EFFORTS.includes(o.code_effort as ModelEffort) ? (o.code_effort as ModelEffort) : 'xhigh',
     steer: o.steer !== false,
+    escalate: ESCALATES.includes(o.escalate as Escalate) ? (o.escalate as Escalate) : 'on',
     navigator: o.navigator === 'haiku' ? 'haiku' : 'sonnet',
     strict: o.strict !== false,
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
@@ -302,6 +320,7 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'effort' && CODE_EFFORTS.includes(value as ModelEffort)) return { code_effort: value as ModelEffort }
   if (word === 'navigator' && (value === 'haiku' || value === 'sonnet')) return { navigator: value }
   if (word === 'steer' && (value === 'on' || value === 'off')) return { steer: value === 'on' }
+  if (word === 'escalate' && ESCALATES.includes(value as Escalate)) return { escalate: value as Escalate }
   if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
   if (word === 'pane' && (value === 'all' || value === 'running')) return { pane: value }
@@ -309,9 +328,9 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   return undefined
 }
 
-const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high, xhigh or max', navigator: 'sonnet or haiku', steer: 'on or off', strict: 'on or off', log: 'on, off or full', band: 'on or off' }
+const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high, xhigh or max', navigator: 'sonnet or haiku', steer: 'on or off', escalate: 'on, code or off', strict: 'on or off', log: 'on, off or full', band: 'on or off' }
 const settingsText = (s: Settings) =>
-  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · band ${s.band ? 'on' : 'off'}`
+  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · escalate ${s.escalate} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · band ${s.band ? 'on' : 'off'}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -324,10 +343,10 @@ const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
 
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
-  let { code_effort: standing, steer: steers, navigator, strict, log: logMode } = settingsFrom(options, undefined)
+  let { code_effort: standing, steer: steers, escalate, navigator, strict, log: logMode } = settingsFrom(options, undefined)
   let paneShows: Settings['pane'] = 'all'
   let bandOn = true
-  const current = (): Settings => ({ code_effort: standing, steer: steers, navigator, strict, log: logMode, pane: paneShows, band: bandOn })
+  const current = (): Settings => ({ code_effort: standing, steer: steers, escalate, navigator, strict, log: logMode, pane: paneShows, band: bandOn })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
@@ -336,6 +355,7 @@ export const register: Register = (on, options) => {
   const apply = (s: Settings) => {
     standing = s.code_effort
     steers = s.steer
+    escalate = s.escalate
     navigator = s.navigator
     strict = s.strict
     logMode = s.log
@@ -356,6 +376,13 @@ export const register: Register = (on, options) => {
   let turnLong = false // the turn started on a long conversation
   let readStreak = 0 // main requests in a row this turn that only read
   let scoutedAt: number | undefined // when Haiku last took a main request: its cache of the conversation lasts an hour
+  let turnText = '' // the person's prompt of the turn under way
+  // Deep work goes on where it started: `lastDeep` is the gear of the last typed turn's deep hand-off (a nod or a
+  // continuation carries it on), `deepAgent` the agent that took it, which follow-ups go back to while worth it.
+  let lastDeep: Gear | undefined
+  let deepAgent: DeepAgent | undefined
+  // The Agent call of a deep or handed-up step, by its tool_use_id: the agent it starts becomes `deepAgent`.
+  let spawningDeep: { useId?: string; gear: Gear } | undefined
   // The browser check or long command under way that a subagent should be doing, if any.
   // The hand-off the next plain Agent call belongs to: the step marked with phase if it is a subagent step,
   // else the first subagent step not yet started; a single-hand-off turn has its one.
@@ -365,7 +392,18 @@ export const register: Register = (on, options) => {
       const slot = marked >= 0 ? marked : turnRoute.findIndex((s, k) => s.by === 'agent' && !handedOff.has(k))
       return slot >= 0 ? { gear: turnRoute[slot]!.gear, slot } : undefined
     }
-    return turnHandoff && !handedOff.has(-1) ? { gear: turnHandoff.gear, slot: -1 } : undefined
+    if (turnHandoff && !handedOff.has(-1)) return { gear: turnHandoff.gear, slot: -1 }
+    // A browser check judged by a stronger model: its second subagent.
+    return turnHandoff?.judge && !handedOff.has(-2) ? { gear: turnHandoff.judge, slot: -2 } : undefined
+  }
+  // A hand-off slot whose subagent takes the main model's own work on a stronger model: deep work, a route's
+  // handed-up step, or the judge of a browser check. `keeps`: its agent is the one later follow-ups go back to.
+  const upSlot = (slot: number): { keeps: boolean } | undefined => {
+    if (turnRoute) {
+      const s = turnRoute[slot]
+      return s && escalated(s) ? { keeps: s.mode !== 'analyze' } : undefined
+    }
+    return slot === -1 && turnHandoff?.kind === 'deep' ? { keeps: true } : slot === -2 ? { keeps: false } : undefined
   }
   // The gear of the hand-off step under way, for the refusal that points the model at it.
   const handoffGear = (): Gear | undefined =>
@@ -383,6 +421,7 @@ export const register: Register = (on, options) => {
   const warmScout = () => scoutedAt !== undefined && Date.now() - scoutedAt < SCOUT_WARM_MS
   const forget = () => {
     floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = scoutedAt = undefined
+    lastDeep = deepAgent = spawningDeep = undefined
     handedOff = new Set()
     turnLong = false
   }
@@ -394,7 +433,7 @@ export const register: Register = (on, options) => {
       inputSchema: { type: 'object', properties: { step: { type: 'integer', minimum: 1 } }, required: ['step'] },
       isDeferred: false,
     })
-    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | effort <level> | navigator <model> | steer on|off | strict on|off | pane | on | off | ask on|off | usage]' })
+    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | effort <level> | navigator <model> | steer on|off | escalate on|code|off | strict on|off | pane | on | off | ask on|off | usage]' })
     enabled = (await $.store.get('enabled')) !== false
     apply(await loadSettings($, options))
     const stored = ((await $.store.get('settings')) ?? {}) as Partial<Settings>
@@ -483,7 +522,7 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'usage cleared' }
     } else if (arg) {
-      return { text: `unknown "${arg}". Try settings, panel, effort, navigator, steer, strict, log, band, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `unknown "${arg}". Try settings, panel, effort, navigator, steer, escalate, strict, log, band, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
@@ -510,8 +549,11 @@ export const register: Register = (on, options) => {
       if (enabled && !e.command) logEvent({ ev: 'prompt', kind: e.origin?.kind ?? 'meta', keeps: turnGear ? label(turnGear) : 'no gear' })
       return next(e)
     }
+    // A deep hand-off the last turn's model never started: what to count before tuning when work goes up.
+    if (turnHandoff?.kind === 'deep' && !handedOff.has(-1)) logEvent({ ev: 'skipped', handoff: handoffLabel(turnHandoff) })
     turnGear = turnHandoff = turnRoute = turnStep = undefined
     handedOff = new Set()
+    turnText = e.text
     // "ultrathink" in the person's own words raises this turn's effort in Claude Code; gearbox leaves it be.
     ownEffort = /\bultrathink\b/i.test(ownWords(e.text)) ? 'ultrathink' : undefined
     apply(await loadSettings($, options))
@@ -536,7 +578,16 @@ export const register: Register = (on, options) => {
 
     let p: Plan
     let ask: Partial<Gear> = {}
-    if (previous && NOD.test(e.text.trim())) {
+    // Deep work goes on in the agent that holds it while that is worth it (its cache warm, its context not
+    // yet past a fresh brief's), else in a fresh one on the same gear: never quietly back on this model.
+    const sameAgent = (g: Gear) => (resumable(deepAgent, Date.now()) && deepAgent.gear.model === g.model ? { resume: deepAgent.id } : {})
+    const goesOn = lastDeep && !(fixed && escalate === 'off') ? lastDeep : undefined
+    const goOn = (g: Gear): Plan => ({ main: { model: base ?? STARTER.model, effort: BRIEFING }, handoff: { kind: 'deep', gear: g, ...sameAgent(g) } })
+    if (goesOn && NOD.test(e.text.trim())) {
+      p = goOn(goesOn)
+      why = 'nod after deep work: it goes on in the subagent'
+      brief = ['nod', 'deep work goes on']
+    } else if (previous && NOD.test(e.text.trim())) {
       // A nod after a proposal is usually the go-ahead to write it: never below the coding effort.
       p = { main: { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } }
       why = 'nod: the last work gear, at least your coding effort'
@@ -546,7 +597,12 @@ export const register: Register = (on, options) => {
       const started = Date.now()
       const { reading: r, reply } = await survey($, e.text, earlier, previous)
       logEvent({ ev: 'survey', ms: Date.now() - started, reply, reading: r ?? null })
-      if (!r) {
+      if ((!r || r.cont) && goesOn) {
+        // Carrying on deep work, or unreadable right after it (a failed read errs up): the same hand-off.
+        p = goOn(goesOn)
+        why = `${r ? 'continuation' : 'survey unreadable'} after deep work: it goes on in the subagent`
+        brief = [r ? 'continuation' : 'unreadable', 'deep work goes on']
+      } else if (!r) {
         // Unreadable: the last gear, never below the person's coding effort; a failed read errs up.
         p = { main: previous ? { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } : { model: fixed ?? STARTER.model, effort: everyday(standing) } }
         why = `survey unreadable: ${previous ? 'previous gear, at least your coding effort' : 'your coding effort'}`
@@ -567,11 +623,11 @@ export const register: Register = (on, options) => {
           const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
           // A model named for a step counts only where the person's own words say it.
           const phases = r.phases.map(ph => ({ ...ph, ask: ph.ask && verifyAsk({ model: ph.ask }, e.text).model === ph.ask ? ph.ask : undefined }))
-          turnRoute = route(phases, lead, standing, r.care === 'costly', navigator, long)
+          turnRoute = route(phases, lead, standing, r.care === 'costly', navigator, long, upFor(want), escalate)
           for (const s of turnRoute) {
-            if (s.by === 'main' && asks && needsConsent(s.gear, ask, previous, standing)) {
+            if ((s.by === 'main' || escalated(s)) && asks && needsConsent(s.gear, ask, previous, standing)) {
               s.gear = await consent($, s.gear)
-              s.mainEffort = s.gear.effort
+              if (s.by === 'main') s.mainEffort = s.gear.effort
             }
           }
           p = { main: { model: lead, effort: workEffort(turnRoute) } }
@@ -584,7 +640,9 @@ export const register: Register = (on, options) => {
             why += `; you chose ${label(want)} over ${proposed}`
           }
           // Unsure: its best guess for the effort, but nothing handed off on a guess.
-          p = r.sure ? plan(checked, want, base, earlier.length > 0, fixed, navigator, long) : { main: fixed ? { model: fixed, effort: want.effort } : want }
+          p = r.sure ? plan(checked, want, base, earlier.length > 0, fixed, navigator, long, escalate) : { main: fixed ? { model: fixed, effort: want.effort } : want }
+          // More of the same work: back to the agent that holds it. Unrelated work starts clean.
+          if (p.handoff?.kind === 'deep' && !r.aside) p = { ...p, handoff: { ...p.handoff, ...sameAgent(p.handoff.gear) } }
           if (ask.model || ask.effort) why += `; you asked for ${[ask.model, ask.effort].filter(Boolean).join(' ')}`
         }
       }
@@ -594,15 +652,16 @@ export const register: Register = (on, options) => {
     // effort of a turn that only briefs a subagent.
     if (!p.handoff || !previous) previous = turnGear
     turnHandoff = p.handoff
+    lastDeep = p.handoff?.kind === 'deep' ? p.handoff.gear : undefined
     logEvent({
       ev: 'gear',
       gear: label(turnGear),
       context,
       why: ownEffort ? `${why}; ultrathink: Claude Code sets the effort` : why,
-      ...(p.handoff ? { handoff: `${p.handoff.kind} → ${label(p.handoff.gear)}` } : {}),
+      ...(p.handoff ? { handoff: handoffLabel(p.handoff) } : {}),
       ...(turnRoute ? { route: turnRoute.map((s, i) => `${i + 1}. ${s.what}: ${s.by} ${label(s.gear)}`) } : {}),
     })
-    if (p.handoff) brief = [brief[0], `${brief[1]} · ${p.handoff.kind} → ${label(p.handoff.gear)}`]
+    if (p.handoff) brief = [brief[0], `${brief[1]} · ${handoffLabel(p.handoff)}`]
     await setWhy($, ownEffort ? ['ultrathink', 'Claude Code sets the effort'] : brief)
     const note = turnRoute ? routeNote(turnRoute) : p.handoff ? handoffNote(p.handoff) : undefined
     return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
@@ -634,6 +693,13 @@ export const register: Register = (on, options) => {
       // Its first steps may land before this, so keep what they recorded.
       await patch($, started.agentId, l => ({ steps: 0, state: 'working', asked: started.model, since: Date.now(), ...l, label: e.description, parent: e.parentAgentId ?? 'main' }))
       await showStatus($, turnHandoff, stepLabel())
+      // The agent a deep or handed-up step started: follow-ups go back to it.
+      const deep = !e.parentAgentId && !e.resume && spawningDeep !== undefined && (spawningDeep.useId === undefined || spawningDeep.useId === e.tool_use_id)
+      if (deep) {
+        deepAgent = { id: started.agentId, gear: spawningDeep!.gear, at: Date.now(), tokens: 0 }
+        spawningDeep = undefined
+      } else if (e.resume && deepAgent?.id === e.resume.agentId) deepAgent = { ...deepAgent, at: Date.now() }
+      logEvent({ ev: 'spawn', agent: started.agentId, type: e.subagentType, model: started.model, ...(deep ? { deep: true } : {}), ...(e.resume ? { resume: true } : {}) })
     }
     return started
   })
@@ -643,18 +709,34 @@ export const register: Register = (on, options) => {
     await patch($, e.agentId ?? 'main', l => l && { ...l, doing: describeTool(String(e.tool), e as unknown as Record<string, unknown>) })
     if (e.agentId) return next(e) // subagents do the hand-off work; never stand in their way
     // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named; any
-    // other plain one keeps its model and gets an effort by its job, not the session's.
-    if (e.tool === 'Agent' && (!e.subagent_type || e.subagent_type === 'general-purpose')) {
+    // other plain one keeps its model and gets an effort by its job, not the session's. Work handed up to a
+    // stronger model keeps its gear even when the call names a typed agent that works (not a read-only search),
+    // and its brief gets the person's own recent words under it.
+    const plain = e.tool === 'Agent' && (!e.subagent_type || e.subagent_type === 'general-purpose')
+    const h = e.tool === 'Agent' ? nextHandoff() : undefined
+    const up = h && upSlot(h.slot)
+    if (e.tool === 'Agent' && h && (plain || (up && !SEARCHERS.test(String(e.subagent_type))))) {
       const asked = `${e.model ?? 'default'}·${e.effort ?? 'default'}`
-      const h = nextHandoff()
-      if (h) {
-        handedOff.add(h.slot)
-        logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: label(h.gear) })
-        return next({ ...e, model: h.gear.model, effort: h.gear.effort })
-      }
+      handedOff.add(h.slot)
+      if (up?.keeps) spawningDeep = { useId: e.tool_use_id, gear: h.gear }
+      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: label(h.gear), ...(up ? { up: true } : {}) })
+      return next({ ...e, model: h.gear.model, effort: h.gear.effort, ...(up ? { prompt: `${e.prompt ?? ''}${ownBrief(await personSaid($, turnText))}` } : {}) })
+    }
+    if (e.tool === 'Agent' && plain) {
+      const asked = `${e.model ?? 'default'}·${e.effort ?? 'default'}`
       const effort = await jobEffort($, String(e.prompt ?? e.description ?? ''), standing)
       logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: effort ? `${e.model ?? 'default'}·${effort}` : 'unchanged', why: 'its job' })
       return next(effort ? { ...e, effort } : e)
+    }
+    // Going back to the agent that holds deep work counts as this turn's hand-off.
+    if (e.tool === 'SendMessage' && deepAgent && String((e as any).to ?? '') === deepAgent.id) {
+      const sent = await next(e)
+      if (!('isError' in sent && sent.isError)) {
+        handedOff.add(-1)
+        deepAgent = { ...deepAgent, at: Date.now() }
+        logEvent({ ev: 'resume', agent: deepAgent.id })
+      }
+      return sent
     }
     const tool = String(e.tool)
     const mode = handoffMode()
@@ -805,6 +887,9 @@ export const register: Register = (on, options) => {
       ...(u ? { in: u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens, out: u.output_tokens } : {}),
     })
     if (u) await tally($, u)
+    // How big the deep agent's context has grown, and when its cache was last warmed.
+    if (u && e.agentId && e.agentId === deepAgent?.id)
+      deepAgent = { ...deepAgent, at: Date.now(), tokens: u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens }
     return result
   })
 
@@ -960,6 +1045,7 @@ export const register: Register = (on, options) => {
       ['Coding effort', 'effort', ['medium', 'high', 'xhigh', 'max'], s.code_effort],
       ['Browser navigator', 'navigator', ['sonnet', 'haiku'], s.navigator],
       ['Steer non-Haiku', 'steer', ['on', 'off'], s.steer ? 'on' : 'off'],
+      ['Hand work up', 'escalate', ['on', 'code', 'off'], s.escalate],
       ['Strict hand-offs', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
       ['Debug log', 'log', ['off', 'on', 'full'], s.log],
       ['Models panel shows', 'pane', ['all', 'running'], s.pane],

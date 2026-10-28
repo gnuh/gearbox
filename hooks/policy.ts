@@ -8,6 +8,21 @@ export const EFFORTS: readonly ModelEffort[] = ['low', 'medium', 'high', 'xhigh'
 
 // The higher of two rungs on a ladder.
 export const upTo = <T>(ladder: readonly T[], a: T, b: T): T => (ladder.indexOf(b) > ladder.indexOf(a) ? b : a)
+const below = (m: Model, target: Model) => MODELS.indexOf(m) < MODELS.indexOf(target)
+// The model a reading calls for, as a hand-off runs it: Fable comes in only through its own deep hand-off.
+export const upFor = (want: Gear): Model => (want.model === 'fable' ? 'opus' : want.model)
+
+// Handing a steered session's work up to a stronger model's subagent: `on` hands up code, costly work and subtle
+// questions; `code` only work that changes files (code, and fixing what a browser check found); `off` nothing.
+export type Escalate = 'on' | 'code' | 'off'
+export const ESCALATES: readonly Escalate[] = ['on', 'code', 'off']
+// Whether the setting lets work of this mode go up at all. Mechanical work (depth 0) never does: a cold subagent
+// costs more than the care it would add.
+const mayGoUp = (mode: string, depth: number, escalate: Escalate) =>
+  escalate !== 'off' && depth >= 1 && mode !== 'commit' && !(escalate === 'code' && mode === 'answer')
+// What the main conversation runs at while a stronger model's subagent takes its work: writing a brief from a long
+// conversation, and later reviewing the result, is where a hand-off is won or lost.
+export const BRIEFING: ModelEffort = 'high'
 
 export const label = (g: Gear) => `${g.model}·${g.effort}`
 
@@ -178,30 +193,59 @@ export type Step = { what: string; mode: Phase['mode'] | 'analyze'; by: 'main' |
 // other models only come in as subagents; effort changes between steps are free.
 // A browser check is two steps: the navigator (Sonnet, or Haiku by setting) only collects evidence, then the main model, a different
 // one, analyzes it, so no model judges its own clicking.
-export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet', long = false): Step[] =>
+// `up` is the model the request calls for: when the main model is below it, subtle or costly steps (code, answers,
+// judging a browser check) go to a subagent on it, at the step's effort, while the main model briefs it and judges.
+// A step has no reach of its own, so depth decides: subtle steps go up, ordinary ones only when a mistake is costly.
+export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet', long = false, up: Model = main, escalate: Escalate = 'on'): Step[] =>
   phases.flatMap(({ what, mode, depth, ask }): Step[] => {
     const floor = (e: ModelEffort) => (costly ? upTo(EFFORTS, e, 'medium') : e)
+    const doer = (what: string, mode: Step['mode'], effort: ModelEffort): Step =>
+      below(main, up) && mayGoUp(mode, depth, escalate) && (depth >= 2 || costly)
+        ? { what, mode, by: 'agent', gear: { model: up, effort }, mainEffort: BRIEFING }
+        : { what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }
     if (mode === 'lookup' || mode === 'wait') return [{ what, mode, by: 'agent', gear: { model: ask ?? 'haiku', effort: 'low' }, mainEffort: 'low' }]
     if (mode === 'commit' && long) return [{ what, mode, by: 'agent', gear: choreGear(depth), mainEffort: 'low' }]
     if (mode === 'drive') {
       const judge = floor(upTo(EFFORTS, DEPTH_EFFORT[depth]!, 'medium'))
       return [
         { what: `${what}: navigate`, mode, by: 'agent', gear: { model: ask ?? navigator, effort: 'low' }, mainEffort: 'medium' },
-        { what: `${what}: analyze`, mode: 'analyze', by: 'main', gear: { model: main, effort: judge }, mainEffort: judge },
+        doer(`${what}: analyze`, 'analyze', judge),
       ]
     }
-    const effort = floor(mode === 'commit' ? 'low' : mode === 'code' ? upTo(EFFORTS, DEPTH_EFFORT[depth]!, codeFloor(depth, standing)) : DEPTH_EFFORT[depth]!)
-    return [{ what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }]
+    if (mode === 'commit') return [{ what, mode, by: 'main', gear: { model: main, effort: floor('low') }, mainEffort: floor('low') }]
+    return [doer(what, mode, floor(mode === 'code' ? upTo(EFFORTS, DEPTH_EFFORT[depth]!, codeFloor(depth, standing)) : DEPTH_EFFORT[depth]!))]
   })
+
+// A step the main model would do, handed to a stronger model's subagent.
+export const escalated = (s: Step) => s.by === 'agent' && (s.mode === 'code' || s.mode === 'answer' || s.mode === 'analyze')
+
+// What a subagent taking over the main model's work needs: it sees nothing of this conversation.
+const BRIEF =
+  'a brief that stands on its own: where the project is, the goal, the limits, what is already decided here, what was tried and ruled out, and what the person asked for along the way; point it at files rather than pasting them'
+// Such a subagent starts as a plain Agent, so gearbox runs it on the gear the work calls for, not a typed agent's own.
+const PLAIN = 'a plain Agent (no subagent_type)'
+
+// The person's own recent words, which gearbox adds under a stronger model's brief so a thin brief cannot drop
+// what they asked: their last few messages, latest last, each cut to its end (where the ask usually is).
+export const ownBrief = (messages: readonly string[]): string => {
+  const kept = messages
+    .map(m => m.trim())
+    .filter(Boolean)
+    .slice(-3)
+    .map(m => (m.length <= 1500 ? m : `[…] ${m.slice(-1500)}`))
+  return kept.length
+    ? `\n\n---\nAdded by gearbox: the person's own recent messages in the main conversation, word for word, latest last. The brief above is what is decided; these are what they asked.\n${kept.map(m => m.replace(/^/gm, '> ')).join('\n\n')}`
+    : ''
+}
 
 const STEP_TASK: Record<Step['mode'], string> = {
   lookup: 'that fetches it and returns the full relevant content word for word (for a ticket: title, description, acceptance criteria, comments that change the scope; for notes: each matching note\'s title and full text), with nothing summarized away',
   drive: 'with a checklist you write here first (where to go and what to do); it must not edit files or judge pass or fail, only report per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests',
   wait: 'that runs only the exact command you settle here, waits until it ends, and answers with passed or failed, the lines that explain a failure, and any link or id it printed',
   commit: 'with a brief that stands on its own: the repository path and branch, the commits, the pull request and any text to write, in full; it runs only that, changes nothing else, and reports what it did with any link, hash or id',
-  code: '',
-  answer: '',
-  analyze: '',
+  code: `with ${BRIEF}; it makes the change, checks it, and reports the files it changed and anything left open; review that here`,
+  answer: `with ${BRIEF}; it works it out and reports its findings in full, which you pass on to the person without cutting them down`,
+  analyze: 'with the navigator\'s report word for word and what the change should do; it judges what is broken, fixes it, and reports what it found and changed; review that here',
 }
 
 // The route the main model reads beside the prompt. It calls the phase tool as each step starts.
@@ -210,17 +254,17 @@ export const routeNote = (steps: Step[]): string =>
     `gearbox route for this request. As you start each step, call the tool mcp__gearbox__phase with its number: gearbox then sets your effort for it. Subagent steps keep their output out of this conversation. Skip a step that turns out unnecessary; judge results and fix problems here.`,
     ...steps.map((s, i) =>
       s.by === 'agent'
-        ? `${i + 1}. ${s.what}: start an Agent with model "${s.gear.model}" and effort "${s.gear.effort}" ${STEP_TASK[s.mode]}.`
+        ? `${i + 1}. ${s.what}: start ${escalated(s) ? PLAIN : 'an Agent'} with model "${s.gear.model}" and effort "${s.gear.effort}" ${STEP_TASK[s.mode]}.`
         : s.mode === 'analyze'
           ? `${i + 1}. ${s.what}: judge the evidence yourself against what the change should do (effort ${s.gear.effort}); decide what is broken and fix it here.`
           : `${i + 1}. ${s.what}: do it yourself (effort ${s.gear.effort}).`,
     ),
   ].join('\n')
 
-// The effort of a route's own work: its highest main-conversation step. A turn starts there, so a model that
-// never calls the phase tool works at the work's effort, not at a briefing step's low.
+// The effort of a route's own work: its highest main-conversation step, or the briefing of work handed up. A turn
+// starts there, so a model that never calls the phase tool works at the work's effort, not at a briefing step's low.
 export const workEffort = (steps: Step[]): ModelEffort =>
-  steps.filter(s => s.by === 'main').reduce<ModelEffort>((top, s) => upTo(EFFORTS, top, s.mainEffort), 'low')
+  steps.filter(s => s.by === 'main' || escalated(s)).reduce<ModelEffort>((top, s) => upTo(EFFORTS, top, s.mainEffort), 'low')
 
 // Tools that do a browser check or a long command's work: the main conversation calling one during such a step
 // means it skipped the subagent.
@@ -310,23 +354,45 @@ export const scouts = (streak: number, warm: boolean) => streak >= 2 || (streak 
 export const keepsScout = (r: { stopReason: string | null; answer: string; toolUses: readonly Use[]; serverToolUses?: readonly unknown[] }) =>
   r.stopReason === 'tool_use' && r.answer.length <= 600 && !r.serverToolUses?.length && r.toolUses.length > 0 && r.toolUses.every(looks)
 
-export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep'; gear: Gear }
+// `judge`: a browser check whose evidence a stronger model's subagent analyzes, not the main model.
+// `resume`: a deep hand-off that goes on in the agent that already holds the work, by its id.
+export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep'; gear: Gear; judge?: Gear; resume?: string }
 export type Plan = { main: Gear; handoff?: Handoff }
+
+export const handoffLabel = (h: Handoff) => `${h.kind}${h.resume ? ' (same agent)' : ''} → ${label(h.gear)}${h.judge ? `, judge ${label(h.judge)}` : ''}`
 
 // Splits a turn between the main conversation and a subagent. `floor` is the main model so far;
 // `hasEarlier` says whether there is earlier work for the request to be unrelated to. With `fixed`, the
-// session keeps that model (steer mode): only effort and handoffs change.
-export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet', long = false): Plan => {
+// session keeps that model (steer mode): only effort and handoffs change, and weighty work (code, a costly
+// mistake, subtle reasoning) that calls for a stronger model goes to a subagent on it instead, as `escalate` allows.
+export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet', long = false, escalate: Escalate = 'on'): Plan => {
   const base = fixed ?? floor ?? 'sonnet'
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
   const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
-  if (r.mode === 'drive') return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: r.ask.model === 'haiku' || r.ask.model === 'sonnet' ? r.ask.model : navigator, effort: 'low' } } }
+  const costly = r.care === 'costly'
+  if (r.mode === 'drive') {
+    const up = upFor(want)
+    const judge = below(planner, up) && mayGoUp('analyze', r.depth, escalate) && (r.depth >= 2 || costly) ? { model: up, effort: upTo(EFFORTS, DEPTH_EFFORT[r.depth]!, 'medium') } : undefined
+    return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: r.ask.model === 'haiku' || r.ask.model === 'sonnet' ? r.ask.model : navigator, effort: 'low' }, ...(judge ? { judge } : {}) } }
+  }
   if (r.mode === 'wait') return { main: { model: planner, effort: 'low' }, handoff: { kind: 'wait', gear: { model: 'haiku', effort: 'low' } } }
   if (r.mode === 'commit' && long) return { main: { model: planner, effort: 'low' }, handoff: { kind: 'chore', gear: choreGear(r.depth) } }
-  if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'deep', gear: want } }
+  if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable' && !(fixed && escalate === 'off'))
+    return { main: { model: base, effort: BRIEFING }, handoff: { kind: 'deep', gear: want } }
   if (r.aside && hasEarlier && want.model !== 'haiku') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'aside', gear: want } }
+  // Code goes up at any depth past mechanical, since the reach that calls for the stronger model says it is hard;
+  // a question only when it is subtle or a mistake would be costly.
+  const weighty = mayGoUp(r.mode, r.depth, escalate) && (r.mode === 'code' || costly || r.depth >= 2)
+  if (fixed && !r.ask.model && weighty && below(fixed, want.model)) return { main: { model: fixed, effort: BRIEFING }, handoff: { kind: 'deep', gear: want } }
   return { main: fixed ? { model: fixed, effort: want.effort } : want }
 }
+
+// A deep hand-off's agent stays worth going back to while its cache is warm (an hour, as for scouting) and its
+// context is still small enough that a fresh agent with a brief would not read less.
+export const RESUME_MS = 55 * 60_000
+export const RESUME_TOKENS = 150_000
+export type DeepAgent = { id: string; gear: Gear; at: number; tokens: number }
+export const resumable = (a: DeepAgent | undefined, now: number): a is DeepAgent => a !== undefined && now - a.at < RESUME_MS && a.tokens < RESUME_TOKENS
 
 // The model the main conversation runs: the person's ask when the turn stays here, else never below the
 // floor, since each switch writes the whole context into the new model's cache.
@@ -345,14 +411,14 @@ export const NOD =
 export const trimRequest = (text: string) => (text.length <= 4000 ? text : `${text.slice(0, 1000)} […] ${text.slice(-3000)}`)
 
 // What the main model reads beside the prompt (the person does not) when part of the turn belongs to a subagent.
-export const handoffNote = ({ kind, gear }: Handoff): string => {
+export const handoffNote = ({ kind, gear, judge, resume }: Handoff): string => {
   const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' || kind === 'chore' ? ` and effort "${gear.effort}"` : ''}`
   switch (kind) {
     case 'drive':
-      return `gearbox handoff, browser check: a fast model navigates, and you, a different model, judge what it found.
+      return `gearbox handoff, browser check: a fast model navigates, and ${judge ? 'a stronger one' : 'you, a different model,'} judge${judge ? 's' : ''} what it found.
 1. Write the check here: where to go and what to do, and note for yourself what each step should show.
 2. Start ${agent} with that checklist. It must not edit files or judge pass or fail; it reports per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests.
-3. Analyze that evidence here against what the change should do, decide what is broken, and fix it.`
+${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.effort}" ${STEP_TASK.analyze}.` : '3. Analyze that evidence here against what the change should do, decide what is broken, and fix it.'}`
     case 'wait':
       return `gearbox handoff, long command: keep its output out of this conversation.
 1. Settle the exact command and the directory it runs in here.
@@ -366,6 +432,8 @@ export const handoffNote = ({ kind, gear }: Handoff): string => {
     case 'aside':
       return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.`
     case 'deep':
-      return `gearbox handoff, deep work: start ${agent} with a brief that stands on its own: where the project is, the goal, the limits, what is already decided here, and what to hand back. Send follow-ups to that same agent with SendMessage, and review what it returns here before acting on it.`
+      return resume
+        ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}. Review what it returns here before acting on it, and pass its findings on to the person in full, not cut down.`
+        : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage, and review what it returns here before acting on it. Its findings reach the person only through you: pass them on in full, not cut down.`
   }
 }
