@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Reading, NOD, doesHandoffWork, isLongCommand, isReadOnlyCommand, keepsScout, readKind, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
+import { type Reading, NOD, RESUME_MS, RESUME_TOKENS, ownBrief, resumable, doesHandoffWork, escalated, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, keepsScout, readKind, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], ...o })
 
@@ -57,6 +57,119 @@ test('steer mode keeps the session model and still hands work off', () => {
   expect(plan(reading({ mode: 'drive', care: 'costly' }), { model: 'opus', effort: 'medium' }, 'sonnet', true, 'sonnet').main.model).toBe('sonnet')
   expect(plan(reading({ reach: 'frontier' }), { model: 'fable', effort: 'high' }, 'opus', false, 'opus').handoff?.kind).toBe('deep')
   expect(plan(reading({ reach: 'frontier' }), { model: 'fable', effort: 'high' }, 'fable', false, 'fable')).toEqual({ main: { model: 'fable', effort: 'high' } })
+})
+
+test('steering a session below the work: weighty work goes to a subagent on the model the reading calls for', () => {
+  const opusHigh = { model: 'opus', effort: 'high' } as const
+  const opusXhigh = { model: 'opus', effort: 'xhigh' } as const
+  // An analysis across the system, on Sonnet: an Opus subagent at the reading's effort; Sonnet briefs and judges.
+  expect(plan(reading({ reach: 'system', depth: 2, mode: 'answer' }), opusHigh, 'sonnet', true, 'sonnet')).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: opusHigh } })
+  // Code across the system, at the coding effort; costly work, even small; never mechanical work.
+  expect(plan(reading({ reach: 'system', depth: 1 }), opusXhigh, 'sonnet', true, 'sonnet').handoff).toEqual({ kind: 'deep', gear: opusXhigh })
+  expect(plan(reading({ reach: 'point', depth: 1, mode: 'answer', care: 'costly' }), { model: 'opus', effort: 'medium' }, 'sonnet', true, 'sonnet').handoff?.kind).toBe('deep')
+  expect(plan(reading({ reach: 'point', depth: 0, mode: 'code', care: 'costly' }), { model: 'opus', effort: 'medium' }, 'sonnet', true, 'sonnet').handoff).toBeUndefined()
+  expect(plan(reading({ reach: 'system', depth: 0 }), opusXhigh, 'sonnet', true, 'sonnet').handoff).toBeUndefined()
+  // A plain answer about the system stays here, and so does work Sonnet is enough for.
+  expect(plan(reading({ reach: 'system', depth: 1, mode: 'answer' }), { model: 'opus', effort: 'medium' }, 'sonnet', true, 'sonnet')).toEqual({ main: { model: 'sonnet', effort: 'medium' } })
+  expect(plan(reading({ reach: 'area', depth: 2 }), { model: 'sonnet', effort: 'xhigh' }, 'sonnet', true, 'sonnet').handoff).toBeUndefined()
+  // A git chore stays a chore.
+  expect(plan(reading({ mode: 'commit', care: 'costly' }), { model: 'opus', effort: 'medium' }, 'sonnet', true, 'sonnet').handoff).toBeUndefined()
+  // An Opus session does it itself; an ask for Opus moves the turn instead; shift mode moves the main model.
+  expect(plan(reading({ reach: 'system', depth: 2 }), opusXhigh, 'opus', true, 'opus').handoff).toBeUndefined()
+  expect(plan(reading({ reach: 'system', depth: 2, ask: { model: 'opus' } }), opusXhigh, 'sonnet', true, 'sonnet').handoff).toBeUndefined()
+  expect(plan(reading({ reach: 'system', depth: 2 }), opusXhigh, 'sonnet', true).handoff).toBeUndefined()
+  // A side task keeps its own hand-off.
+  expect(plan(reading({ reach: 'system', depth: 2, aside: true }), opusXhigh, 'sonnet', true, 'sonnet').handoff?.kind).toBe('aside')
+  // The brief carries what the subagent cannot see, and the findings come back in full.
+  const note = handoffNote({ kind: 'deep', gear: opusHigh })
+  expect(note).toContain('model "opus" and effort "high"')
+  expect(note).toContain('tried and ruled out')
+  expect(note).toContain('in full')
+})
+
+test('a hard browser check below Opus is judged by an Opus subagent, not the main model', () => {
+  const nav = { model: 'sonnet', effort: 'low' } as const
+  const hard = plan(reading({ reach: 'system', mode: 'drive', depth: 2 }), { model: 'opus', effort: 'xhigh' }, 'sonnet', true, 'sonnet')
+  expect(hard).toEqual({ main: { model: 'sonnet', effort: 'medium' }, handoff: { kind: 'drive', gear: nav, judge: { model: 'opus', effort: 'high' } } })
+  expect(handoffNote(hard.handoff!)).toContain('3. Start a plain Agent (no subagent_type) with model "opus" and effort "high"')
+  expect(handoffLabel(hard.handoff!)).toBe('drive → sonnet·low, judge opus·high')
+  // Sonnet is enough for it, or the main model is Opus already: the main model judges, as before.
+  expect(plan(reading({ mode: 'drive', depth: 2 }), { model: 'sonnet', effort: 'xhigh' }, 'sonnet', true, 'sonnet').handoff).toEqual({ kind: 'drive', gear: nav })
+  expect(plan(reading({ reach: 'system', mode: 'drive', depth: 2 }), { model: 'opus', effort: 'xhigh' }, 'opus', true, 'opus').handoff).toEqual({ kind: 'drive', gear: nav })
+  expect(handoffNote({ kind: 'drive', gear: nav })).toContain('3. Analyze that evidence here')
+})
+
+test('a route below the model it calls for hands its subtle and costly steps to subagents on it', () => {
+  const phases = [
+    { what: 'read the ticket', mode: 'lookup', depth: 0 },
+    { what: 'plan it', mode: 'answer', depth: 2 },
+    { what: 'build it', mode: 'code', depth: 2 },
+    { what: 'tidy up', mode: 'code', depth: 1 },
+    { what: 'check it in Chrome', mode: 'drive', depth: 2 },
+    { what: 'commit', mode: 'commit', depth: 0 },
+  ] as const
+  const steps = route([...phases], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus')
+  expect(steps.map(s => `${s.what} → ${s.by} ${label(s.gear)}`)).toEqual([
+    'read the ticket → agent haiku·low',
+    'plan it → agent opus·high',
+    'build it → agent opus·xhigh',
+    'tidy up → main sonnet·xhigh',
+    'check it in Chrome: navigate → agent sonnet·low',
+    'check it in Chrome: analyze → agent opus·high',
+    'commit → main sonnet·low',
+  ])
+  expect(steps.filter(escalated).map(s => s.mainEffort)).toEqual(['high', 'high', 'high'])
+  const note = routeNote(steps)
+  expect(note).toContain('3. build it: start a plain Agent (no subagent_type) with model "opus" and effort "xhigh" with a brief that stands on its own')
+  expect(note).toContain('6. check it in Chrome: analyze: start a plain Agent (no subagent_type) with model "opus" and effort "high"')
+  // A costly request lifts even its ordinary code; work that only calls for the main model stays with it.
+  expect(route([{ what: 'fix the refund', mode: 'code', depth: 1 }], 'sonnet', 'xhigh', true, 'sonnet', false, 'opus').map(s => `${s.by} ${label(s.gear)}`)).toEqual(['agent opus·xhigh'])
+  expect(route([...phases], 'sonnet', 'xhigh', false).filter(escalated)).toHaveLength(0)
+  expect(route([...phases], 'opus', 'xhigh', false, 'sonnet', false, 'opus').filter(escalated)).toHaveLength(0)
+  // A route whose only main work is a subagent's still starts at the effort of briefing it.
+  expect(workEffort(route([{ what: 'read', mode: 'lookup', depth: 0 }, { what: 'build', mode: 'code', depth: 3 }], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus'))).toBe('high')
+})
+
+test('the escalate setting: code hands up only work that changes files; off keeps everything on the session', () => {
+  const opusHigh = { model: 'opus', effort: 'high' } as const
+  const question = reading({ reach: 'system', depth: 2, mode: 'answer' })
+  const fix = reading({ reach: 'system', depth: 1 })
+  const check = reading({ reach: 'system', mode: 'drive', depth: 2 })
+  expect(plan(question, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'code')).toEqual({ main: { model: 'sonnet', effort: 'high' } })
+  expect(plan(fix, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'code').handoff?.kind).toBe('deep')
+  expect(plan(check, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'code').handoff?.judge).toEqual(opusHigh)
+  for (const r of [question, fix]) expect(plan(r, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'off').handoff).toBeUndefined()
+  expect(plan(check, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'off').handoff?.judge).toBeUndefined()
+  // Off on a steered session also keeps Fable work here; a Haiku session that shifts models is not steered.
+  expect(plan(reading({ reach: 'frontier', depth: 2 }), { model: 'fable', effort: 'high' }, 'sonnet', true, 'sonnet', 'sonnet', false, 'off').handoff).toBeUndefined()
+  expect(plan(reading({ reach: 'frontier', depth: 2 }), { model: 'fable', effort: 'high' }, 'opus', true, undefined, 'sonnet', false, 'off').handoff?.kind).toBe('deep')
+  const phases = [{ what: 'plan it', mode: 'answer', depth: 2 }, { what: 'build it', mode: 'code', depth: 2 }] as const
+  expect(route([...phases], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus', 'code').map(s => s.by)).toEqual(['main', 'agent'])
+  expect(route([...phases], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus', 'off').map(s => s.by)).toEqual(['main', 'main'])
+})
+
+test('deep work goes on in the agent that holds it, while that is worth it', () => {
+  const gear = { model: 'opus', effort: 'high' } as const
+  const note = handoffNote({ kind: 'deep', gear, resume: 'a42' })
+  expect(note).toContain('SendMessage to "a42"')
+  expect(note).toContain('Start no new agent unless that one no longer answers')
+  expect(note).toContain('model "opus" and effort "high"')
+  expect(handoffLabel({ kind: 'deep', gear, resume: 'a42' })).toBe('deep (same agent) → opus·high')
+  const agent = { id: 'a42', gear, at: 1_000, tokens: 80_000 }
+  expect(resumable(agent, 1_000 + RESUME_MS - 1)).toBe(true)
+  expect(resumable(agent, 1_000 + RESUME_MS)).toBe(false) // its cache has gone cold
+  expect(resumable({ ...agent, tokens: RESUME_TOKENS }, 2_000)).toBe(false) // a fresh brief would read less
+  expect(resumable(undefined, 2_000)).toBe(false)
+})
+
+test('a stronger model’s brief carries the person’s own recent words, latest last, long ones cut to their end', () => {
+  expect(ownBrief([])).toBe('')
+  const added = ownBrief(['first', 'second', 'the gateway quotes differ', '', `${'x'.repeat(2000)}why do they differ?`])
+  expect(added).toContain("the person's own recent messages")
+  expect(added).not.toContain('> first')
+  expect(added.indexOf('> the gateway quotes differ')).toBeLessThan(added.indexOf('why do they differ?'))
+  expect(added).toContain('> […] x')
+  expect(added.length).toBeLessThan(2000)
 })
 
 test('verifyAsk keeps only what the person said outside code and quotes', () => {

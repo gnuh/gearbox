@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, runs of reads on long conversations go to Haiku, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -25,6 +25,17 @@
       "title": "Steer sessions not on Haiku",
       "description": "On sessions running another model, keep that model and set each turn's effort and handoffs. Off leaves those sessions alone apart from the readout.",
       "default": true
+    },
+    "escalate": {
+      "type": "string",
+      "title": "Hand work up to a stronger model",
+      "description": "On a steered session below the model the work calls for (Sonnet, for work the rules put on Opus), hand that work to a subagent on the stronger model: on (code, costly work and subtle questions), code (only work that changes files), or off (everything stays on the session's model). Also settable with /gearbox escalate.",
+      "options": [
+        "on",
+        "code",
+        "off"
+      ],
+      "default": "on"
     },
     "navigator": {
       "type": "string",
