@@ -1,0 +1,7 @@
+{
+  "name": "lane-probe",
+  "version": "0.1.0",
+  "description": "Bench probe for gearbox lanes: sets a resumed subagent's effort per message and logs what each of its requests sent and cost. Inert unless LANE_PROBE_LOG is set.",
+  "author": { "name": "Magno Chiabai" },
+  "license": "MIT"
+}

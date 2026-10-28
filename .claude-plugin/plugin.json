@@ -1,7 +1,7 @@
 {
   "name": "gearbox",
-  "version": "0.11.2",
-  "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, runs of reads on long conversations go to Haiku, and a live readout shows every agent's model.",
+  "version": "0.13.0",
+  "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, runs of reads on long conversations go to Haiku, an optional orchestrator keeps the main conversation to planning, runs the work in one long-lived lane per model and splits a request of independent parts across several agents at once, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
   },
@@ -29,7 +29,7 @@
     "escalate": {
       "type": "string",
       "title": "Hand work up to a stronger model",
-      "description": "On a steered session below the model the work calls for (Sonnet, for work the rules put on Opus), hand that work to a subagent on the stronger model: on (code, costly work and subtle questions), code (only work that changes files), or off (everything stays on the session's model). Also settable with /gearbox escalate.",
+      "description": "On a steered session below the model the work calls for (Sonnet, for work the rules put on Opus), hand that work to a subagent on the stronger model: on (code, reviews, costly work and subtle questions), code (only work that changes files, and reviews), or off (everything stays on the session's model). Also settable with /gearbox escalate.",
       "options": [
         "on",
         "code",
@@ -69,6 +69,42 @@
       "title": "Band above the prompt",
       "description": "The band above the prompt box: GearBox, the live model·effort and what it does, subagents, cost and why, then a row per running subagent, with Panel, Log and Settings. Bands other mods draw stay under it. Also settable with /gearbox band.",
       "default": true
+    },
+    "orchestrator": {
+      "type": "boolean",
+      "title": "Orchestrator",
+      "description": "The main conversation only plans, briefs and reviews; the work runs in lanes, one long-lived subagent per model, each started at the top effort and lowered per job. Off by default. Also settable with /gearbox orchestrator.",
+      "default": false
+    },
+    "orchestrator_model": {
+      "type": "string",
+      "title": "Orchestrator model",
+      "description": "Model of the main conversation while the orchestrator is on. Also settable with /gearbox orchestrator-model.",
+      "options": [
+        "haiku",
+        "sonnet",
+        "opus"
+      ],
+      "default": "sonnet"
+    },
+    "orchestrator_effort": {
+      "type": "string",
+      "title": "Orchestrator effort",
+      "description": "Effort of the main conversation while the orchestrator is on. Also settable with /gearbox orchestrator-effort.",
+      "options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default": "medium"
+    },
+    "orchestrator_agents": {
+      "type": "number",
+      "title": "Orchestrator parallel agents",
+      "description": "While the orchestrator is on, the most agents a request of independent parts goes out to at once, from 1 to 6; 1 turns the fan-out off. The orchestrator decides from the survey whether a request splits and into how many, never more than this. Also settable with /gearbox orchestrator-agents.",
+      "default": 3
     }
   }
 }
