@@ -12,14 +12,16 @@ const below = (m: Model, target: Model) => MODELS.indexOf(m) < MODELS.indexOf(ta
 // The model a reading calls for, as a hand-off runs it: Fable comes in only through its own deep hand-off.
 export const upFor = (want: Gear): Model => (want.model === 'fable' ? 'opus' : want.model)
 
-// Handing a steered session's work up to a stronger model's subagent: `on` hands up code, costly work and subtle
-// questions; `code` only work that changes files (code, and fixing what a browser check found); `off` nothing.
+// Handing a steered session's work up to a stronger model's subagent: `on` hands up code, reviews, costly work and
+// subtle questions; `code` only work that changes files (code, and fixing what a browser check found) and reviews;
+// `off` nothing.
 export type Escalate = 'on' | 'code' | 'off'
 export const ESCALATES: readonly Escalate[] = ['on', 'code', 'off']
 // Whether the setting lets work of this mode go up at all. Mechanical work (depth 0) never does: a cold subagent
-// costs more than the care it would add.
+// costs more than the care it would add. A review goes at any depth, under `code` too: it changes no files, but it
+// is never an answer for this setting.
 const mayGoUp = (mode: string, depth: number, escalate: Escalate) =>
-  escalate !== 'off' && depth >= 1 && mode !== 'commit' && !(escalate === 'code' && mode === 'answer')
+  escalate !== 'off' && (depth >= 1 || mode === 'review') && mode !== 'commit' && !(escalate === 'code' && mode === 'answer')
 // What the main conversation runs at while a stronger model's subagent takes its work: writing a brief from a long
 // conversation, and later reviewing the result, is where a hand-off is won or lost.
 export const BRIEFING: ModelEffort = 'high'
@@ -34,44 +36,66 @@ export const SURVEY = `You describe a request that a person sent to a coding ass
 The input is JSON: "request" is the new message, "earlier" lists the person's recent messages (may be empty), "previous" is how the last turn was run (may be null).
 
 Reply with exactly one JSON object and nothing else: no notes, no corrections, no other keys. For example:
-{"reach":"area","care":"routine","depth":1,"mode":"code","aside":false,"cont":false,"ask":{},"sure":true,"phases":[]}
+{"reach":"area","care":"routine","depth":1,"mode":"code","aside":false,"cont":false,"ask":{},"sure":true,"phases":[],"parts":[]}
 
 The keys and the values each may take:
 - reach: how much of the project the work must understand. One of: point (one spot: a question, a lookup, a rename, a one-line edit); area (one feature or a few related files: build a feature, fix a contained bug, write tests, explain code); system (many files, or a bug whose location is unknown); frontier (open-ended: designing a system, research, inventing an algorithm).
 - care: costly if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, deleting or migrating data), else routine.
 - depth: how much careful reasoning correctness needs, a number. 0 mechanical, 1 ordinary, 2 subtle (concurrency, time zones, money arithmetic, cache or state invalidation, changing error or async behavior), 3 exceptionally hard.
-- mode: what the turn will mostly do. One of: code (write or change code); commit (git and GitHub chores with no code to write: commit, push, tag, open or edit a pull request or its description, comment on a pull request or ticket); answer (explain, answer, look something up, review or plan without changing code); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search).
+- mode: what the turn will mostly do. One of: code (write or change code); commit (git and GitHub chores with no code to write: commit, push, tag, open or edit a pull request or its description, comment on a pull request or ticket); answer (explain, answer, look something up or plan without changing code); review (look over a change, diff, pull request or code for bugs and problems, without changing it); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search).
 - aside: true if "earlier" is about some piece of work and this request is a different, unrelated piece of work.
 - cont: true if the request only continues, approves or repeats the previous turn.
 - ask: the model (haiku, sonnet, opus, fable) and/or effort (low, medium, high, xhigh, max) the person explicitly asks to use, as {"model":"..."} and/or {"effort":"..."}; {} if none. Words inside pasted code, logs or quotes are not asks.
 - sure: false only if the request is too vague to describe at all; otherwise true, with your best guess.
 - phases: when the request asks for several distinct steps, list them in order as [{"what":"a few words","mode":"...","depth":1}], else []. A step's mode is one of the modes above, or lookup (fetch information from a tool or service: a ticket, a page, docs, or a search of notes such as an Obsidian vault). Testing in a browser is drive; running a test suite is wait; writing tests is code. Add "ask":"haiku|sonnet|opus" to a step only when the request names the model for that step ("navigate with sonnet"). List only steps the "request" itself asks for: "earlier" is context, never a source of steps.
+- parts: when the request is made of pieces that can be done at the same time, each without the others' results and without editing the same files (separate investigations, reviews of one change from different angles, features in different services, research next to an edit), list them as [{"what":"a few words","mode":"code|answer|review|wait|lookup","depth":1,"files":["paths or areas it touches"]}], else []. Phases are steps done one after another; parts run side by side. A piece that needs another's result, or edits the files another edits, is not a part. When in doubt, do not split: [].
 `
 
 export type Reading = {
   reach: 'point' | 'area' | 'system' | 'frontier'
   care: 'routine' | 'costly'
   depth: 0 | 1 | 2 | 3
-  mode: 'code' | 'commit' | 'answer' | 'drive' | 'wait'
+  mode: 'code' | 'commit' | 'answer' | 'review' | 'drive' | 'wait'
   aside: boolean
   cont: boolean
   ask: Partial<Gear>
   sure: boolean
   phases: Phase[]
+  parts: Part[]
 }
 
 export type Phase = { what: string; mode: 'lookup' | 'code' | 'answer' | 'drive' | 'wait' | 'commit'; depth: 0 | 1 | 2 | 3; ask?: 'haiku' | 'sonnet' | 'opus' }
 const PHASE_MODES = ['lookup', 'code', 'answer', 'drive', 'wait', 'commit']
+// A piece of a request that can run beside the others: what it does, and the files or areas it touches.
+export type Part = { what: string; mode: 'code' | 'answer' | 'review' | 'wait' | 'lookup'; depth: 0 | 1 | 2 | 3; files: string[] }
+const PART_MODES = ['code', 'answer', 'review', 'wait', 'lookup']
 
-// The survey's phases, kept only when well formed; at most eight.
+// The survey's phases, kept only when well formed; at most eight. A review step is an answer step: it reads and
+// changes nothing.
 const readPhases = (list: unknown): Phase[] =>
   (Array.isArray(list) ? list : [])
+    .map((p: any) => (p && p.mode === 'review' ? { ...p, mode: 'answer' } : p))
     .filter((p: any) => p && PHASE_MODES.includes(p.mode) && [0, 1, 2, 3].includes(p.depth))
     .slice(0, 8)
     .map((p: any) => ({ what: String(p.what ?? p.mode).slice(0, 60), mode: p.mode, depth: p.depth, ...(['haiku', 'sonnet', 'opus'].includes(p.ask) ? { ask: p.ask } : {}) }))
 
+// The survey's parts, kept only when well formed; at most six. Its files are kept as text, blanks dropped.
+const readParts = (list: unknown): Part[] =>
+  (Array.isArray(list) ? list : [])
+    .filter((p: any) => p && PART_MODES.includes(p.mode) && [0, 1, 2, 3].includes(p.depth))
+    .slice(0, 6)
+    .map((p: any) => ({
+      what: String(p.what ?? p.mode).slice(0, 60),
+      mode: p.mode,
+      depth: p.depth,
+      files: (Array.isArray(p.files) ? p.files : [])
+        .filter((f: unknown): f is string => typeof f === 'string' && f.trim() !== '')
+        .map((f: string) => f.trim().slice(0, 120))
+        .slice(0, 12),
+    }))
+
 const REACHES = ['point', 'area', 'system', 'frontier']
-const MODES = ['code', 'commit', 'answer', 'drive', 'wait']
+const MODES = ['code', 'commit', 'answer', 'review', 'drive', 'wait']
 
 // The survey's reply as a reading: undefined without a valid reach and depth; other keys fall back to plain values.
 // Every top-level {...} in a reply, in order: a model that corrects itself writes more than one.
@@ -120,6 +144,7 @@ const toReading = (o: any): Reading | undefined => {
     },
     sure: o.sure !== false,
     phases: readPhases(o.phases),
+    parts: readParts(o.parts),
   }
 }
 
@@ -131,10 +156,14 @@ const DEPTH_EFFORT: readonly ModelEffort[] = ['low', 'medium', 'high', 'xhigh'] 
 export const everyday = (standing: ModelEffort): ModelEffort => (standing === 'max' ? 'xhigh' : standing)
 const codeFloor = (depth: number, standing: ModelEffort): ModelEffort => (depth >= 2 ? standing : everyday(standing))
 
+// A review is read by at least Opus, whatever its reach: a missed bug costs more than the model. Its effort is the
+// work's own, as an answer's. One rule for a review prompt and for a reviewing skill's fork.
+export const reviewGear = (g: Gear): Gear => ({ model: upTo(MODELS, g.model, 'opus'), effort: g.effort })
+
 // The gear a reading calls for. `standing` is the person's effort for ordinary coding (the code_effort setting):
 // code never runs below it, at any depth, since "a small edit" is a guess made before anyone read the code;
-// other work past depth 0 doesn't either; answers and git chores follow depth alone. A costly mistake lifts the
-// gear to at least opus·medium; the person's own ask wins.
+// other work past depth 0 doesn't either; answers, reviews and git chores follow depth alone. A costly mistake lifts
+// the gear to at least opus·medium, a review to at least opus; the person's own ask wins.
 export const gearFor = (r: Reading, standing: ModelEffort = 'medium'): Gear => {
   const costly = r.care === 'costly'
   const model = costly ? upTo(MODELS, REACH_MODEL[r.reach], 'opus') : REACH_MODEL[r.reach]
@@ -142,12 +171,21 @@ export const gearFor = (r: Reading, standing: ModelEffort = 'medium'): Gear => {
   const base =
     r.mode === 'code'
       ? upTo(EFFORTS, byDepth, codeFloor(r.depth, standing))
-      : r.depth > 0 && r.mode !== 'answer' && r.mode !== 'commit'
+      : r.depth > 0 && r.mode !== 'answer' && r.mode !== 'review' && r.mode !== 'commit'
         ? upTo(EFFORTS, byDepth, everyday(standing))
         : byDepth
   const effort = costly ? upTo(EFFORTS, base, 'medium') : base
-  return { model: r.ask.model ?? model, effort: r.ask.effort ?? effort }
+  const g = r.mode === 'review' ? reviewGear({ model, effort }) : { model, effort }
+  return { model: r.ask.model ?? g.model, effort: r.ask.effort ?? g.effort }
 }
+
+// Skills that review: their fork runs at a review's gear. Any other skill runs as Claude Code starts it.
+export const reviews = (skill: string) => /review/i.test(skill)
+// A forked skill's loop as the engine lists it: named after the skill, its description the skill's command and
+// arguments ("/code-review <pull request>"). Nothing in the listing marks a fork as such. A plugin's skill
+// ("github:code-review") may go by its own name alone.
+export const isSkillFork = (a: { name?: string; description?: string }, skill: string): boolean =>
+  [skill, skill.split(':').pop()!].some(n => a.name === n || a.description === `/${n}` || (a.description ?? '').startsWith(`/${n} `))
 
 // The person's own words: fenced and inline code and quoted lines are dropped.
 export const ownWords = (text: string) => text.replace(/```[\s\S]*?```|`[^`\n]*`/g, ' ').replace(/^\s*>.*$/gm, ' ')
@@ -228,14 +266,15 @@ const PLAIN = 'a plain Agent (no subagent_type)'
 
 // The person's own recent words, which gearbox adds under a stronger model's brief so a thin brief cannot drop
 // what they asked: their last few messages, latest last, each cut to its end (where the ask usually is).
-export const ownBrief = (messages: readonly string[]): string => {
+// A part of a fan-out reads them as context: its brief is its part alone, and other agents take the rest.
+export const ownBrief = (messages: readonly string[], part = false): string => {
   const kept = messages
     .map(m => m.trim())
     .filter(Boolean)
     .slice(-3)
     .map(m => (m.length <= 1500 ? m : `[…] ${m.slice(-1500)}`))
   return kept.length
-    ? `\n\n---\nAdded by gearbox: the person's own recent messages in the main conversation, word for word, latest last. The brief above is what is decided; these are what they asked.\n${kept.map(m => m.replace(/^/gm, '> ')).join('\n\n')}`
+    ? `\n\n---\nAdded by gearbox: the person's own recent messages in the main conversation, word for word, latest last. The brief above is what is decided${part ? ", and it is this agent's part alone: other agents take the rest of the request at the same time" : ''}; these are what they asked.\n${kept.map(m => m.replace(/^/gm, '> ')).join('\n\n')}`
     : ''
 }
 
@@ -362,16 +401,28 @@ export const keepsScout = (r: { stopReason: string | null; answer: string; toolU
 
 // `judge`: a browser check whose evidence a stronger model's subagent analyzes, not the main model.
 // `resume`: a deep hand-off that goes on in the agent that already holds the work, by its id.
-export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep'; gear: Gear; judge?: Gear; resume?: string }
+// `lane`: the orchestrator's hand-off, to the long-lived agent of the gear's model (`resume`: its id, when it is worth
+// going back to); the gear's effort is the job's, which gearbox sets on each message.
+// `fan`: the orchestrator's hand-off of independent parts, one agent each, all started at once; `gear` is the part
+// a nod goes back to.
+export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep' | 'lane' | 'fan'; gear: Gear; judge?: Gear; resume?: string; parts?: FanPart[] }
+// One part of a fan-out: what it does, its gear, and whether it edits files. `resume`: the lane that takes it, by
+// its id; `lane`: the agent started for it becomes its model's lane. Neither: a fresh agent for this turn only.
+export type FanPart = { what: string; gear: Gear; edits: boolean; resume?: string; lane?: boolean }
 export type Plan = { main: Gear; handoff?: Handoff }
 
-export const handoffLabel = (h: Handoff) => `${h.kind}${h.resume ? ' (same agent)' : ''} → ${label(h.gear)}${h.judge ? `, judge ${label(h.judge)}` : ''}`
+export const handoffLabel = (h: Handoff) =>
+  h.kind === 'fan'
+    ? `fan × ${h.parts?.length ?? 0} → ${(h.parts ?? []).map(p => `${label(p.gear)}${p.resume ? ' (same agent)' : ''}`).join(', ')}`
+    : `${h.kind}${h.resume ? ' (same agent)' : ''} → ${label(h.gear)}${h.judge ? `, judge ${label(h.judge)}` : ''}`
 
 // Splits a turn between the main conversation and a subagent. `floor` is the main model so far;
 // `hasEarlier` says whether there is earlier work for the request to be unrelated to. With `fixed`, the
-// session keeps that model (steer mode): only effort and handoffs change, and weighty work (code, a costly
+// session keeps that model (steer mode): only effort and handoffs change, and weighty work (code, a review, a costly
 // mistake, subtle reasoning) that calls for a stronger model goes to a subagent on it instead, as `escalate` allows.
+// A guess hands nothing off and only sets the effort, a review excepted: that is handed off sure or not, on `want`.
 export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet', long = false, escalate: Escalate = 'on'): Plan => {
+  if (!r.sure && r.mode !== 'review') return { main: fixed ? { model: fixed, effort: want.effort } : want }
   const base = fixed ?? floor ?? 'sonnet'
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
   const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
@@ -387,8 +438,8 @@ export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlie
     return { main: { model: base, effort: BRIEFING }, handoff: { kind: 'deep', gear: want } }
   if (r.aside && hasEarlier && want.model !== 'haiku') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'aside', gear: want } }
   // Code goes up at any depth past mechanical, since the reach that calls for the stronger model says it is hard;
-  // a question only when it is subtle or a mistake would be costly.
-  const weighty = mayGoUp(r.mode, r.depth, escalate) && (r.mode === 'code' || costly || r.depth >= 2)
+  // a review at any depth; a question only when it is subtle or a mistake would be costly.
+  const weighty = mayGoUp(r.mode, r.depth, escalate) && (r.mode === 'code' || r.mode === 'review' || costly || r.depth >= 2)
   if (fixed && !r.ask.model && weighty && below(fixed, want.model)) return { main: { model: fixed, effort: BRIEFING }, handoff: { kind: 'deep', gear: want } }
   return { main: fixed ? { model: fixed, effort: want.effort } : want }
 }
@@ -417,7 +468,7 @@ export const NOD =
 export const trimRequest = (text: string) => (text.length <= 4000 ? text : `${text.slice(0, 1000)} […] ${text.slice(-3000)}`)
 
 // What the main model reads beside the prompt (the person does not) when part of the turn belongs to a subagent.
-export const handoffNote = ({ kind, gear, judge, resume }: Handoff): string => {
+export const handoffNote = ({ kind, gear, judge, resume, parts }: Handoff): string => {
   const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' || kind === 'chore' ? ` and effort "${gear.effort}"` : ''}`
   switch (kind) {
     case 'drive':
@@ -437,9 +488,37 @@ ${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.eff
 3. Tell the person the outcome.`
     case 'aside':
       return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.`
+    case 'lane':
+      return resume
+        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. gearbox sets the effort of each job. Review what it returns here before acting on it, and pass its findings on to the person in full, not cut down.`
+        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. gearbox sets the effort of each job. Send follow-ups to that same agent with SendMessage. Until it starts, edits, commands and more reads are refused here. Review what it returns before acting on it, and pass its findings on to the person in full, not cut down.`
+    case 'fan':
+      return fanNote(parts ?? [])
     case 'deep':
       return resume
         ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}. Review what it returns here before acting on it, and pass its findings on to the person in full, not cut down.`
         : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage, and review what it returns here before acting on it. Its findings reach the person only through you: pass them on in full, not cut down.`
   }
+}
+
+// Two or more parts that edit files each work in a git worktree of their own, so the agents cannot collide.
+export const apartEdits = (parts: readonly FanPart[]) => parts.filter(p => p.edits).length >= 2
+
+// The fan-out: every part's agent starts in one message, so they run at the same time; gearbox sets each one's effort.
+const fanNote = (parts: readonly FanPart[]): string => {
+  const apart = apartEdits(parts)
+  const back = (p: FanPart) =>
+    p.edits
+      ? `it makes the change, checks it, and hands back the files it changed${apart ? ', its worktree branch' : ''}, how it checked them and anything left open`
+      : 'it hands back its findings in full'
+  return [
+    `gearbox handoff, fan-out: this request splits into ${parts.length} independent parts, which run at the same time, one agent each.`,
+    `1. Start every part in ONE message, all at once: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, its model, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back. Do not start one and wait for it before the next.${apart ? ' Each part that edits files starts with isolation "worktree", in a git worktree of its own, so the agents cannot collide.' : ''}`,
+    ...parts.map(
+      (p, i) =>
+        `   ${i + 1}. ${p.what}: ${p.resume ? `send it with SendMessage to "${p.resume}", the ${p.gear.model} lane that already holds earlier work, in that same message (load SendMessage with ToolSearch first if it is not loaded)` : `model "${p.gear.model}"${p.edits && apart ? ', isolation "worktree"' : ''}`}; ${back(p)}.`,
+    ),
+    `2. gearbox sets each agent's effort. Until all ${parts.length} have started, edits, commands and more reads are refused here.`,
+    `3. Wait for every result before going on. Then review each, and reconcile them: overlaps, contradictions, anything one part found that changes another.${apart ? ' Merge the worktree branches into the working tree (git merge or cherry-pick); a conflict that needs editing goes back to an agent.' : ''} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Pass the findings on to the person in full, not cut down.`,
+  ].join('\n')
 }

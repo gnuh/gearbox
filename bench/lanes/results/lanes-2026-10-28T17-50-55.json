@@ -1,0 +1,938 @@
+[
+  {
+    "arm": "control",
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-lanes-qrvsHf",
+    "usd": 0.24821,
+    "result": "EFFORT=low (first call)\nEFFORT=low (second call)\n\n- priceQuote: 21.73\n- gateway: 20.68",
+    "agent": "aedb4f0d61460da59",
+    "sendResolved": true,
+    "spawnEffort": null,
+    "firstEngine": "low",
+    "resumedSteps": 3,
+    "strays": [],
+    "engine": [
+      "low"
+    ],
+    "sent": [
+      "low"
+    ],
+    "echoes": [
+      "low",
+      "low"
+    ],
+    "head": {
+      "in": 4,
+      "write": 340,
+      "read": 34591,
+      "out": 179
+    },
+    "out": 1146,
+    "steered": true,
+    "cacheKept": true,
+    "events": [
+      {
+        "t": 1793209685116,
+        "ev": "spawn",
+        "agent": "aedb4f0d61460da59",
+        "name": "lane",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "resume": null
+      },
+      {
+        "t": 1793209685130,
+        "ev": "step",
+        "agent": "main",
+        "turn": "8ba50792-14a7-4cd2-ba04-93f3849760c0",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 28670,
+          "read": 11169,
+          "out": 340
+        }
+      },
+      {
+        "t": 1793209687398,
+        "ev": "step",
+        "agent": "aedb4f0d61460da59",
+        "turn": "acb66631-0876-4139-b742-436e4b8bc0ab",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 13976,
+          "read": 9918,
+          "out": 176
+        }
+      },
+      {
+        "t": 1793209688586,
+        "ev": "echo",
+        "agent": "aedb4f0d61460da59",
+        "result": "{\"ref\":1,\"result\":{\"stdout\":\"EFFORT=low\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false},\"text\":\"EFFORT=low\"}"
+      },
+      {
+        "t": 1793209691391,
+        "ev": "step",
+        "agent": "aedb4f0d61460da59",
+        "turn": "acb66631-0876-4139-b742-436e4b8bc0ab",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 10697,
+          "read": 23894,
+          "out": 133
+        }
+      },
+      {
+        "t": 1793209691393,
+        "ev": "done",
+        "agent": "aedb4f0d61460da59"
+      },
+      {
+        "t": 1793209694194,
+        "ev": "send",
+        "to": "aedb4f0d61460da59",
+        "agent": "aedb4f0d61460da59",
+        "effort": null
+      },
+      {
+        "t": 1793209694813,
+        "ev": "step",
+        "agent": "main",
+        "turn": "8ba50792-14a7-4cd2-ba04-93f3849760c0",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 3136,
+          "read": 39839,
+          "out": 271
+        }
+      },
+      {
+        "t": 1793209694819,
+        "ev": "spawn",
+        "agent": "aedb4f0d61460da59",
+        "name": "lane",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "resume": "aedb4f0d61460da59"
+      },
+      {
+        "t": 1793209696636,
+        "ev": "step",
+        "agent": "aedb4f0d61460da59",
+        "turn": "d7e8b7dd-d4b8-41a7-91c9-ff464de3b011",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 4,
+          "write": 340,
+          "read": 34591,
+          "out": 179
+        }
+      },
+      {
+        "t": 1793209696676,
+        "ev": "echo",
+        "agent": "aedb4f0d61460da59",
+        "result": "{\"ref\":1,\"result\":{\"stdout\":\"EFFORT=low\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false},\"text\":\"EFFORT=low\"}"
+      },
+      {
+        "t": 1793209702801,
+        "ev": "step",
+        "agent": "aedb4f0d61460da59",
+        "turn": "d7e8b7dd-d4b8-41a7-91c9-ff464de3b011",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 482,
+          "read": 34931,
+          "out": 580
+        }
+      },
+      {
+        "t": 1793209703563,
+        "ev": "step",
+        "agent": "main",
+        "turn": "8ba50792-14a7-4cd2-ba04-93f3849760c0",
+        "index": 2,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 450,
+          "read": 42975,
+          "out": 132
+        }
+      },
+      {
+        "t": 1793209703597,
+        "ev": "done",
+        "agent": "main"
+      },
+      {
+        "t": 1793209716878,
+        "ev": "step",
+        "agent": "aedb4f0d61460da59",
+        "turn": "d7e8b7dd-d4b8-41a7-91c9-ff464de3b011",
+        "index": 2,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 4,
+          "write": 630,
+          "read": 35413,
+          "out": 387
+        }
+      },
+      {
+        "t": 1793209716882,
+        "ev": "done",
+        "agent": "aedb4f0d61460da59"
+      },
+      {
+        "t": 1793209719334,
+        "ev": "step",
+        "agent": "main",
+        "turn": "64f47322-2c3a-4ce1-a930-a6a70db782c1",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 941,
+          "read": 43425,
+          "out": 47
+        }
+      },
+      {
+        "t": 1793209719372,
+        "ev": "done",
+        "agent": "main"
+      }
+    ]
+  },
+  {
+    "arm": "treatment",
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-lanes-zzi8Uj",
+    "usd": 0.253644,
+    "result": "EFFORT=low (first call)\nEFFORT=low (second call)\n\nTotals:\n- priceQuote: 21.73\n- gateway: 20.68",
+    "agent": "a82b38b653e3a114a",
+    "sendResolved": true,
+    "spawnEffort": null,
+    "firstEngine": "low",
+    "resumedSteps": 3,
+    "strays": [],
+    "engine": [
+      "low"
+    ],
+    "sent": [
+      "xhigh"
+    ],
+    "echoes": [
+      "low",
+      "low"
+    ],
+    "head": {
+      "in": 4,
+      "write": 335,
+      "read": 34596,
+      "out": 180
+    },
+    "out": 1562,
+    "steered": true,
+    "cacheKept": true,
+    "events": [
+      {
+        "t": 1793209729062,
+        "ev": "spawn",
+        "agent": "a82b38b653e3a114a",
+        "name": "lane",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "resume": null
+      },
+      {
+        "t": 1793209729075,
+        "ev": "step",
+        "agent": "main",
+        "turn": "8d2a4238-c330-4fa4-9b00-d8b27c8117d6",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 28684,
+          "read": 11169,
+          "out": 311
+        }
+      },
+      {
+        "t": 1793209740025,
+        "ev": "step",
+        "agent": "a82b38b653e3a114a",
+        "turn": "a59705b1-175d-4fd3-a52d-712091206b26",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 13977,
+          "read": 9918,
+          "out": 177
+        }
+      },
+      {
+        "t": 1793209741261,
+        "ev": "echo",
+        "agent": "a82b38b653e3a114a",
+        "result": "{\"ref\":1,\"result\":{\"stdout\":\"EFFORT=low\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false},\"text\":\"EFFORT=low\"}"
+      },
+      {
+        "t": 1793209743827,
+        "ev": "step",
+        "agent": "a82b38b653e3a114a",
+        "turn": "a59705b1-175d-4fd3-a52d-712091206b26",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 10701,
+          "read": 23895,
+          "out": 128
+        }
+      },
+      {
+        "t": 1793209743830,
+        "ev": "done",
+        "agent": "a82b38b653e3a114a"
+      },
+      {
+        "t": 1793209746527,
+        "ev": "send",
+        "to": "a82b38b653e3a114a",
+        "agent": "a82b38b653e3a114a",
+        "effort": "xhigh"
+      },
+      {
+        "t": 1793209747120,
+        "ev": "step",
+        "agent": "main",
+        "turn": "8d2a4238-c330-4fa4-9b00-d8b27c8117d6",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 3101,
+          "read": 39853,
+          "out": 278
+        }
+      },
+      {
+        "t": 1793209749106,
+        "ev": "spawn",
+        "agent": "a82b38b653e3a114a",
+        "name": "lane",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "resume": "a82b38b653e3a114a"
+      },
+      {
+        "t": 1793209750979,
+        "ev": "step",
+        "agent": "a82b38b653e3a114a",
+        "turn": "50596231-6134-452a-9805-6611ab83926f",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "xhigh",
+        "usage": {
+          "in": 4,
+          "write": 335,
+          "read": 34596,
+          "out": 180
+        }
+      },
+      {
+        "t": 1793209751020,
+        "ev": "echo",
+        "agent": "a82b38b653e3a114a",
+        "result": "{\"ref\":1,\"result\":{\"stdout\":\"EFFORT=low\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false},\"text\":\"EFFORT=low\"}"
+      },
+      {
+        "t": 1793209751612,
+        "ev": "step",
+        "agent": "main",
+        "turn": "8d2a4238-c330-4fa4-9b00-d8b27c8117d6",
+        "index": 2,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 458,
+          "read": 42954,
+          "out": 149
+        }
+      },
+      {
+        "t": 1793209751646,
+        "ev": "done",
+        "agent": "main"
+      },
+      {
+        "t": 1793209758392,
+        "ev": "step",
+        "agent": "a82b38b653e3a114a",
+        "turn": "50596231-6134-452a-9805-6611ab83926f",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "xhigh",
+        "usage": {
+          "in": 2,
+          "write": 486,
+          "read": 34931,
+          "out": 846
+        }
+      },
+      {
+        "t": 1793209765083,
+        "ev": "step",
+        "agent": "a82b38b653e3a114a",
+        "turn": "50596231-6134-452a-9805-6611ab83926f",
+        "index": 2,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "xhigh",
+        "usage": {
+          "in": 4,
+          "write": 896,
+          "read": 35417,
+          "out": 536
+        }
+      },
+      {
+        "t": 1793209765088,
+        "ev": "done",
+        "agent": "a82b38b653e3a114a"
+      },
+      {
+        "t": 1793209768221,
+        "ev": "step",
+        "agent": "main",
+        "turn": "f3645bd5-cabd-403f-ade8-61b3eba241a1",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 1114,
+          "read": 43412,
+          "out": 52
+        }
+      },
+      {
+        "t": 1793209768252,
+        "ev": "done",
+        "agent": "main"
+      }
+    ]
+  },
+  {
+    "arm": "treatment",
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-lanes-mCnkFt",
+    "usd": 0.2573671,
+    "result": "EFFORT lines:\n- First call: `EFFORT=low`\n- Second call: `EFFORT=low`\n\nTotals:\n- priceQuote: 21.73\n- Gateway: 20.68",
+    "agent": "a6731184072ad63dc",
+    "sendResolved": true,
+    "spawnEffort": null,
+    "firstEngine": "low",
+    "resumedSteps": 3,
+    "strays": [],
+    "engine": [
+      "low"
+    ],
+    "sent": [
+      "xhigh"
+    ],
+    "echoes": [
+      "low",
+      "low"
+    ],
+    "head": {
+      "in": 4,
+      "write": 341,
+      "read": 34591,
+      "out": 289
+    },
+    "out": 1689,
+    "steered": true,
+    "cacheKept": true,
+    "events": [
+      {
+        "t": 1793209779024,
+        "ev": "spawn",
+        "agent": "a6731184072ad63dc",
+        "name": null,
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "resume": null
+      },
+      {
+        "t": 1793209779035,
+        "ev": "step",
+        "agent": "main",
+        "turn": "765bf65b-2754-4cf8-b4e0-ab99b535b262",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 28682,
+          "read": 11169,
+          "out": 453
+        }
+      },
+      {
+        "t": 1793209783127,
+        "ev": "step",
+        "agent": "a6731184072ad63dc",
+        "turn": "427bede1-673a-4fb5-9d99-fb04ccee4455",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 13976,
+          "read": 9918,
+          "out": 176
+        }
+      },
+      {
+        "t": 1793209784341,
+        "ev": "echo",
+        "agent": "a6731184072ad63dc",
+        "result": "{\"ref\":1,\"result\":{\"stdout\":\"EFFORT=low\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false},\"text\":\"EFFORT=low\"}"
+      },
+      {
+        "t": 1793209787130,
+        "ev": "step",
+        "agent": "a6731184072ad63dc",
+        "turn": "427bede1-673a-4fb5-9d99-fb04ccee4455",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 10697,
+          "read": 23894,
+          "out": 134
+        }
+      },
+      {
+        "t": 1793209787132,
+        "ev": "done",
+        "agent": "a6731184072ad63dc"
+      },
+      {
+        "t": 1793209791471,
+        "ev": "send",
+        "to": "a6731184072ad63dc",
+        "agent": "a6731184072ad63dc",
+        "effort": "xhigh"
+      },
+      {
+        "t": 1793209792435,
+        "ev": "step",
+        "agent": "main",
+        "turn": "765bf65b-2754-4cf8-b4e0-ab99b535b262",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 3260,
+          "read": 39851,
+          "out": 278
+        }
+      },
+      {
+        "t": 1793209794173,
+        "ev": "spawn",
+        "agent": "a6731184072ad63dc",
+        "name": null,
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "resume": "a6731184072ad63dc"
+      },
+      {
+        "t": 1793209796212,
+        "ev": "step",
+        "agent": "a6731184072ad63dc",
+        "turn": "aa80bce4-0622-4e28-aefc-3c940ee7fe84",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "xhigh",
+        "usage": {
+          "in": 4,
+          "write": 341,
+          "read": 34591,
+          "out": 289
+        }
+      },
+      {
+        "t": 1793209796247,
+        "ev": "echo",
+        "agent": "a6731184072ad63dc",
+        "result": "{\"ref\":1,\"result\":{\"stdout\":\"EFFORT=low\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false},\"text\":\"EFFORT=low\"}"
+      },
+      {
+        "t": 1793209796373,
+        "ev": "step",
+        "agent": "main",
+        "turn": "765bf65b-2754-4cf8-b4e0-ab99b535b262",
+        "index": 2,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 448,
+          "read": 43111,
+          "out": 115
+        }
+      },
+      {
+        "t": 1793209796400,
+        "ev": "done",
+        "agent": "main"
+      },
+      {
+        "t": 1793209809341,
+        "ev": "step",
+        "agent": "a6731184072ad63dc",
+        "turn": "aa80bce4-0622-4e28-aefc-3c940ee7fe84",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "xhigh",
+        "usage": {
+          "in": 2,
+          "write": 694,
+          "read": 34932,
+          "out": 798
+        }
+      },
+      {
+        "t": 1793209816444,
+        "ev": "step",
+        "agent": "a6731184072ad63dc",
+        "turn": "aa80bce4-0622-4e28-aefc-3c940ee7fe84",
+        "index": 2,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "xhigh",
+        "usage": {
+          "in": 4,
+          "write": 848,
+          "read": 35626,
+          "out": 602
+        }
+      },
+      {
+        "t": 1793209816447,
+        "ev": "done",
+        "agent": "a6731184072ad63dc"
+      },
+      {
+        "t": 1793209818039,
+        "ev": "step",
+        "agent": "main",
+        "turn": "4e97a297-a016-4abc-96b6-41dc46c5d46f",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 1147,
+          "read": 43559,
+          "out": 67
+        }
+      },
+      {
+        "t": 1793209818074,
+        "ev": "done",
+        "agent": "main"
+      }
+    ]
+  },
+  {
+    "arm": "control",
+    "dir": "/var/folders/z_/1cnt_rgn4ll_rfgjq51cjbvr0000gn/T/gearbox-lanes-05QDlS",
+    "usd": 0.2506511,
+    "result": "EFFORT=low (first call)\nEFFORT=low (second call)\n\n- priceQuote: 21.73\n- gateway: 20.68",
+    "agent": "a6d2b68e735f0d300",
+    "sendResolved": true,
+    "spawnEffort": null,
+    "firstEngine": "low",
+    "resumedSteps": 3,
+    "strays": [],
+    "engine": [
+      "low"
+    ],
+    "sent": [
+      "low"
+    ],
+    "echoes": [
+      "low",
+      "low"
+    ],
+    "head": {
+      "in": 4,
+      "write": 335,
+      "read": 34589,
+      "out": 178
+    },
+    "out": 1317,
+    "steered": true,
+    "cacheKept": true,
+    "events": [
+      {
+        "t": 1793209825630,
+        "ev": "spawn",
+        "agent": "a6d2b68e735f0d300",
+        "name": "lane",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "resume": null
+      },
+      {
+        "t": 1793209825640,
+        "ev": "step",
+        "agent": "main",
+        "turn": "f2da6bd4-adda-421b-b639-5f31ef910792",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 28668,
+          "read": 11169,
+          "out": 340
+        }
+      },
+      {
+        "t": 1793209829893,
+        "ev": "step",
+        "agent": "a6d2b68e735f0d300",
+        "turn": "ab395a7d-8ce7-4092-9b6d-100bd9a008e3",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 13975,
+          "read": 9918,
+          "out": 175
+        }
+      },
+      {
+        "t": 1793209831126,
+        "ev": "echo",
+        "agent": "a6d2b68e735f0d300",
+        "result": "{\"ref\":1,\"result\":{\"stdout\":\"EFFORT=low\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false},\"text\":\"EFFORT=low\"}"
+      },
+      {
+        "t": 1793209836701,
+        "ev": "step",
+        "agent": "a6d2b68e735f0d300",
+        "turn": "ab395a7d-8ce7-4092-9b6d-100bd9a008e3",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 10696,
+          "read": 23893,
+          "out": 128
+        }
+      },
+      {
+        "t": 1793209836704,
+        "ev": "done",
+        "agent": "a6d2b68e735f0d300"
+      },
+      {
+        "t": 1793209839056,
+        "ev": "send",
+        "to": "a6d2b68e735f0d300",
+        "agent": "a6d2b68e735f0d300",
+        "effort": null
+      },
+      {
+        "t": 1793209839651,
+        "ev": "step",
+        "agent": "main",
+        "turn": "f2da6bd4-adda-421b-b639-5f31ef910792",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 3130,
+          "read": 39837,
+          "out": 272
+        }
+      },
+      {
+        "t": 1793209839662,
+        "ev": "spawn",
+        "agent": "a6d2b68e735f0d300",
+        "name": "lane",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "resume": "a6d2b68e735f0d300"
+      },
+      {
+        "t": 1793209843228,
+        "ev": "step",
+        "agent": "a6d2b68e735f0d300",
+        "turn": "01c77edd-6d75-43a3-8959-b32aba50d8ff",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 4,
+          "write": 335,
+          "read": 34589,
+          "out": 178
+        }
+      },
+      {
+        "t": 1793209843267,
+        "ev": "echo",
+        "agent": "a6d2b68e735f0d300",
+        "result": "{\"ref\":1,\"result\":{\"stdout\":\"EFFORT=low\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false},\"text\":\"EFFORT=low\"}"
+      },
+      {
+        "t": 1793209844256,
+        "ev": "step",
+        "agent": "main",
+        "turn": "f2da6bd4-adda-421b-b639-5f31ef910792",
+        "index": 2,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 454,
+          "read": 42967,
+          "out": 156
+        }
+      },
+      {
+        "t": 1793209844295,
+        "ev": "done",
+        "agent": "main"
+      },
+      {
+        "t": 1793209849117,
+        "ev": "step",
+        "agent": "a6d2b68e735f0d300",
+        "turn": "01c77edd-6d75-43a3-8959-b32aba50d8ff",
+        "index": 1,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 2,
+          "write": 484,
+          "read": 34924,
+          "out": 713
+        }
+      },
+      {
+        "t": 1793209853464,
+        "ev": "step",
+        "agent": "a6d2b68e735f0d300",
+        "turn": "01c77edd-6d75-43a3-8959-b32aba50d8ff",
+        "index": 2,
+        "model": "claude-sonnet-5-5",
+        "engine": "low",
+        "sent": "low",
+        "usage": {
+          "in": 4,
+          "write": 763,
+          "read": 35408,
+          "out": 426
+        }
+      },
+      {
+        "t": 1793209853469,
+        "ev": "done",
+        "agent": "a6d2b68e735f0d300"
+      },
+      {
+        "t": 1793209855233,
+        "ev": "step",
+        "agent": "main",
+        "turn": "0aa35326-fa67-4644-8dad-7f5cef570d2e",
+        "index": 0,
+        "model": "claude-sonnet-5-5",
+        "engine": "high",
+        "sent": "high",
+        "usage": {
+          "in": 2,
+          "write": 1001,
+          "read": 43421,
+          "out": 47
+        }
+      },
+      {
+        "t": 1793209855272,
+        "ev": "done",
+        "agent": "main"
+      }
+    ]
+  }
+]

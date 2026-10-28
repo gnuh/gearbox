@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
-import { type Reading, NOD, RESUME_MS, RESUME_TOKENS, ownBrief, resumable, doesHandoffWork, escalated, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, keepsScout, readKind, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
+import { type FanPart, type Reading, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, keepsScout, readKind, reviewGear, reviews, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
 
-const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], ...o })
+const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
 test('readReading takes a reply apart and fills the plain defaults', () => {
   expect(readReading('{"reach":"system","depth":2}')).toEqual(reading({ reach: 'system', depth: 2 }))
@@ -38,6 +38,72 @@ test('a standing coding effort lifts all code, small edits too, but not answers'
   for (const [r, want] of cases) expect(label(gearFor(reading(r), 'xhigh'))).toBe(want)
   expect(label(gearFor(reading({ reach: 'area', depth: 2 }), 'medium'))).toBe('sonnet·high')
   expect(needsConsent({ model: 'opus', effort: 'xhigh' }, {}, undefined, 'xhigh')).toBe(false)
+})
+
+test('a review is read by at least Opus; its effort follows its depth as an answer’s, never the coding effort', () => {
+  expect(SURVEY).toContain('review (look over a change, diff, pull request or code for bugs and problems, without changing it)')
+  expect(readReading('{"reach":"area","depth":1,"mode":"review"}')?.mode).toBe('review')
+  const cases: [Partial<Reading>, string][] = [
+    [{ mode: 'review', reach: 'point', depth: 0 }, 'opus·low'],
+    [{ mode: 'review', reach: 'area', depth: 1 }, 'opus·medium'],
+    [{ mode: 'review', reach: 'system', depth: 2 }, 'opus·high'],
+    [{ mode: 'review', reach: 'area', depth: 3 }, 'opus·xhigh'],
+    [{ mode: 'review', reach: 'frontier', depth: 2 }, 'fable·high'],
+    [{ mode: 'review', reach: 'point', depth: 0, care: 'costly' }, 'opus·medium'],
+    [{ mode: 'review', reach: 'area', depth: 1, ask: { model: 'sonnet', effort: 'high' } }, 'sonnet·high'],
+  ]
+  for (const [r, want] of cases) expect(label(gearFor(reading(r), 'xhigh'))).toBe(want)
+  // One rule for a review prompt and a reviewing skill's fork: the model at least Opus, the effort as it comes.
+  expect(reviewGear({ model: 'sonnet', effort: 'low' })).toEqual({ model: 'opus', effort: 'low' })
+  expect(reviewGear({ model: 'fable', effort: 'high' })).toEqual({ model: 'fable', effort: 'high' })
+  // A review step in a route is an answer step, not one dropped.
+  const steps = readReading('{"reach":"area","depth":1,"phases":[{"what":"fetch the PR","mode":"lookup","depth":0},{"what":"review it","mode":"review","depth":1}]}')?.phases
+  expect(steps?.map(p => p.mode)).toEqual(['lookup', 'answer'])
+})
+
+test('steering below Opus: a review goes to an Opus agent at any depth, unless escalate is off', () => {
+  const r = reading({ mode: 'review', depth: 1 })
+  const want = gearFor(r)
+  expect(want).toEqual({ model: 'opus', effort: 'medium' })
+  expect(plan(r, want, 'sonnet', true, 'sonnet')).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: want } })
+  expect(plan(reading({ mode: 'review', reach: 'point', depth: 0 }), { model: 'opus', effort: 'low' }, 'sonnet', true, 'sonnet').handoff).toEqual({ kind: 'deep', gear: { model: 'opus', effort: 'low' } })
+  // `code` hands up what changes files and every review, which is never an answer; only `off` keeps one here.
+  expect(plan(r, want, 'sonnet', true, 'sonnet', 'sonnet', false, 'code')).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: want } })
+  expect(plan(r, want, 'sonnet', true, 'sonnet', 'sonnet', false, 'off')).toEqual({ main: { model: 'sonnet', effort: 'medium' } })
+  // An Opus session reviews itself; a Haiku session shifts up to Opus.
+  expect(plan(r, want, 'opus', true, 'opus')).toEqual({ main: want })
+  expect(plan(r, want, 'haiku', true)).toEqual({ main: want })
+})
+
+test('a review is handed up when the survey is unsure too, on its best guess; any other guess hands nothing up', () => {
+  const r = reading({ mode: 'review', depth: 1, sure: false })
+  const want = gearFor(r)
+  expect(want).toEqual(gearFor({ ...r, sure: true })) // the same best guess for the effort
+  for (const escalate of ['on', 'code'] as const)
+    expect(plan(r, want, 'sonnet', true, 'sonnet', 'sonnet', false, escalate)).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: want } })
+  expect(plan(r, want, 'sonnet', true, 'sonnet', 'sonnet', false, 'off')).toEqual({ main: { model: 'sonnet', effort: 'medium' } })
+  // An Opus session reviews itself, a Haiku session shifts up to Opus, as for a sure review.
+  expect(plan(r, want, 'opus', true, 'opus')).toEqual({ main: want })
+  expect(plan(r, want, 'haiku', true)).toEqual({ main: want })
+  // A guess about anything else stays home, however weighty it would be: effort only.
+  for (const mode of ['code', 'answer', 'drive', 'wait', 'commit'] as const) {
+    const g = reading({ mode, reach: 'system', depth: 3, care: 'costly', sure: false })
+    const call = gearFor(g, 'xhigh')
+    expect(plan(g, call, 'sonnet', true, 'sonnet')).toEqual({ main: { model: 'sonnet', effort: call.effort } })
+    expect(plan(g, call, 'haiku', true)).toEqual({ main: call })
+  }
+})
+
+test('a reviewing skill is known by its name, and its fork by how the engine lists it', () => {
+  expect(['code-review', 'security-review', 'github:code-review', 'Review'].every(reviews)).toBe(true)
+  expect(['simplify', 'graphify', 'commit'].some(reviews)).toBe(false)
+  // As the real fork's transcript meta named it: "name":"code-review", "description":"/code-review https://…".
+  expect(isSkillFork({ name: 'code-review', description: '/code-review https://github.com/acme/shop/pull/68' }, 'code-review')).toBe(true)
+  expect(isSkillFork({ description: '/code-review https://github.com/acme/shop/pu…' }, 'code-review')).toBe(true)
+  expect(isSkillFork({ description: '/code-review' }, 'code-review')).toBe(true)
+  expect(isSkillFork({ name: 'code-review' }, 'github:code-review')).toBe(true)
+  expect(isSkillFork({ name: 'reviewer', description: 'review the diff' }, 'code-review')).toBe(false)
+  expect(isSkillFork({ description: '/code-reviewer x' }, 'code-review')).toBe(false)
 })
 
 test('git chores follow their depth, never the coding effort; max stays for subtle code', () => {
@@ -132,7 +198,7 @@ test('a route below the model it calls for hands its subtle and costly steps to 
   expect(workEffort(route([{ what: 'read', mode: 'lookup', depth: 0 }, { what: 'build', mode: 'code', depth: 3 }], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus'))).toBe('high')
 })
 
-test('the escalate setting: code hands up only work that changes files; off keeps everything on the session', () => {
+test('the escalate setting: code hands up work that changes files and reviews, not answers; off keeps everything on the session', () => {
   const opusHigh = { model: 'opus', effort: 'high' } as const
   const question = reading({ reach: 'system', depth: 2, mode: 'answer' })
   const fix = reading({ reach: 'system', depth: 1 })
@@ -341,4 +407,71 @@ test('a run of reads ignores plan updates; Haiku keeps only replies that read an
   expect(scouts(1, false)).toBe(false)
   expect(scouts(2, false)).toBe(true)
   expect(scouts(1, true)).toBe(true)
+})
+
+test('the survey lists parts that can run side by side, kept only when well formed, at most six; in doubt it does not split', () => {
+  expect(SURVEY).toContain('"parts":[]')
+  expect(SURVEY).toContain('When in doubt, do not split')
+  const r = readReading(JSON.stringify({
+    reach: 'system', depth: 2, mode: 'code',
+    parts: [
+      { what: 'orders: add paging', mode: 'code', depth: 1, files: ['services/orders', 3, '  ', ' services/orders/api.ts '] },
+      { what: 'review the retry change', mode: 'review', depth: 1 },
+      { what: 'tap dance', mode: 'dance', depth: 1, files: [] },
+      { what: 'too deep', mode: 'code', depth: 5 },
+      { what: 'click around', mode: 'drive', depth: 1 },
+      { mode: 'lookup', depth: 0, files: 'docs' },
+      null,
+    ],
+  }))!
+  expect(r.parts).toEqual([
+    { what: 'orders: add paging', mode: 'code', depth: 1, files: ['services/orders', 'services/orders/api.ts'] },
+    { what: 'review the retry change', mode: 'review', depth: 1, files: [] },
+    { what: 'lookup', mode: 'lookup', depth: 0, files: [] },
+  ])
+  // Steps one after another stay phases; parts are a list of their own.
+  expect(r.phases).toEqual([])
+  const many = Array.from({ length: 9 }, (_, i) => ({ what: `part ${i}`, mode: 'answer', depth: 1 }))
+  expect(readReading(JSON.stringify({ reach: 'area', depth: 1, parts: many }))?.parts).toHaveLength(6)
+  expect(readReading('{"reach":"area","depth":1}')?.parts).toEqual([])
+  expect(readReading('{"reach":"area","depth":1,"parts":"all of it"}')?.parts).toEqual([])
+})
+
+test('the fan-out note starts every part in one message, says what each hands back, and asks for worktrees only when two or more edit', () => {
+  const sonnet = { model: 'sonnet', effort: 'high' } as const
+  const opus = { model: 'opus', effort: 'xhigh' } as const
+  const parts: FanPart[] = [
+    { what: 'orders: add paging', gear: sonnet, edits: true },
+    { what: 'billing: fix rounding', gear: sonnet, edits: true },
+    { what: 'review the retry change', gear: opus, edits: false },
+  ]
+  const two = handoffNote({ kind: 'fan', gear: sonnet, parts })
+  expect(two).toContain('3 independent parts')
+  expect(two).toContain('in ONE message')
+  expect(two).toContain('run_in_background false')
+  expect(two).toContain('part N')
+  expect(two).toContain('1. orders: add paging: model "sonnet", isolation "worktree"')
+  expect(two).toContain('3. review the retry change: model "opus";')
+  expect(two).toContain('hands back its findings in full')
+  expect(two).toContain('the files it changed')
+  expect(two).toContain('merge')
+  expect(two).toContain('Until all 3 have started')
+  expect(two).toContain('Wait for every result')
+  expect(two).not.toContain('effort "') // gearbox sets each part's effort, not the brief
+  // One editing part works in the working tree: no worktree at all.
+  const one = handoffNote({ kind: 'fan', gear: sonnet, parts: [parts[0]!, parts[2]!] })
+  expect(one).toContain('2 independent parts')
+  expect(one).not.toContain('worktree')
+  // A part a lane takes goes to it by SendMessage, in that same message.
+  const lane = handoffNote({ kind: 'fan', gear: sonnet, parts: [{ ...parts[2]!, gear: sonnet, resume: 'lane-s' }, parts[0]!] })
+  expect(lane).toContain('1. review the retry change: send it with SendMessage to "lane-s"')
+  expect(handoffLabel({ kind: 'fan', gear: sonnet, parts: [parts[0]!, parts[2]!, { what: 'run e2e', gear: { model: 'haiku', effort: 'low' }, edits: false }] })).toBe('fan × 3 → sonnet·high, opus·xhigh, haiku·low')
+  expect(handoffLabel({ kind: 'fan', gear: sonnet, parts: [{ ...parts[0]!, resume: 'lane-s' }, parts[2]!] })).toBe('fan × 2 → sonnet·high (same agent), opus·xhigh')
+})
+
+test('a part’s brief carries the person’s words too, marked as context: the part is the agent’s alone', () => {
+  const added = ownBrief(['add paging to orders and fix the rounding in billing'], true)
+  expect(added).toContain('> add paging to orders and fix the rounding in billing')
+  expect(added).toContain("this agent's part alone")
+  expect(ownBrief(['x'])).not.toContain("this agent's part alone")
 })

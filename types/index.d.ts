@@ -12,7 +12,7 @@ export type GearboxLoop = {
 }
 
 // What the person set through /gearbox; unset keys fall back to the plugin's options, then the defaults.
-export type GearboxSettings = { code_effort?: string; navigator?: string; steer?: boolean; strict?: boolean; log?: string; pane?: string; band?: boolean }
+export type GearboxSettings = { code_effort?: string; navigator?: string; steer?: boolean; strict?: boolean; log?: string; pane?: string; band?: boolean; orchestrator?: boolean; orchestrator_model?: string; orchestrator_effort?: string; orchestrator_agents?: number }
 
 // This turn, from the person's last prompt: requests per model, the session cost when it began, the costs of the
 // turns before it, and why its gear (a headline and a detail) for the band.
