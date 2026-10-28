@@ -120,16 +120,48 @@ export const fanOut = (parts: readonly Part[], cap: number): Part[][] => {
   return groups.length >= 2 ? groups : []
 }
 
-// A part's gear, by the same rules as a request's: the model by the reach and care of the whole request, the effort
-// by the part's own depth and kind, a review on at least Opus. Lookups and long commands run on Haiku at low. A part
-// never runs on Fable: open-ended work is not split.
-const partGear = (r: Reading, p: Part, standing: ModelEffort): Gear =>
-  p.mode === 'wait' || p.mode === 'lookup'
-    ? { model: 'haiku', effort: 'low' }
-    : (g => ({ model: upFor(g), effort: g.effort }))(gearFor({ ...r, mode: p.mode, depth: p.depth, phases: [], parts: [] }, standing))
-// A group's gear: the highest model and effort of its parts.
-const groupGear = (r: Reading, g: Part[], standing: ModelEffort): Gear =>
-  g.map(p => partGear(r, p, standing)).reduce((a, b) => ({ model: upTo(LADDER, a.model, b.model), effort: upTo(EFFORTS, a.effort, b.effort) }))
+// Why parts do not split, in the person's terms; undefined when they do.
+export const whyNoFan = (parts: readonly Part[], cap: number): string | undefined => {
+  if (fanOut(parts, cap).length) return undefined
+  if (parts.length < 2) return 'fewer than two parts'
+  if (cap < 2) return 'orchestrator-agents is 1, so one agent at a time'
+  if (parts.filter(p => p.depth > 0).length < 2) return 'fewer than two parts need real work: a depth-0 part is not worth an agent of its own'
+  return 'the parts edit the same files, or code in one folder (or code that names no files), so one agent takes them all'
+}
+
+// The reading parts the main conversation names split on when its turn has none (a nod, an unreadable prompt):
+// ordinary reach and care, so each part's gear comes from its own kind and depth.
+export const NEUTRAL: Reading = { reach: 'area', care: 'routine', depth: 1, mode: 'answer', aside: false, cont: false, ask: {}, sure: true, phases: [], parts: [] }
+
+// A part's reach, from the files it names, not the whole request's: one file, one folder or a few files are a
+// feature's (area); more than three files, or files in three or more top-level folders, a system's. A root-level file
+// sits in the root. A part that names no files takes the request's reach.
+const REACHES: readonly Reading['reach'][] = ['point', 'area', 'system', 'frontier']
+const top = (f: string) => (f.includes('/') ? f.split('/')[0]! : folder(f) === f ? f : '.')
+const scope = (named: readonly string[]): Reading['reach'] | undefined => {
+  const fs = [...new Set(named.map(norm))]
+  if (!fs.length) return undefined
+  return fs.length > 3 || new Set(fs.map(top)).size >= 3 ? 'system' : 'area'
+}
+// A group's reach: the union of its files', never below any of its parts' own.
+const groupReach = (r: Reading, g: Part[]): Reading['reach'] =>
+  [scope(files(g)) ?? r.reach, ...g.map(p => scope(p.files) ?? r.reach)].reduce((a, b) => upTo(REACHES, a, b))
+
+// A part's gear, by the same rules as a request's on its own reach: the model by that reach and the request's care,
+// the effort by the part's own depth and kind, a review on at least Opus, and real work (depth 1 and up) never below
+// Sonnet. The person's ask wins. Lookups and long commands run on Haiku at low. A part never runs on Fable: open-ended
+// work is not split.
+const partGear = (r: Reading, p: Part, reach: Reading['reach'], standing: ModelEffort): Gear => {
+  if (p.mode === 'wait' || p.mode === 'lookup') return { model: 'haiku', effort: 'low' }
+  const g = gearFor({ ...r, reach, mode: p.mode, depth: p.depth, ask: {}, phases: [], parts: [] }, standing)
+  const model = r.ask.model ?? (p.depth > 0 ? upTo(LADDER, g.model, 'sonnet') : g.model)
+  return { model: upFor({ model, effort: g.effort }), effort: r.ask.effort ?? g.effort }
+}
+// A group's gear: the highest model and effort of its parts, on the group's reach.
+const groupGear = (r: Reading, g: Part[], standing: ModelEffort): Gear => {
+  const reach = groupReach(r, g)
+  return g.map(p => partGear(r, p, reach, standing)).reduce((a, b) => ({ model: upTo(LADDER, a.model, b.model), effort: upTo(EFFORTS, a.effort, b.effort) }))
+}
 
 // The fan-out of a sure reading: each group as one part, on its gear.
 export const fanParts = (r: Reading, cap: number, standing: ModelEffort): FanPart[] =>

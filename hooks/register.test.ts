@@ -1064,3 +1064,137 @@ test('orchestrator: Agent calls of one message delivered at the same time each t
   for (const n of [1, 2, 3]) await stepOnce($, { agentId: `agent-t${n}`, model: 'claude-sonnet-5-5', effort: 'xhigh' })
   expect(r.steps.slice(1)).toEqual(['claude-sonnet-5-5·medium', 'claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh'])
 })
+
+// The fan tool: once the work is known, the main conversation names its independent pieces and gearbox splits them
+// as it would a survey's parts. Here the QA deploy of a real session: one long command per repo.
+const DEPLOY = ['integration-malha', 'prepost-services', 'prepost', 'backend'].map(repo => ({ what: `deploy ${repo} on QA`, mode: 'wait', depth: 1, files: [repo] }))
+const QA_ASK = 'sim, porem, tem mais de 1 pr, porque vc ta querendo atualizar só 1 serviço?'
+const HAIKU_LOW = { model: 'haiku', effort: 'low' } as const
+
+test('the fan tool is registered at session start, never deferred, and says when to call it', async ($: any, on) => {
+  rig(on, [])
+  const tools: any[] = []
+  on('tool.register', (_: unknown, e: any) => (tools.push(e), { value: { tool: `mcp__gearbox__${e.name}` } }))
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+  const fan = tools.find(t => t.name === 'fan')
+  expect(fan).toMatchObject({ isDeferred: false })
+  expect(fan.description).toContain('BEFORE starting agents')
+  expect(fan.description).toContain('independent pieces')
+  expect(fan.description).toContain('sequential work')
+  expect(fan.inputSchema.required).toEqual(['parts'])
+  expect(fan.inputSchema.properties.parts.maxItems).toBe(6)
+})
+
+test('orchestrator: the fan tool splits the work the main conversation names, on the live cap, and holds the turn to it until every agent starts', { options: { code_effort: 'xhigh', orchestrator: true } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  const calls: any[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push(e), { result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  // As the survey read the real prompt: a question, kept here with no hand-off.
+  await sayOn($, 'claude-opus-5-5', QA_ASK)
+  expect(r.notes[0]).toEqual([])
+  // Three agents at most: the last two deploys share one.
+  const answer = JSON.stringify(await $.tool.call({ tool: 'mcp__gearbox__fan', parts: DEPLOY }))
+  expect(answer).toContain('3 independent parts')
+  expect(answer).toContain('part 1: deploy integration-malha on QA: model \\"haiku\\", gearbox runs it at low; only reads')
+  expect(answer).toContain('part 3: deploy prepost on QA; deploy backend on QA: model \\"haiku\\"')
+  expect(answer).toContain('in ONE message')
+  // Strict: until every part's agent has started, no commands here.
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'ssh qa pm2 status' }))).toContain('3 of them')
+  for (const n of [1, 2, 3]) {
+    await $.tool.call({ tool: 'Agent', tool_use_id: `t${n}`, description: `part ${n}: deploy`, prompt: `deploy part ${n}` })
+    await $.agent.spawn(spawnCall(`t${n}`, { model: 'haiku' }))
+  }
+  expect(calls.filter(c => c.tool === 'Agent').map(gearOf)).toEqual(Array(3).fill('haiku·xhigh - false'))
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'ssh qa pm2 status' }))).not.toContain('gearbox')
+  for (const n of [1, 2, 3]) await stepOnce($, { agentId: `agent-t${n}`, model: 'claude-haiku-5-5', effort: 'xhigh' })
+  expect(r.steps.slice(1)).toEqual(Array(3).fill('claude-haiku-5-5·low'))
+  await done($)
+  // A nod goes back to the first part's lane, as after a survey's fan-out.
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'lane', gear: HAIKU_LOW, resume: 'agent-t1' })])
+  await done($)
+  const ev = events(files)
+  expect(ev.find(e => e.ev === 'fan')).toMatchObject({ via: 'tool', cap: 3, kept: 3, merged: ['deploy prepost on QA + deploy backend on QA'], handoff: 'fan × 3 → haiku·low, haiku·low, haiku·low' })
+  expect(ev.filter(e => e.ev === 'spawn').map(e => `${e.part} ${e.lane ?? false}`)).toEqual(['1 true', '2 false', '3 false'])
+})
+
+test('orchestrator: the fan tool leaves the turn as it is when a split is not worth it, once the turn’s agents have started, or with the orchestrator off', ORCH, async ($: any, on) => {
+  rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: 'lane-s' }))
+  const fan = async (parts: unknown) => JSON.stringify(await $.tool.call({ tool: 'mcp__gearbox__fan', parts }))
+  await sayOn($, 'claude-sonnet-5-5', 'why is the quote mapper rounding twice?')
+  // Two edits of one file are one agent's: the lane hand-off stands.
+  const shared = [{ what: 'orders: add paging', mode: 'code', depth: 1, files: ['services/orders/list.ts'] }, { what: 'orders: add sorting', mode: 'code', depth: 1, files: ['services/orders/list.ts'] }]
+  expect(await fan(shared)).toContain('not worth splitting: the parts edit the same files')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'quote.ts', old_string: 'a', new_string: 'b' }))).toContain('owed to an sonnet agent')
+  expect(await $.tool.call({ tool: 'mcp__gearbox__fan', parts: [{ what: 'dance', mode: 'dance', depth: 1 }] })).toMatchObject({ isError: true })
+  // Once the lane has started, a late split cannot reshuffle running work.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'analyze', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  expect(await fan(DEPLOY)).toContain('already started')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'bun test' }))).not.toContain('gearbox')
+  await $.command.run({ command: 'gearbox', args: 'orchestrator off' })
+  expect(await fan(DEPLOY)).toContain('orchestrator is off')
+})
+
+test('orchestrator: carrying on the work a lane holds still splits when the survey lists independent parts; with none it goes on in the lane', { options: { code_effort: 'xhigh', orchestrator: true, orchestrator_agents: 6 } }, async ($: any, on) => {
+  const deploy = { reach: 'area', depth: 1, mode: 'wait', parts: DEPLOY }
+  const r = rig(on, [{ reach: 'system', depth: 1, mode: 'wait' }, { ...deploy, cont: true }, deploy, { reach: 'area', depth: 1, mode: 'wait', cont: true }] as any, { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
+  await sayOn($, 'claude-opus-5-5', 'vamos subir pra qa: checkout dos serviços, buildar e reiniciar')
+  expect(r.notes[0]).toEqual([handoffNote({ kind: 'lane', gear: HAIKU_LOW })])
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't0', description: 'deploy', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t0', { model: 'haiku' }))
+  await $.turn.complete({ agentId: 'agent-t0', turnId: 'y', answer: 'stopped', durationMs: 1, isAborted: false })
+  // A continuation of four deploys, one per repo: four agents, the idle lane taking the first.
+  await sayOn($, 'claude-opus-5-5', QA_ASK)
+  expect(r.notes[1]![0]).toContain('4 independent parts')
+  expect(r.notes[1]![0]).toContain('1. deploy integration-malha on QA: send it with SendMessage to "agent-t0"')
+  // Read as the work it carries on, not a continuation, it splits all the same.
+  await sayOn($, 'claude-opus-5-5', QA_ASK)
+  expect(r.notes[2]![0]).toContain('4 independent parts')
+  // A continuation with no parts goes on in the lane.
+  await sayOn($, 'claude-opus-5-5', 'continua')
+  expect(r.notes[3]).toEqual([handoffNote({ kind: 'lane', gear: HAIKU_LOW, resume: 'agent-t0' })])
+})
+
+test('orchestrator: of two plain agents of one model in one message only the first becomes the lane; both run at their job’s effort, and a nod goes back to the first', { options: { code_effort: 'high', orchestrator: true } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  const files = disk(on)
+  const calls: any[] = []
+  on('tool.call', async (_: unknown, e: any) => (calls.push(e), await new Promise(done => setTimeout(done, 5)), { result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-sonnet-5-5', 'why is the quote mapper rounding twice?')
+  await Promise.all(['t1', 't2'].map(id => $.tool.call({ tool: 'Agent', tool_use_id: id, description: 'trace', prompt: 'p', model: 'sonnet' })))
+  for (const id of ['t1', 't2']) await $.agent.spawn(spawnCall(id, { model: 'sonnet' }))
+  expect(calls.map(c => `${c.model}·${c.effort}`)).toEqual(['sonnet·xhigh', 'sonnet·xhigh'])
+  for (const id of ['t1', 't2']) await stepOnce($, { agentId: `agent-${id}`, model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  expect(r.steps.slice(1)).toEqual(['claude-sonnet-5-5·high', 'claude-sonnet-5-5·high'])
+  await done($)
+  await sayOn($, 'claude-sonnet-5-5', 'go ahead')
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'lane', gear: { model: 'sonnet', effort: 'high' }, resume: 'agent-t1' })])
+  await done($)
+  expect(events(files).filter(e => e.ev === 'spawn').map(e => `${e.agent} ${e.lane ?? false}`)).toEqual(['agent-t1 true', 'agent-t2 false'])
+})
+
+test('orchestrator: with no hand-off, a second plain agent of the same model is a fresh one; the lane is the first', ORCH, async ($: any, on) => {
+  rig(on, [{ reach: 'point', depth: 0, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await sayOn($, 'claude-sonnet-5-5', 'what does formatMoney return?')
+  for (const id of ['t1', 't2']) {
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, description: 'edit', prompt: 'p', model: 'sonnet' })
+    await $.agent.spawn(spawnCall(id, { model: 'sonnet' }))
+  }
+  await sayOn($, 'claude-sonnet-5-5', 'ok')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'money.ts', old_string: 'a', new_string: 'b' }))).toContain('SendMessage to \\"agent-t1\\"')
+})
