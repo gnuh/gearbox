@@ -1,0 +1,101 @@
+[
+  {
+    "id": "quote-mismatch",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 2,
+          "mode": "answer",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":2,\"mode\":\"answer\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.003052,
+        "outcome": {
+          "worker": "opus",
+          "gear": "opus·high",
+          "how": "deep hand-off"
+        }
+      }
+    ]
+  },
+  {
+    "id": "route-multi",
+    "expect": "opus",
+    "runs": [
+      {
+        "reading": {
+          "reach": "system",
+          "care": "routine",
+          "depth": 1,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": [
+            {
+              "what": "read ticket TASK-123",
+              "mode": "lookup",
+              "depth": 0
+            },
+            {
+              "what": "implement change in both services",
+              "mode": "code",
+              "depth": 1
+            },
+            {
+              "what": "run tests",
+              "mode": "wait",
+              "depth": 0
+            },
+            {
+              "what": "commit changes",
+              "mode": "commit",
+              "depth": 0
+            }
+          ]
+        },
+        "reply": "{\"reach\":\"system\",\"care\":\"routine\",\"depth\":1,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[{\"what\":\"read ticket TASK-123\",\"mode\":\"lookup\",\"depth\":0},{\"what\":\"implement change in both services\",\"mode\":\"code\",\"depth\":1},{\"what\":\"run tests\",\"mode\":\"wait\",\"depth\":0},{\"what\":\"commit changes\",\"mode\":\"commit\",\"depth\":0}]}",
+        "usd": 0.003962,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "-",
+          "how": "route: read ticket TASK-123 → haiku·low; implement change in both services → main xhigh; run tests → haiku·low; commit changes → main low"
+        }
+      }
+    ]
+  },
+  {
+    "id": "rename-fn",
+    "expect": "sonnet",
+    "runs": [
+      {
+        "reading": {
+          "reach": "point",
+          "care": "routine",
+          "depth": 0,
+          "mode": "code",
+          "aside": false,
+          "cont": false,
+          "ask": {},
+          "sure": true,
+          "phases": []
+        },
+        "reply": "{\"reach\":\"point\",\"care\":\"routine\",\"depth\":0,\"mode\":\"code\",\"aside\":false,\"cont\":false,\"ask\":{},\"sure\":true,\"phases\":[]}",
+        "usd": 0.00297,
+        "outcome": {
+          "worker": "sonnet",
+          "gear": "sonnet·xhigh",
+          "how": "main conversation"
+        }
+      }
+    ]
+  }
+]

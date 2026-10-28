@@ -113,6 +113,28 @@ test('steering Sonnet: Opus-level work goes to an Opus subagent at its effort; t
   expect(r.steps).toEqual(['claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh'])
 })
 
+test('steering Sonnet: until the Opus agent starts, the main model may read a little but not do the work itself', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  rig(on, [{ reach: 'system', depth: 2 }], { session: 'claude-sonnet-5-5' })
+  const reached: string[] = []
+  on('tool.call', (_: unknown, e: any) => (reached.push(`${e.tool}${e.model ? ` ${e.model}·${e.effort}` : ''}`), { result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'quotes differ between the gateway and the price service; find the cause and fix it')
+  const edit = await $.tool.call({ tool: 'Edit', file_path: 'quote.ts', old_string: 'a', new_string: 'b' })
+  expect(JSON.stringify(edit)).toContain('owed to an opus agent')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'bun test' }))).toContain('owed to an opus agent')
+  for (const f of ['quote.ts', 'price.ts', 'money.ts']) expect(JSON.stringify(await $.tool.call({ tool: 'Read', file_path: f }))).not.toContain('gearbox')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Read', file_path: 'routes.ts' }))).toContain('owed to an opus agent') // the brief has its reads
+  await $.tool.call({ tool: 'Agent', description: 'fix', prompt: 'p' })
+  await $.tool.call({ tool: 'Edit', file_path: 'quote.ts', old_string: 'a', new_string: 'b' }) // reviewing what came back
+  expect(reached).toEqual(['Read', 'Read', 'Read', 'Agent opus·xhigh', 'Edit'])
+})
+
+test('with strict off, the main model may do deep work itself', { options: { code_effort: 'xhigh', strict: false } }, async ($: any, on) => {
+  rig(on, [{ reach: 'system', depth: 2 }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'quotes differ between the gateway and the price service; find the cause and fix it')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'quote.ts', old_string: 'a', new_string: 'b' }))).not.toContain('owed')
+})
+
 test('steering Sonnet: a hard browser check is navigated by the navigator and judged by an Opus subagent', async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2, mode: 'drive' }], { session: 'claude-sonnet-5-5' })
   const agents: string[] = []

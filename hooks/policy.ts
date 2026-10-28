@@ -195,12 +195,13 @@ export type Step = { what: string; mode: Phase['mode'] | 'analyze'; by: 'main' |
 // one, analyzes it, so no model judges its own clicking.
 // `up` is the model the request calls for: when the main model is below it, subtle or costly steps (code, answers,
 // judging a browser check) go to a subagent on it, at the step's effort, while the main model briefs it and judges.
-// A step has no reach of its own, so depth decides: subtle steps go up, ordinary ones only when a mistake is costly.
+// The same rule as a single request's: code goes up past a mechanical edit, since the request's reach already says it
+// is hard; answers and judgments only when subtle or costly.
 export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet', long = false, up: Model = main, escalate: Escalate = 'on'): Step[] =>
   phases.flatMap(({ what, mode, depth, ask }): Step[] => {
     const floor = (e: ModelEffort) => (costly ? upTo(EFFORTS, e, 'medium') : e)
     const doer = (what: string, mode: Step['mode'], effort: ModelEffort): Step =>
-      below(main, up) && mayGoUp(mode, depth, escalate) && (depth >= 2 || costly)
+      below(main, up) && mayGoUp(mode, depth, escalate) && (mode === 'code' || depth >= 2 || costly)
         ? { what, mode, by: 'agent', gear: { model: up, effort }, mainEffort: BRIEFING }
         : { what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }
     if (mode === 'lookup' || mode === 'wait') return [{ what, mode, by: 'agent', gear: { model: ask ?? 'haiku', effort: 'low' }, mainEffort: 'low' }]
@@ -335,6 +336,11 @@ const LOOKS = /^(Read|Grep|Glob|LS|NotebookRead|WebFetch|WebSearch)$/
 // Tools that neither look nor change anything: they keep a run of reads going without counting as one.
 const ASIDE = /^(TodoWrite|mcp__gearbox__phase)$|__update_plan$/
 const looks = (u: Use) => LOOKS.test(u.name) || (u.name === 'Bash' && isReadOnlyCommand(String((u.input as { command?: unknown } | null)?.command ?? '')))
+export const looksUp = (tool: string, command: string) => looks({ name: tool, input: { command } })
+// While deep work waits for its agent, the main model may still brief it: start or message the agent, load a tool,
+// plan, mark a step, ask the person, and make a few reads to write the brief.
+export const BRIEFING_TOOLS = /^(Agent|SendMessage|ToolSearch|TodoWrite|AskUserQuestion|mcp__gearbox__phase)$|__update_plan$/
+export const BRIEF_READS = 3
 // What a response did: only read (asides allowed), only asides, or anything else (an edit, a command that changes
 // something, an answer with no call).
 export const readKind = (uses: readonly Use[]): 'read' | 'aside' | 'other' => {
