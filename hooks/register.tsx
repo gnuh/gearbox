@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelEffort, PluginOptions, PromptOrigin, Register, TurnUsage } from 'claude-code'
+import type { EngineInterface, ModelEffort, PluginOptions, PromptOrigin, Register, TurnStepChunk, TurnStepResult, TurnUsage } from 'claude-code'
 import type { GearboxLoop } from '../types'
 import {
   type Gear,
@@ -10,7 +10,12 @@ import {
   isBrowserTool,
   isChoreCommand,
   isLongCommand,
-  CHORE_CONTEXT,
+  LONG_CONTEXT,
+  SCOUT,
+  SCOUT_WARM_MS,
+  keepsScout,
+  readKind,
+  scouts,
   everyday,
   EFFORTS,
   doesHandoffWork,
@@ -37,13 +42,16 @@ import {
 } from './policy'
 
 // US$ per million tokens.
-// shortcut: copied from the claude-api skill's table (cached 2026-10-06), Haiku's long-prompt rate ignored; update when prices move.
+// shortcut: copied from the claude-api skill's table (cached 2026-10-06); update when prices move.
 const PRICES: Record<Model, { fresh: number; written: number; cached: number; out: number }> = {
   haiku: { fresh: 0.1, written: 0.125, cached: 0.01, out: 0.5 },
   sonnet: { fresh: 2, written: 2.5, cached: 0.2, out: 10 },
   opus: { fresh: 4, written: 5, cached: 0.2, out: 20 },
   fable: { fresh: 10, written: 12.5, cached: 0.25, out: 50 },
 }
+// Haiku bills a prompt over 100K tokens at five times its rate: scouting on a long conversation pays this one.
+const HAIKU_LONG = { fresh: 0.5, written: 0.625, cached: 0.05, out: 2.5 }
+const LONG_ROW = ' over 100K'
 
 const KIND: Record<Handoff['kind'], string> = { drive: 'browser check', wait: 'long command', chore: 'git chore', aside: 'side task', deep: 'deep work' }
 const HUE: Record<Model, string> = { haiku: '#2BB3A0', sonnet: '#5B8DEF', opus: '#D99A2B', fable: '#D062B5' }
@@ -207,7 +215,7 @@ const flushLog = async ($: EngineInterface, log: LogState) => {
     log.body += log.pending.splice(0).map(line => `${line}\n`).join('')
     await $.fs.write(log.path, log.body)
   } catch (err) {
-    $.ui.log(`gearbox: log not written: ${err}`, { to: 'debug' })
+    $.ui.log(`log not written: ${err}`, { to: 'debug' })
   }
 }
 
@@ -230,7 +238,7 @@ const consent = async ($: EngineInterface, g: Gear): Promise<Gear> => {
     })
     return answer === label(g) ? g : cheaper
   } catch {
-    $.ui.log(`gearbox: couldn't ask, so ${label(cheaper)}`, { to: 'debug' })
+    $.ui.log(`couldn't ask, so ${label(cheaper)}`, { to: 'debug' })
     return cheaper
   }
 }
@@ -244,7 +252,9 @@ const tally = ($: EngineInterface, u: TurnUsage) =>
   (pending = pending
     .then(async () => {
       const ledger = ((await $.store.get('usage')) ?? {}) as Ledger
-      const row = (ledger[u.model] ??= { calls: 0, fresh: 0, written: 0, cached: 0, out: 0 })
+      const prompt = u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens
+      const key = u.model.includes('haiku') && prompt > 100_000 ? `${u.model}${LONG_ROW}` : u.model
+      const row = (ledger[key] ??= { calls: 0, fresh: 0, written: 0, cached: 0, out: 0 })
       row.calls += 1
       row.fresh += u.input_tokens
       row.written += u.cache_creation_input_tokens
@@ -252,16 +262,16 @@ const tally = ($: EngineInterface, u: TurnUsage) =>
       row.out += u.output_tokens
       await $.store.set('usage', ledger)
     })
-    .catch(err => $.ui.log(`gearbox: usage not saved: ${err}`, { to: 'debug' })))
+    .catch(err => $.ui.log(`usage not saved: ${err}`, { to: 'debug' })))
 
 const dollars = (model: string, r: Ledger[string]) => {
-  const p = PRICES[family(model) ?? 'opus']
+  const p = model.endsWith(LONG_ROW) ? HAIKU_LONG : PRICES[family(model) ?? 'opus']
   return (r.fresh * p.fresh + r.written * p.written + r.cached * p.cached + r.out * p.out) / 1e6
 }
 
 export const usageReport = (ledger: Ledger) => {
   const rows = Object.entries(ledger)
-  if (!rows.length) return 'gearbox: nothing used yet'
+  if (!rows.length) return 'nothing used yet'
   const lines = rows.map(([m, r]) => `${m}  ${r.calls} calls  ${kilo(r.fresh + r.written + r.cached)} in  ${kilo(r.out)} out  ≈ $${dollars(m, r).toFixed(2)}`)
   const total = rows.reduce((sum, [m, r]) => sum + dollars(m, r), 0)
   return [...lines, `total ≈ $${total.toFixed(2)} at API list prices, subagents included`].join('\n')
@@ -343,6 +353,9 @@ export const register: Register = (on, options) => {
   let turnStep: number | undefined // the route step under way
   let handedOff = new Set<number>() // route steps (or -1, a single hand-off) whose subagent has started
   let ownEffort: string | undefined // a turn whose effort Claude Code sets: a slash command or skill, or ultrathink
+  let turnLong = false // the turn started on a long conversation
+  let readStreak = 0 // main requests in a row this turn that only read
+  let scoutedAt: number | undefined // when Haiku last took a main request: its cache of the conversation lasts an hour
   // The browser check or long command under way that a subagent should be doing, if any.
   // The hand-off the next plain Agent call belongs to: the step marked with phase if it is a subagent step,
   // else the first subagent step not yet started; a single-hand-off turn has its one.
@@ -367,9 +380,11 @@ export const register: Register = (on, options) => {
   const stepLabel = (): string | undefined =>
     ownEffort ? `${ownEffort} sets its own effort` : routeLabel()
   const routeLabel = () => (turnRoute && turnStep ? `step ${turnStep}/${turnRoute.length} ${turnRoute[turnStep - 1]!.what}` : undefined)
+  const warmScout = () => scoutedAt !== undefined && Date.now() - scoutedAt < SCOUT_WARM_MS
   const forget = () => {
-    floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = undefined
+    floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = scoutedAt = undefined
     handedOff = new Set()
+    turnLong = false
   }
 
   on('session.start', async ($, e, next) => {
@@ -400,12 +415,13 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // Claude Code shows a command's reply under the plugin's name, so the replies do not repeat it.
   on('command.run', { command: 'gearbox' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     apply(await loadSettings($, options))
     const [word = '', value] = arg.split(/\s+/)
     if (arg === 'log') {
-      if (logMode === 'off') return { text: 'gearbox: the log is off. /gearbox log on starts one for this session; /gearbox log full also keeps the first 200 characters of each prompt.' }
+      if (logMode === 'off') return { text: 'the log is off. /gearbox log on starts one for this session; /gearbox log full also keeps the first 200 characters of each prompt.' }
       await flushLog($, log)
       const lines = (log.body ?? '').trim().split('\n').filter(Boolean)
       const last = (ev: string) => lines.map(l => JSON.parse(l)).reverse().find(r => r.ev === ev)
@@ -424,12 +440,12 @@ export const register: Register = (on, options) => {
         const { isPlaced } = await $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })
         return {
           text: isPlaced
-            ? 'gearbox: settings open. Press a value to use it; Esc closes.'
-            : `gearbox: ${settingsText(current())}. The settings panel has no room here; set one with /gearbox effort|navigator|steer|strict <value>.`,
+            ? 'settings open. Press a value to use it; Esc closes.'
+            : `${settingsText(current())}. The settings panel has no room here; set one with /gearbox effort|navigator|steer|strict <value>.`,
         }
       }
       const change = settingPatch(word, value)
-      if (!change) return { text: `gearbox: ${word} takes ${SETTING_CHOICES[word]}` }
+      if (!change) return { text: `${word} takes ${SETTING_CHOICES[word]}` }
       const wasLogging = logMode !== 'off'
       await saveSetting($, change)
       apply(await loadSettings($, options))
@@ -437,18 +453,18 @@ export const register: Register = (on, options) => {
         logEvent({ ...(await sessionFacts($, options)), settings: current() })
         await flushLog($, log)
       }
-      return { text: `gearbox: ${settingsText(current())} (from your next prompt)` }
+      return { text: `${settingsText(current())} (from your next prompt)` }
     }
     if (word === 'pane' || word === 'panel') {
       // /gearbox panel (or pane) running|all also sets what the pane lists, then opens it.
       if (value) {
         const change = settingPatch('pane', value)
-        if (!change) return { text: 'gearbox: pane takes running or all' }
+        if (!change) return { text: 'pane takes running or all' }
         await saveSetting($, change)
         apply(await loadSettings($, options))
       }
       const { isPlaced } = await $.ui.open({ id: PANE, title: 'gearbox: models now' })
-      return { text: isPlaced ? 'gearbox: pane open' : 'gearbox: the pane opens once the window has room for it' }
+      return { text: isPlaced ? 'pane open' : 'the pane opens once the window has room for it' }
     }
     if (arg === 'on' || arg === 'off') {
       enabled = arg === 'on'
@@ -465,15 +481,15 @@ export const register: Register = (on, options) => {
       return { text: usageReport(((await $.store.get('usage')) ?? {}) as Ledger) }
     } else if (arg === 'usage reset') {
       await $.store.delete('usage')
-      return { text: 'gearbox: usage cleared' }
+      return { text: 'usage cleared' }
     } else if (arg) {
-      return { text: `gearbox: unknown "${arg}". Try settings, panel, effort, navigator, steer, strict, log, band, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `unknown "${arg}". Try settings, panel, effort, navigator, steer, strict, log, band, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
     const mode = session.includes('haiku') ? 'shifting models' : steers ? `steering effort on ${family(session) ?? session}` : 'readout only'
     return {
-      text: `gearbox ${enabled ? `on, ${mode}` : 'off'} · ${settingsText(current())} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox effort|navigator|steer <value>.`,
+      text: `${enabled ? `on, ${mode}` : 'off'} · ${settingsText(current())} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox effort|navigator|steer <value>.`,
     }
   })
 
@@ -513,7 +529,8 @@ export const register: Register = (on, options) => {
     const base = fixed ?? floor
     // A long conversation hands git chores to a fresh subagent: every request here re-reads the whole context.
     const context = (await $.session.usage()).context.tokens ?? 0
-    const long = context >= CHORE_CONTEXT
+    const long = context >= LONG_CONTEXT
+    turnLong = long
     let why = ''
     let brief: [string, string] = ['', '']
 
@@ -702,6 +719,7 @@ export const register: Register = (on, options) => {
   // for the readout, in any session, and its usage tallied.
   on('turn.step', async function* ($, e, next) {
     let step = e
+    let scout = false
     if (!e.agentId && enabled) {
       // Shifting (Haiku session): the turn's model, else the floor. Steering: the session's model, unless the
       // person asked for another this turn. Effort changes are free: they keep the prompt cache (measured).
@@ -715,35 +733,78 @@ export const register: Register = (on, options) => {
       if (model && shifting) floor = nextFloor(model, floor)
       if (model && (shifting || model !== from)) step = { ...step, model }
       if (turnGear && !ownEffort) step = { ...step, effort: turnGear.effort }
+      if (e.index === 0) readStreak = 0
+      scout = turnLong && turnGear !== undefined && !ownEffort && family(step.model) !== 'haiku' && scouts(readStreak, warmScout())
     }
     const id = e.agentId ?? 'main'
-    if (enabled) {
+    const sending = async (s: typeof e) => {
+      if (!enabled) return
       await patch($, id, l => ({
         label: e.agentId ? 'agent' : 'main',
         ...(e.agentId ? { parent: 'main', since: Date.now() } : {}),
         steps: 0,
         ...l,
-        asked: step.model,
-        ...(step.effort !== undefined ? { effort: String(step.effort) } : {}),
+        asked: s.model,
+        ...(s.effort !== undefined ? { effort: String(s.effort) } : {}),
         state: 'working',
       }))
       if (!e.agentId) await showStatus($, turnHandoff, stepLabel())
-      await countRequest($, family(step.model) ?? String(step.model))
+      await countRequest($, family(s.model) ?? String(s.model))
     }
-    const result = yield* next(step)
+    let result: TurnStepResult | undefined
+    let sent = step
+    if (scout) {
+      // Haiku's reply is held back until it is known to be only reads; a reply never yielded is never recorded.
+      const tried = { ...step, model: SCOUT.model, effort: SCOUT.effort }
+      const recache = warmScout() ? undefined : (await $.session.usage()).context.tokens ?? 0
+      await sending(tried)
+      const held: TurnStepChunk[] = []
+      let r: TurnStepResult | undefined
+      try {
+        const s = next(tried)
+        for await (const c of s) held.push(c)
+        r = await s.result
+      } catch {
+        // A failed try goes to the main model below.
+      }
+      scoutedAt = Date.now()
+      const kept = r !== undefined && (keepsScout(r) || next.signal.aborted)
+      const u = r?.usage
+      logEvent({
+        ev: 'scout',
+        index: e.index,
+        kept,
+        uses: r?.toolUses.map(t => t.name) ?? [],
+        ...(u ? { in: u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens, out: u.output_tokens } : {}),
+        ...(recache !== undefined ? { recache, usd: (recache * (recache > 100_000 ? HAIKU_LONG : PRICES.haiku).written) / 1e6 } : {}),
+      })
+      if (kept) {
+        for (const c of held) yield c
+        result = r
+        sent = tried
+      } else if (u) await tally($, u)
+    }
+    if (!result) {
+      await sending(step)
+      result = yield* next(step)
+    }
     if (enabled) await patch($, id, l => l && { ...l, ...(result.usage ? { answered: result.usage.model } : {}), steps: l.steps + 1 })
+    if (!e.agentId) {
+      const kind = readKind(result.toolUses)
+      readStreak = kind === 'read' ? readStreak + 1 : kind === 'aside' ? readStreak : 0
+    }
     // What gearbox sent next to what Claude Code would have sent (its own setting), and who answered.
     const u = result.usage
     logEvent({
       ev: 'step',
       loop: id,
       index: e.index,
-      sent: `${family(step.model) ?? step.model}·${step.effort ?? 'default'}`,
+      sent: `${family(sent.model) ?? sent.model}·${sent.effort ?? 'default'}`,
       engine: `${family(e.model) ?? e.model}·${e.effort ?? 'default'}`,
       answered: u?.model,
       ...(u ? { in: u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens, out: u.output_tokens } : {}),
     })
-    if (result.usage) await tally($, result.usage)
+    if (u) await tally($, u)
     return result
   })
 

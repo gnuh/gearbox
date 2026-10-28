@@ -8,10 +8,14 @@ const ONE = { ...ZERO, input_tokens: 10, output_tokens: 2 }
 
 type Rig = { steps: string[]; surveys: any[]; readers: string[]; dialogs: string[]; notes: (readonly string[])[]; kv: Map<string, unknown> }
 
-// The engine beneath the mod, faked: each survey answers with the next reading, each step records `model·effort`.
-const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choose?: (labels: string[]) => string; earlier?: string[]; context?: number } = {}): Rig => {
+type Reply = { answer?: string; toolUses?: { name: string; input: unknown }[] }
+
+// The engine beneath the mod, faked: each survey answers with the next reading, each step records `model·effort`
+// and answers with the next reply (none: an answer with no tool call).
+const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choose?: (labels: string[]) => string; earlier?: string[]; context?: number; replies?: Reply[] } = {}): Rig => {
   const r: Rig = { steps: [], surveys: [], readers: [], dialogs: [], notes: [], kv: new Map() }
   const queue = [...readings]
+  const replies = [...(o.replies ?? [])]
   for (const quiet of ['ui.status', 'ui.log']) on(quiet, () => ({ value: undefined }))
   on('ui.panes', () => ({ value: [] }))
   on('store.get', (_: unknown, e: any) => ({ value: r.kv.get(e.key) }))
@@ -35,7 +39,9 @@ const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choos
   on('prompt.submit', (_: unknown, e: any) => (r.notes.push(e.context ?? []), { text: e.text }))
   on('turn.step', async function* (_: unknown, e: any) {
     r.steps.push(`${e.model}·${e.effort}`)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...ONE, model: e.model } }
+    const { answer = '', toolUses = [] } = replies.shift() ?? {}
+    if (answer) yield { kind: 'text', index: 0, text: answer, ref: r.steps.length }
+    return { turnId: e.turnId, index: e.index, answer, toolUses, stopReason: toolUses.length ? 'tool_use' : 'end_turn', usage: { ...ONE, model: e.model } }
   })
   return r
 }
@@ -154,7 +160,7 @@ test('a subagent outside a hand-off gets an effort by its job, not the session�
 test('/gearbox off is plain Haiku again; on starts over', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2 }, { reach: 'area', depth: 1 }])
   await say($, 'find why sessions expire early')
-  expect((await $.command.run({ command: 'gearbox', args: 'off' })).text).toContain('gearbox off')
+  expect((await $.command.run({ command: 'gearbox', args: 'off' })).text).toMatch(/^off · /)
   await say($, 'and now?')
   expect(r.surveys).toHaveLength(1)
   await $.command.run({ command: 'gearbox', args: 'on' })
@@ -304,7 +310,7 @@ test('/gearbox effort, navigator and steer change the settings, over the plugin 
   const r = rig(on, [{ reach: 'area', depth: 1 }, { reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
   await sayOn($, 'claude-opus-5-5', 'add pagination')
   expect((await $.command.run({ command: 'gearbox', args: 'effort medium' })).text).toContain('coding effort medium')
-  expect((await $.command.run({ command: 'gearbox', args: 'effort ludicrous' })).text).toBe('gearbox: effort takes medium, high, xhigh or max')
+  expect((await $.command.run({ command: 'gearbox', args: 'effort ludicrous' })).text).toBe('effort takes medium, high, xhigh or max')
   expect((await $.command.run({ command: 'gearbox', args: 'navigator haiku' })).text).toContain('navigator haiku')
   await sayOn($, 'claude-opus-5-5', 'add sorting')
   expect(r.steps).toEqual(['claude-opus-5-5·high', 'claude-opus-5-5·medium'])
@@ -499,4 +505,59 @@ test('an unsure survey still sets the effort from its best guess, but hands noth
   await sayOn($, 'claude-opus-5-5', 'look at the thing')
   expect(r.notes[0]).toEqual([])
   expect(r.steps).toEqual(['claude-opus-5-5·xhigh'])
+})
+
+const bash = (command: string) => ({ toolUses: [{ name: 'Bash', input: { command } }] })
+
+// One request of the main conversation: what the person would see stream, and what the engine records.
+const request = async ($: any, index: number) => {
+  const s = $.turn.step({ turnId: 'x', index, model: 'claude-opus-5-5', effort: 'medium', messageCount: 2 })
+  const seen: string[] = []
+  for (let n = await s.next(); ; n = await s.next()) {
+    if (n.done) return { seen, result: n.value }
+    if (n.value.kind === 'text') seen.push(n.value.text)
+  }
+}
+
+test('on a long conversation a run of reads goes to Haiku; a reply that does more is resent to the main model', async ($: any, on) => {
+  const r = rig(on, [{ mode: 'answer', reach: 'system', depth: 1 }], {
+    session: 'claude-opus-5-5',
+    context: 344_000,
+    replies: [
+      bash('gh pr checks 333 --repo mdfcvp/swanson 2>&1 | head -30'), // Opus: the first read
+      bash('gh run view 4058 --log-failed 2>&1 | grep -E "FAIL|✗" | head -40'), // Opus again: Haiku's cache is cold
+      { answer: 'Getting the stack trace.', ...bash("gh run view 4058 --log-failed | sed 's/\\x1b//g' | sed -n 100,160p") }, // Haiku, kept
+      { answer: 'The test is wrong; fixing it.', toolUses: [{ name: 'Edit', input: { file_path: 'a.test.ts' } }] }, // Haiku, thrown away
+      { answer: 'Found it: the window crosses the clock change.' }, // Opus answers
+    ],
+  })
+  await $.prompt.submit({ text: 'lets check why the CI is failing', asUser: true })
+  for (const i of [0, 1, 2]) await request($, i)
+  const fourth = await request($, 3)
+  const steps = r.steps.map(s => s.split('·')[0]!.replace('claude-', '').replace('-5-5', ''))
+  expect(steps).toEqual(['opus', 'opus', 'haiku', 'haiku', 'opus'])
+  expect(r.steps[2]).toBe('haiku·low')
+  expect(fourth.seen).toEqual(['Found it: the window crosses the clock change.'])
+  expect(fourth.result.usage.model).toBe('claude-opus-5-5')
+})
+
+test('once Haiku has cached the conversation, the first read of a later turn goes to it', async ($: any, on) => {
+  const r = rig(on, [{ mode: 'answer', reach: 'system', depth: 1 }, { mode: 'answer', reach: 'area', depth: 1 }], {
+    session: 'claude-opus-5-5',
+    context: 344_000,
+    // opus, opus, haiku (kept), haiku (an answer: thrown away), opus answers; then the next turn
+    replies: [bash('git log --oneline -5'), bash('git diff main --stat'), bash('cat package.json'), {}, {}, bash('ls src'), bash('cat src/a.ts')],
+  })
+  await $.prompt.submit({ text: 'what changed on this branch?', asUser: true })
+  for (const i of [0, 1, 2, 3]) await request($, i)
+  await $.prompt.submit({ text: 'and where is the entry point?', asUser: true })
+  for (const i of [0, 1]) await request($, i)
+  expect(r.steps.map(s => s.split('·')[0])).toEqual(['claude-opus-5-5', 'claude-opus-5-5', 'haiku', 'haiku', 'claude-opus-5-5', 'claude-opus-5-5', 'haiku'])
+})
+
+test('a short conversation never scouts', async ($: any, on) => {
+  const r = rig(on, [{ mode: 'answer', reach: 'system', depth: 1 }], { session: 'claude-opus-5-5', context: 40_000, replies: [bash('cat a'), bash('cat b'), bash('cat c'), {}] })
+  await $.prompt.submit({ text: 'lets check why the CI is failing', asUser: true })
+  for (const i of [0, 1, 2, 3]) await request($, i)
+  expect(r.steps.every(s => s.startsWith('claude-opus-5-5'))).toBe(true)
 })

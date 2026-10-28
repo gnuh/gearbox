@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Reading, NOD, doesHandoffWork, isLongCommand, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
+import { type Reading, NOD, doesHandoffWork, isLongCommand, isReadOnlyCommand, keepsScout, readKind, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], ...o })
 
@@ -180,4 +180,50 @@ Wait, the output above has a problem: it uses "system" as both the reach key's v
   expect(readReading('{"reach":"point","point":"look up the PR url","care":"routine","depth":0,"mode":"lookup","sure":true}')?.mode).toBe('answer')
   expect(readReading('{"reach":"area","depth":1} and a stray } brace')?.reach).toBe('area')
   expect(readReading('Here: {"reach":"area","depth":1,"note":"a } inside a string"}')?.reach).toBe('area')
+})
+
+test('isReadOnlyCommand passes only commands that read', () => {
+  for (const c of [
+    'gh pr checks 333 --repo mdfcvp/swanson 2>&1 | head -30',
+    'gh run view 40587716288 --repo mdfcvp/swanson --job 1 --log-failed 2>&1 | grep -E "FAIL|✗|×" | head -40',
+    "cd /repo/worktree && sed -n 670,720p scripts/lib/a.integration.test.ts",
+    'git -C /repo log --oneline -5 && git status -sb',
+    "for r in 405 406; do echo \"== $r\"; gh run view $r --repo x/y --json jobs -q '.jobs[]'; done",
+    'grep -rn "invalid_duration" services/core/src --include=*.ts | grep -v test | head -10',
+    'gh api repos/gnuh/gearbox/pulls/14 2>/dev/null',
+    'git branch -a',
+  ])
+    expect(isReadOnlyCommand(c)).toBe(true)
+  for (const c of [
+    'cp scripts/a.ts /tmp/b.ts',
+    'sed -i s/a/b/ f.ts',
+    'git stash',
+    'git branch -D old',
+    'git commit -m "read only"',
+    'gh pr edit 333 --body-file notes.md',
+    'gh api -X POST repos/x/y/issues',
+    'echo hi > f.txt',
+    'npm test',
+    'find . -name "*.tmp" -delete',
+    'cat $(ls)',
+    "python3 -c 'print(1)'",
+  ])
+    expect(isReadOnlyCommand(c)).toBe(false)
+})
+
+test('a run of reads ignores plan updates; Haiku keeps only replies that read and say little', () => {
+  const read = { name: 'Bash', input: { command: 'gh pr checks 1' } }
+  const plan = { name: 'mcp__ccd_turn__update_plan', input: {} }
+  expect(readKind([plan, read])).toBe('read')
+  expect(readKind([plan])).toBe('aside')
+  expect(readKind([read, { name: 'Edit', input: {} }])).toBe('other')
+  expect(readKind([])).toBe('other')
+  const reply = { stopReason: 'tool_use', answer: 'Reading the log.', toolUses: [read] }
+  expect(keepsScout(reply)).toBe(true)
+  expect(keepsScout({ ...reply, toolUses: [plan, read] })).toBe(false)
+  expect(keepsScout({ ...reply, answer: 'x'.repeat(700) })).toBe(false)
+  expect(keepsScout({ stopReason: 'end_turn', answer: 'Done.', toolUses: [] })).toBe(false)
+  expect(scouts(1, false)).toBe(false)
+  expect(scouts(2, false)).toBe(true)
+  expect(scouts(1, true)).toBe(true)
 })
