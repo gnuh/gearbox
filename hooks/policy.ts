@@ -42,9 +42,9 @@ The keys and the values each may take:
 - reach: how much of the project the work must understand. One of: point (one spot: a question, a lookup, a rename, a one-line edit); area (one feature or a few related files: build a feature, fix a contained bug, write tests, explain code); system (many files, or a bug whose location is unknown); frontier (open-ended: designing a system, research, inventing an algorithm).
 - care: costly if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, deleting or migrating data), else routine.
 - depth: how much careful reasoning correctness needs, a number. 0 mechanical, 1 ordinary, 2 subtle (concurrency, time zones, money arithmetic, cache or state invalidation, changing error or async behavior), 3 exceptionally hard.
-- mode: what the turn will mostly do. One of: code (write or change code); commit (git and GitHub chores with no code to write: commit, push, tag, open or edit a pull request or its description, comment on a pull request or ticket); answer (explain, answer, look something up or plan without changing code); review (look over a change, diff, pull request or code for bugs and problems, without changing it); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search).
+- mode: what the turn will mostly do. One of: code (write or change code); commit (git and GitHub chores with no code to write: commit, push, tag, open or edit a pull request or its description, comment on a pull request or ticket); answer (explain, answer, look something up or plan without changing code); review (look over a change, diff, pull request or code for bugs and problems, without changing it); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search). A message that approves or asks to go on with work the assistant proposed or is doing, even phrased as a question or with a complaint ("yes, but there is more than one PR, why only one service?"), takes that work's mode, not answer.
 - aside: true if "earlier" is about some piece of work and this request is a different, unrelated piece of work.
-- cont: true if the request only continues, approves or repeats the previous turn.
+- cont: true if the request only continues, approves or repeats the previous turn and adds nothing new.
 - ask: the model (haiku, sonnet, opus, fable) and/or effort (low, medium, high, xhigh, max) the person explicitly asks to use, as {"model":"..."} and/or {"effort":"..."}; {} if none. Words inside pasted code, logs or quotes are not asks.
 - sure: false only if the request is too vague to describe at all; otherwise true, with your best guess.
 - phases: when the request asks for several distinct steps, list them in order as [{"what":"a few words","mode":"...","depth":1}], else []. A step's mode is one of the modes above, or lookup (fetch information from a tool or service: a ticket, a page, docs, or a search of notes such as an Obsidian vault). Testing in a browser is drive; running a test suite is wait; writing tests is code. Add "ask":"haiku|sonnet|opus" to a step only when the request names the model for that step ("navigate with sonnet"). List only steps the "request" itself asks for: "earlier" is context, never a source of steps.
@@ -79,8 +79,9 @@ const readPhases = (list: unknown): Phase[] =>
     .slice(0, 8)
     .map((p: any) => ({ what: String(p.what ?? p.mode).slice(0, 60), mode: p.mode, depth: p.depth, ...(['haiku', 'sonnet', 'opus'].includes(p.ask) ? { ask: p.ask } : {}) }))
 
-// The survey's parts, kept only when well formed; at most six. Its files are kept as text, blanks dropped.
-const readParts = (list: unknown): Part[] =>
+// The survey's parts, and the fan tool's, kept only when well formed; at most six. Its files are kept as text,
+// blanks dropped.
+export const readParts = (list: unknown): Part[] =>
   (Array.isArray(list) ? list : [])
     .filter((p: any) => p && PART_MODES.includes(p.mode) && [0, 1, 2, 3].includes(p.depth))
     .slice(0, 6)
@@ -378,7 +379,7 @@ const looks = (u: Use) => LOOKS.test(u.name) || (u.name === 'Bash' && isReadOnly
 export const looksUp = (tool: string, command: string) => looks({ name: tool, input: { command } })
 // While deep work waits for its agent, the main model may still brief it: start or message the agent, load a tool,
 // plan, mark a step, ask the person, and make a few reads to write the brief.
-export const BRIEFING_TOOLS = /^(Agent|SendMessage|ToolSearch|TodoWrite|AskUserQuestion|mcp__gearbox__phase)$|__update_plan$/
+export const BRIEFING_TOOLS = /^(Agent|SendMessage|ToolSearch|TodoWrite|AskUserQuestion|mcp__gearbox__phase|mcp__gearbox__fan)$|__update_plan$/
 export const BRIEF_READS = 3
 // What a response did: only read (asides allowed), only asides, or anything else (an edit, a command that changes
 // something, an answer with no call).
@@ -468,6 +469,9 @@ export const NOD =
 export const trimRequest = (text: string) => (text.length <= 4000 ? text : `${text.slice(0, 1000)} […] ${text.slice(-3000)}`)
 
 // What the main model reads beside the prompt (the person does not) when part of the turn belongs to a subagent.
+// Work a lane holds that turns out to be independent pieces goes to the fan tool, not the one lane.
+const SPLIT = 'Send it all to that one agent unless the new work splits into independent pieces: then call mcp__gearbox__fan first.'
+
 export const handoffNote = ({ kind, gear, judge, resume, parts }: Handoff): string => {
   const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' || kind === 'chore' ? ` and effort "${gear.effort}"` : ''}`
   switch (kind) {
@@ -490,8 +494,8 @@ ${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.eff
       return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.`
     case 'lane':
       return resume
-        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. gearbox sets the effort of each job. Review what it returns here before acting on it, and pass its findings on to the person in full, not cut down.`
-        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. gearbox sets the effort of each job. Send follow-ups to that same agent with SendMessage. Until it starts, edits, commands and more reads are refused here. Review what it returns before acting on it, and pass its findings on to the person in full, not cut down.`
+        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} gearbox sets the effort of each job. Review what it returns here before acting on it, and pass its findings on to the person in full, not cut down.`
+        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. gearbox sets the effort of each job. Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first. Until it starts, edits, commands and more reads are refused here. Review what it returns before acting on it, and pass its findings on to the person in full, not cut down.`
     case 'fan':
       return fanNote(parts ?? [])
     case 'deep':
@@ -499,6 +503,21 @@ ${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.eff
         ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}. Review what it returns here before acting on it, and pass its findings on to the person in full, not cut down.`
         : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage, and review what it returns here before acting on it. Its findings reach the person only through you: pass them on in full, not cut down.`
   }
+}
+
+// The fan tool's answer: each part's agent, and how to start them all at once.
+export const fanReply = (parts: readonly FanPart[]): string => {
+  const apart = apartEdits(parts)
+  const lanes = parts.some(p => p.resume)
+  return [
+    `gearbox fan-out: ${parts.length} independent parts, one agent each, running at the same time.`,
+    ...parts.map(
+      (p, i) =>
+        `part ${i + 1}: ${p.what}: ${p.resume ? `SendMessage to "${p.resume}", the ${p.gear.model} lane that holds earlier work` : `model "${p.gear.model}"`}, gearbox runs it at ${p.gear.effort}; ${p.edits ? `edits files${apart ? ', isolation "worktree"' : ', in the working tree'}` : 'only reads'}.`,
+    ),
+    `Start all ${parts.length} in ONE message, now: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, the model above${apart ? ' and isolation "worktree"' : ''}, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back.${lanes ? ' A part a lane takes goes to it by SendMessage, in that same message.' : ''} Do not start one and wait for it before the next.`,
+    `Until all ${parts.length} have started, edits, commands and more reads are refused here. Then wait for every result, review and reconcile them${apart ? ', merge the worktree branches into the working tree (git merge or cherry-pick)' : ''}, and run the combined check (tests, build) here, or through a Haiku agent when it is a long command.`,
+  ].join('\n')
 }
 
 // Two or more parts that edit files each work in a git worktree of their own, so the agents cannot collide.

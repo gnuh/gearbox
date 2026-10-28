@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Reading, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, keepsScout, readKind, reviewGear, reviews, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
+import { type FanPart, type Reading, BRIEFING_TOOLS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, keepsScout, readKind, readParts, reviewGear, reviews, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -435,6 +435,35 @@ test('the survey lists parts that can run side by side, kept only when well form
   expect(readReading(JSON.stringify({ reach: 'area', depth: 1, parts: many }))?.parts).toHaveLength(6)
   expect(readReading('{"reach":"area","depth":1}')?.parts).toEqual([])
   expect(readReading('{"reach":"area","depth":1,"parts":"all of it"}')?.parts).toEqual([])
+  // The fan tool's parts are read by the same rules.
+  expect(readParts([{ what: 'deploy prepost', mode: 'wait', depth: 1, files: ['prepost'] }, { what: 'x', mode: 'drive', depth: 1 }, 'part'])).toEqual([{ what: 'deploy prepost', mode: 'wait', depth: 1, files: ['prepost'] }])
+  expect(readParts(undefined)).toEqual([])
+})
+
+test('an approval of the work under way takes that work’s mode, phrased as a question or not; cont only when it adds nothing', () => {
+  expect(SURVEY).toContain('approves or asks to go on with work the assistant proposed or is doing')
+  expect(SURVEY).toContain("takes that work's mode, not answer")
+  expect(SURVEY).toContain('adds nothing new')
+})
+
+test('the fan tool answers each part’s agent and asks for all of them in one message', () => {
+  const haiku = { model: 'haiku', effort: 'low' } as const
+  const sonnet = { model: 'sonnet', effort: 'high' } as const
+  const reads = fanReply([{ what: 'deploy prepost', gear: haiku, edits: false, resume: 'lane-h' }, { what: 'deploy backend', gear: haiku, edits: false }])
+  expect(reads).toContain('2 independent parts')
+  expect(reads).toContain('part 1: deploy prepost: SendMessage to "lane-h", the haiku lane')
+  expect(reads).toContain('part 2: deploy backend: model "haiku", gearbox runs it at low; only reads')
+  expect(reads).toContain('in ONE message')
+  expect(reads).toContain('run_in_background false')
+  expect(reads).toContain('for that part alone')
+  expect(reads).not.toContain('worktree')
+  expect(reads).not.toContain('effort "') // gearbox sets each part's effort, not the call
+  const edits = fanReply([{ what: 'orders: add paging', gear: sonnet, edits: true }, { what: 'billing: fix rounding', gear: sonnet, edits: true }])
+  expect(edits).toContain('part 1: orders: add paging: model "sonnet", gearbox runs it at high; edits files, isolation "worktree"')
+  expect(edits).toContain('merge the worktree branches')
+  expect(edits).not.toContain('SendMessage')
+  // The main conversation may call it while a hand-off is owed: it only plans.
+  expect(BRIEFING_TOOLS.test('mcp__gearbox__fan')).toBe(true)
 })
 
 test('the fan-out note starts every part in one message, says what each hands back, and asks for worktrees only when two or more edit', () => {

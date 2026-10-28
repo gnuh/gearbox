@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { ORCHESTRATOR, fanOut, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts } from './orchestrator'
+import { NEUTRAL, ORCHESTRATOR, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
 import { RESUME_MS, RESUME_TOKENS, type FanPart, type Part, type Phase, type Reading, gearFor, handoffNote, label, route, routeNote } from './policy'
 
 const reading = (r: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...r })
@@ -95,7 +95,8 @@ test('a request of independent parts fans out when sure: one agent per part, on 
 
 test('a review part runs on Opus whatever the reach; a costly request lifts every part, as it lifts a lane', () => {
   const point = reading({ mode: 'code', reach: 'point', depth: 1, parts: [part('fix the handler', 'code', 1, ['src/a.ts']), part('review the diff', 'review', 1, ['src/b'])] })
-  expect(orchestratorPlan(point, gearFor(point, 'medium'), MAIN, 3, 'medium').handoff?.parts?.map(p => label(p.gear))).toEqual(['haiku·medium', 'opus·medium'])
+  // The code part is a one-file part of real work: Sonnet by its own scope, not Haiku by the request's point reach.
+  expect(orchestratorPlan(point, gearFor(point, 'medium'), MAIN, 3, 'medium').handoff?.parts?.map(p => label(p.gear))).toEqual(['sonnet·medium', 'opus·medium'])
   const costly = reading({ mode: 'code', reach: 'area', depth: 1, care: 'costly', parts: [part('stripe webhook', 'code', 1, ['billing/webhook']), part('audit the refund path', 'answer', 1, ['billing/refunds'])] })
   expect(orchestratorPlan(costly, gearFor(costly, 'medium'), MAIN, 3, 'medium').handoff?.parts?.map(p => label(p.gear))).toEqual(['opus·medium', 'opus·medium'])
   expect(orchestratorPlan(costly, gearFor(costly, 'medium'), MAIN, 1, 'medium').handoff).toEqual({ kind: 'lane', gear: { model: 'opus', effort: 'medium' } })
@@ -231,6 +232,8 @@ test('the lane note sends follow-ups to the lane that holds the work, and says w
   const again = handoffNote({ kind: 'lane', gear, resume: 'a-lane' })
   expect(again).toContain('SendMessage to "a-lane"')
   expect(again).toContain('Start no new agent')
+  // Work that turns out to split into independent pieces is put to the fan tool first, fresh lane or not.
+  for (const note of [fresh, again]) expect(note).toContain('independent pieces: then call mcp__gearbox__fan first')
 })
 
 test('fanOut keeps any cap it is given, and a smaller cap loses no part', () => {
@@ -238,4 +241,91 @@ test('fanOut keeps any cap it is given, and a smaller cap loses no part', () => 
   for (const cap of [2, 3, 4, 5, 6]) expect(fanOut(six, cap)).toHaveLength(cap)
   // Merged groups still hold every part: nothing is lost by a smaller cap.
   expect(fanOut(six, 2).flat().map(p => p.what).sort()).toEqual(six.map(p => p.what))
+})
+
+// The QA deploy of a real session: one long command per repo, each in its own folder.
+const DEPLOYS = ['integration-malha', 'prepost-services', 'prepost', 'backend'].map(repo => part(`deploy ${repo} on QA`, 'wait', 1, [repo]))
+
+test('parts the main conversation names split on the turn’s reading, or on a plain one when the turn has none', () => {
+  expect(NEUTRAL).toMatchObject({ reach: 'area', care: 'routine', sure: true, parts: [] })
+  // Long commands run on Haiku at low, one agent each, whatever the turn was read as.
+  expect(fanParts({ ...NEUTRAL, parts: DEPLOYS }, 6, 'xhigh').map(p => `${label(p.gear)} ${p.edits}`)).toEqual(Array(4).fill('haiku·low false'))
+  // Other parts take their gear from their own kind and depth, on the turn's reach and care.
+  const pieces = [part('orders: add paging', 'code', 1, ['services/orders']), part('trace billing', 'answer', 2, ['services/billing'])]
+  expect(fanParts({ ...NEUTRAL, parts: pieces }, 3, 'high').map(p => label(p.gear))).toEqual(['sonnet·high', 'sonnet·high'])
+  expect(fanParts(reading({ reach: 'system', care: 'costly', parts: pieces }), 3, 'high').map(p => label(p.gear))).toEqual(['opus·high', 'opus·high'])
+})
+
+test('a split that is not worth it says why: one agent at a time, depth-0 parts, shared files', () => {
+  expect(whyNoFan(DEPLOYS, 3)).toBeUndefined()
+  expect(whyNoFan(DEPLOYS.slice(0, 1), 3)).toContain('fewer than two parts')
+  expect(whyNoFan(DEPLOYS, 1)).toContain('orchestrator-agents is 1')
+  expect(whyNoFan([part('bump the version', 'code', 0, ['package.json']), part('orders: add paging', 'code', 1, ['services/orders'])], 3)).toContain('depth-0')
+  const shared = [part('orders: add paging', 'code', 1, ['services/orders/list.ts']), part('orders: add sorting', 'code', 1, ['services/orders/list.ts'])]
+  expect(whyNoFan(shared, 3)).toContain('same files')
+})
+
+// The six parts of a live run (session f3c009ef), word for word: the survey read the README part as depth 0.
+const LIVE = [
+  part('explain policy.ts and edge cases', 'answer', 1, ['hooks/policy.ts']),
+  part('explain orchestrator.ts and edge cases', 'answer', 1, ['hooks/orchestrator.ts']),
+  part('explain register.tsx and edge cases', 'answer', 1, ['hooks/register.tsx']),
+  part('explain lanes/run.ts and edge cases', 'answer', 1, ['bench/lanes/run.ts']),
+  part('explain escalation/obey.ts and edge cases', 'answer', 1, ['bench/escalation/obey.ts']),
+  part('explain README and edge cases', 'answer', 0, ['README.md']),
+]
+
+test('fanOut on a live run’s six parts at a cap of 6: the depth-0 README joins its neighbour; at depth 1 it is an agent of its own', () => {
+  const groups = fanOut(LIVE, 6)
+  expect(groups).toHaveLength(5)
+  expect(whats(groups).at(-1)).toEqual(['explain escalation/obey.ts and edge cases', 'explain README and edge cases'])
+  // Nothing edits and no files overlap: with the README at depth 1 every part keeps its own agent.
+  const deep = LIVE.map(p => ({ ...p, depth: 1 as const }))
+  expect(whats(fanOut(deep, 6))).toEqual(deep.map(p => [p.what]))
+})
+
+test('fanOut: a root-level file sits in the root folder alone; reads never merge, edits merge only in one folder or on one file', () => {
+  // Two reads of one folder, and a root-level read next to folder files, split.
+  expect(fanOut([part('a', 'answer', 1, ['hooks/policy.ts']), part('b', 'answer', 1, ['hooks/register.tsx'])], 6)).toHaveLength(2)
+  expect(fanOut([part('a', 'answer', 1, ['README.md']), part('b', 'answer', 1, ['hooks/policy.ts']), part('c', 'answer', 1, ['bench/lanes/run.ts'])], 6)).toHaveLength(3)
+  // A read and an edit of one file are one agent.
+  expect(whats(fanOut([part('fix', 'code', 1, ['hooks/policy.ts']), part('explain', 'answer', 1, ['hooks/policy.ts']), part('docs', 'answer', 1, ['README.md'])], 6))).toEqual([['fix', 'explain'], ['docs']])
+  // Edits in different folders split; a root-level edit is in no folder but the root's, so it splits from them too.
+  expect(fanOut([part('a', 'code', 1, ['hooks/policy.ts']), part('b', 'code', 1, ['bench/lanes/run.ts'])], 6)).toHaveLength(2)
+  expect(fanOut([part('a', 'code', 1, ['README.md']), part('b', 'code', 1, ['hooks/policy.ts'])], 6)).toHaveLength(2)
+  // Two edits at the root are code in one folder: one agent.
+  expect(fanOut([part('a', 'code', 1, ['README.md']), part('b', 'code', 1, ['package.json'])], 6)).toEqual([])
+})
+
+test('a part’s model follows its own scope, not the whole request’s; its effort, its own depth', () => {
+  const system = (parts: Part[], r: Partial<Reading> = {}) => fanParts(reading({ mode: 'answer', reach: 'system', depth: 1, parts, ...r }), 6, 'xhigh').map(p => label(p.gear))
+  // One file each: Sonnet at the effort of depth 1, though the request names six files.
+  expect(system(LIVE)).toEqual(Array(5).fill('sonnet·medium'))
+  // Files in three top-level folders, or more than three files, are a system's: Opus.
+  const wide = part('trace the flow', 'answer', 1, ['hooks/policy.ts', 'bench/lanes/run.ts', 'README.md'])
+  const many = part('explain the hooks', 'answer', 1, ['hooks/a.ts', 'hooks/b.ts', 'hooks/c.ts', 'hooks/d.ts'])
+  const one = part('explain run.ts', 'answer', 1, ['bench/lanes/run.ts'])
+  expect(system([wide, many, one])).toEqual(['opus·medium', 'opus·medium', 'sonnet·medium'])
+  // A part that names no files takes the request's reach.
+  expect(system([part('explain the design', 'answer', 2), one])).toEqual(['opus·high', 'sonnet·medium'])
+  // A one-file part of real work is never below Sonnet, even on a request of one spot.
+  expect(system([part('explain a.ts', 'answer', 1, ['src/a.ts']), part('explain b.ts', 'answer', 1, ['lib/b.ts'])], { reach: 'point' })).toEqual(['sonnet·medium', 'sonnet·medium'])
+  // A review is Opus's; a costly request lifts every part to at least opus·medium; long commands and lookups stay on Haiku.
+  expect(system([part('review the diff', 'review', 1, ['hooks/policy.ts']), one])).toEqual(['opus·medium', 'sonnet·medium'])
+  expect(system([part('explain run.ts', 'answer', 0, ['bench/lanes/run.ts']), one, part('explain obey.ts', 'answer', 1, ['bench/escalation/obey.ts'])], { care: 'costly' })).toEqual(['opus·medium', 'opus·medium'])
+  expect(system([part('unit tests', 'wait', 1, ['hooks']), part('fetch the issue', 'lookup', 1, ['gh'])])).toEqual(['haiku·low', 'haiku·low'])
+  // The person's ask still wins.
+  expect(system([one, part('explain obey.ts', 'answer', 1, ['bench/escalation/obey.ts'])], { ask: { model: 'opus', effort: 'high' } })).toEqual(['opus·high', 'opus·high'])
+  expect(system([one, part('explain obey.ts', 'answer', 1, ['bench/escalation/obey.ts'])], { ask: { model: 'haiku' } })).toEqual(['haiku·medium', 'haiku·medium'])
+})
+
+test('a merged part’s model follows the union of its files, never below its members’ own', () => {
+  const a = part('explain a', 'answer', 1, ['svc/a.ts'])
+  const b = part('explain b', 'answer', 1, ['lib/b.ts'])
+  // A depth-0 part spanning two more folders joins a: together they span three, a system's.
+  const spread = part('note c and d', 'answer', 0, ['web/c.ts', 'docs/d.md'])
+  expect(fanParts(reading({ mode: 'answer', reach: 'area', parts: [a, spread, b] }), 6, 'xhigh').map(p => `${p.what} ${label(p.gear)}`)).toEqual(['explain a; note c and d opus·medium', 'explain b sonnet·medium'])
+  // A member that names no files keeps the request's reach in the group it joins.
+  const loose = part('note the rest', 'answer', 0)
+  expect(fanParts(reading({ mode: 'answer', reach: 'system', parts: [a, loose, b] }), 6, 'xhigh').map(p => label(p.gear))).toEqual(['opus·medium', 'sonnet·medium'])
 })

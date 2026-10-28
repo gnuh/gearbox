@@ -53,12 +53,14 @@ import {
   route,
   routeNote,
   ownWords,
+  readParts,
   readReading,
+  fanReply,
   stepDown,
   trimRequest,
   verifyAsk,
 } from './policy'
-import { ORCHESTRATOR, type Lane, type Lanes, fanOut, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts } from './orchestrator'
+import { NEUTRAL, ORCHESTRATOR, type Lane, type Lanes, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
 
 // US$ per million tokens.
 // shortcut: copied from the claude-api skill's table (cached 2026-10-06); update when prices move.
@@ -270,6 +272,17 @@ const consent = async ($: EngineInterface, g: Gear): Promise<Gear> => {
   }
 }
 
+// A fan-out's parts as the turn hands them out: a costly part's gear goes to the person as a route step's does; then
+// each model's lane, where it is idle and worth going back to, takes the first part of its model. `fresh`: unrelated
+// work, which goes back to no lane.
+const seatFan = async ($: EngineInterface, fan: readonly FanPart[], o: { asks: boolean; ask: Partial<Gear>; previous?: Gear; standing: ModelEffort; lanes: Lanes; fresh: boolean }): Promise<Handoff> => {
+  const parts: FanPart[] = []
+  for (const pt of fan) parts.push(o.asks && needsConsent(pt.gear, o.ask, o.previous, o.standing) ? { ...pt, gear: await consent($, pt.gear) } : pt)
+  const loops = await read($, LOOPS)
+  const seated = seatParts(parts, o.lanes, Date.now(), id => loops[id]?.state === 'working', o.fresh)
+  return { kind: 'fan', gear: (seated.find(pt => pt.resume || pt.lane) ?? seated[0]!).gear, parts: seated }
+}
+
 type Ledger = Record<string, { calls: number; fresh: number; written: number; cached: number; out: number }>
 
 let pending: Promise<unknown> = Promise.resolve()
@@ -427,6 +440,11 @@ export const register: Register = (on, options) => {
   // message lowers it to that.
   let lanes: Lanes = {}
   const laneEffort = new Map<string, ModelEffort>()
+  // The models whose lane an agent of this turn took or was sent: any other plain agent of that model started this
+  // turn, even in the same message, is a fresh agent for the turn only.
+  let laneTaken = new Set<Model>()
+  // The reading of the turn's prompt, with the asks its words bear out: what the fan tool splits parts on.
+  let turnReading: Reading | undefined
   // Agent calls whose agent is about to start, by tool_use_id, so several started in one message each get their
   // own job: its gear, whether the agent becomes its model's lane, and the fan-out part it is. A call that carries no
   // id waits under a key of its own, and the first spawn no id claims takes it.
@@ -517,6 +535,8 @@ export const register: Register = (on, options) => {
     mainMayEdit = false
     lanes = {}
     laneEffort.clear()
+    laneTaken = new Set()
+    turnReading = undefined
     handedOff = new Set()
     turnLong = false
     turnWant = undefined
@@ -566,6 +586,33 @@ export const register: Register = (on, options) => {
       name: 'phase',
       description: 'gearbox: call with a step number from the gearbox route as you start that step; gearbox sets your effort for it.',
       inputSchema: { type: 'object', properties: { step: { type: 'integer', minimum: 1 } }, required: ['step'] },
+      isDeferred: false,
+    })
+    await $.tool.register({
+      name: 'fan',
+      description:
+        'gearbox: with the orchestrator on, call this BEFORE starting agents whenever the work you are about to do or hand to a lane splits into independent pieces (separate services, repos, pull requests, investigations, reviews by angle) that do not need each other\'s results and do not edit the same files. Pass the pieces as parts; it answers how many agents to start, with which models, and how. Do not call it for sequential work, where a step needs an earlier one\'s result.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          parts: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 6,
+            items: {
+              type: 'object',
+              properties: {
+                what: { type: 'string', description: 'the piece, in a few words' },
+                mode: { type: 'string', enum: ['code', 'answer', 'review', 'wait', 'lookup'], description: 'code: changes files; answer: explains or investigates; review: looks a change over; wait: one long command (build, deploy, test run); lookup: fetches a ticket, page or docs' },
+                depth: { type: 'integer', minimum: 0, maximum: 3, description: '0 mechanical, 1 ordinary, 2 subtle, 3 exceptionally hard' },
+                files: { type: 'array', items: { type: 'string' }, description: 'the files, folders or repos it touches' },
+              },
+              required: ['what', 'mode', 'depth'],
+            },
+          },
+        },
+        required: ['parts'],
+      },
       isDeferred: false,
     })
     await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | effort <level> | navigator <model> | steer on|off | escalate on|code|off | strict on|off | orchestrator on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | pane | on | off | ask on|off | usage]' })
@@ -671,8 +718,9 @@ export const register: Register = (on, options) => {
     if (e.turnId) return next(e) // typed into a running turn, which keeps its gear
     // A slash command or skill owns its turn's effort (its frontmatter, or Claude Code's own): no leftover gear.
     if (enabled && e.command && typedByPerson(e.origin)) {
-      turnGear = turnHandoff = turnRoute = turnStep = turnWant = undefined
+      turnGear = turnHandoff = turnRoute = turnStep = turnWant = turnReading = undefined
       handedOff = new Set()
+      laneTaken = new Set()
       skillCalls = []
       ownEffort = `/${e.command.name}`
       logEvent({ ev: 'prompt', kind: 'command', command: e.command.name, gear: 'its own effort' })
@@ -689,8 +737,9 @@ export const register: Register = (on, options) => {
     if (turnHandoff?.kind === 'deep' && !handedOff.has(-1)) logEvent({ ev: 'skipped', handoff: handoffLabel(turnHandoff) })
     // A fan-out some of whose agents the last turn's model never started.
     if (turnHandoff?.kind === 'fan' && fanOwed()) logEvent({ ev: 'skipped', handoff: handoffLabel(turnHandoff), owed: fanOwed() })
-    turnGear = turnHandoff = turnRoute = turnStep = turnWant = undefined
+    turnGear = turnHandoff = turnRoute = turnStep = turnWant = turnReading = undefined
     handedOff = new Set()
+    laneTaken = new Set()
     spawningLanes.clear()
     skillCalls = []
     turnText = e.text
@@ -751,7 +800,10 @@ export const register: Register = (on, options) => {
       const started = Date.now()
       const { reading: r, reply } = await survey($, e.text, earlier, previous)
       logEvent({ ev: 'survey', ms: Date.now() - started, reply, reading: r ?? null })
-      if ((!r || r.cont) && goesOn) {
+      turnReading = r && { ...r, ask: verifyAsk(r.ask, e.text) }
+      // Carrying on does not swallow independent parts: a continuation the plan would split fans out instead.
+      const splits = !!turnReading && orchestrator && orchestratorPlan(turnReading, gearFor(turnReading, standing), orchGear, orchAgents, standing).handoff?.kind === 'fan'
+      if ((!r || r.cont) && goesOn && !splits) {
         // Carrying on deep work, or unreadable right after it (a failed read errs up): the same hand-off.
         p = goOn(goesOn)
         why = `${r ? 'continuation' : 'survey unreadable'} after deep work: it goes on in the subagent`
@@ -761,7 +813,7 @@ export const register: Register = (on, options) => {
         p = { main: previous ? { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } : { model: fixed ?? STARTER.model, effort: everyday(standing) } }
         why = `survey unreadable: ${previous ? 'previous gear, at least your coding effort' : 'your coding effort'}`
         brief = ['unreadable', previous ? 'last gear, at least your coding effort' : 'your coding effort']
-      } else if (r.cont && previous) {
+      } else if (r.cont && previous && !splits) {
         p = { main: previous }
         why = 'continuation: previous gear'
         brief = ['continuation', 'kept the previous gear']
@@ -806,13 +858,7 @@ export const register: Register = (on, options) => {
           // A fan-out: a costly part's gear goes to the person as a route step's does; then each model's lane, where it
           // is idle and worth going back to, takes the first part of its model. A nod goes back to the first part a
           // lane takes.
-          if (p.handoff?.kind === 'fan') {
-            const parts: FanPart[] = []
-            for (const pt of p.handoff.parts ?? []) parts.push(asks && needsConsent(pt.gear, ask, previous, standing) ? { ...pt, gear: await consent($, pt.gear) } : pt)
-            const loops = await read($, LOOPS)
-            const seated = seatParts(parts, lanes, Date.now(), id => loops[id]?.state === 'working', r.aside)
-            p = { ...p, handoff: { ...p.handoff, gear: (seated.find(pt => pt.resume || pt.lane) ?? seated[0]!).gear, parts: seated } }
-          }
+          if (p.handoff?.kind === 'fan') p = { ...p, handoff: await seatFan($, p.handoff.parts ?? [], { asks, ask, previous, standing, lanes, fresh: r.aside }) }
           // A turn the orchestrator keeps still hands out its lookups, long commands and browser checks: a route
           // whose other steps it does itself, at its own gear.
           if (orchestrator && keepsRoute(checked, p)) {
@@ -867,6 +913,40 @@ export const register: Register = (on, options) => {
     return { result: s.by === 'agent' ? `step ${n}: hand it to a ${s.gear.model} subagent at ${s.gear.effort}` : `step ${n}: you now run at effort ${s.mainEffort}` }
   })
 
+  // The fan tool: the main conversation names the independent pieces it found, once the work is known, and gearbox
+  // splits them as it would a survey's parts, on this turn's reading and the cap now set. Agents of the turn that
+  // have started keep their work: a late call changes nothing.
+  on('tool.call', { tool: 'mcp__gearbox__fan' }, async ($, e) => {
+    const say = (text: string) => ({ result: text })
+    if (!enabled || !orchestrator) return say('gearbox: the orchestrator is off, so gearbox splits nothing here; start agents as you see fit.')
+    if (e.agentId) return say('gearbox: only the main conversation splits work; carry on with your own brief.')
+    const parts = readParts((e as any).input?.parts ?? (e as any).parts)
+    if (!parts.length) return { result: 'gearbox: no usable parts: each needs what, a mode (code, answer, review, wait or lookup) and a depth from 0 to 3.', isError: true as const }
+    if (handedOff.size) return say("gearbox: this turn's agents have already started, and a split now would reshuffle running work. Let them finish; split the next piece of work when it comes.")
+    if (turnRoute) return say('gearbox: this turn is a route of steps one after another, and a split inside a step is not supported yet. Follow the route.')
+    if (turnHandoff?.kind === 'deep') return say('gearbox: open-ended work goes to one Fable agent and is never split. Start it as the hand-off note says.')
+    const r: Reading = { ...(turnReading ?? NEUTRAL), parts }
+    const fan = fanParts(r, orchAgents, standing)
+    const merged = fanOut(parts, orchAgents).filter(g => g.length > 1).map(g => g.map(pt => pt.what).join(' + '))
+    if (!fan.length) {
+      const why = whyNoFan(parts, orchAgents)
+      logEvent({ ev: 'fan', via: 'tool', parts, cap: orchAgents, kept: 0, merged, why })
+      return say(`gearbox: not worth splitting: ${why}. Go on with it as one piece of work${turnHandoff ? ', as the hand-off note says' : ''}.`)
+    }
+    const handoff = await seatFan($, fan, { asks: (await $.store.get('consent')) !== false, ask: r.ask, previous, standing, lanes, fresh: r.aside })
+    // The turn's hand-off is now the fan-out, as if the survey had listed these parts.
+    turnHandoff = handoff
+    handedOff = new Set()
+    deepReads = 0
+    mainMayEdit = false
+    turnGear = { model: orchModel, effort: orchEffort }
+    lastDeep = handoff.gear
+    logEvent({ ev: 'fan', via: 'tool', parts, cap: orchAgents, kept: fan.length, merged, handoff: handoffLabel(handoff) })
+    await setWhy($, ['fan-out', handoffLabel(handoff)])
+    await showStatus($, handoff, stepLabel())
+    return say(fanReply(handoff.parts ?? []))
+  })
+
   // An Agent call that names no model and no agent type runs on the main conversation's model.
   // Every subagent that starts gets a row in the readout.
   on('agent.spawn', async ($, e, next) => {
@@ -919,6 +999,7 @@ export const register: Register = (on, options) => {
       const part = orchestrator && !turnRoute && turnHandoff?.kind === 'fan' ? turnHandoff.parts?.[h.slot] : undefined
       const apart = !!part?.edits && apartEdits(turnHandoff?.parts ?? [])
       const start = lane || part ? laneStart(h.gear.effort, standing) : h.gear.effort
+      if (lane || part?.lane || part?.resume) laneTaken.add(h.gear.model)
       if (lane || part) expectSpawn(e.tool_use_id, { gear: h.gear, lane: lane || !!part?.lane || !!part?.resume, ...(part ? { part: h.slot + 1 } : {}) })
       logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: label(h.gear), ...(lane || part ? { lane: start } : {}), ...(part ? { part: h.slot + 1, ...(apart ? { isolation: 'worktree' } : {}) } : {}), ...(up ? { up: true } : {}) })
       return next({
@@ -930,13 +1011,16 @@ export const register: Register = (on, options) => {
       })
     }
     // The orchestrator's turn without a hand-off (a nod, an unreadable prompt): a plain agent is still that model's
-    // lane. Past a fan-out's parts it is not: it gets an effort by its job, below.
+    // lane, the first of its model this turn only; another beside it is a fresh agent for the turn. Past a fan-out's
+    // parts it is not: it gets an effort by its job, below.
     if (orchestrator && e.tool === 'Agent' && plain && !h && turnHandoff?.kind !== 'fan') {
       const model = (family(String(e.model ?? '')) ?? 'sonnet') as Model
       if (model !== 'fable') {
         const job: Gear = { model, effort: everyday(standing) }
-        expectSpawn(e.tool_use_id, { gear: job, lane: true })
-        logEvent({ ev: 'agent', type: 'general-purpose', asked: `${e.model ?? 'default'}·${e.effort ?? 'default'}`, set: label(job), lane: laneStart(job.effort, standing), why: 'a lane without a hand-off' })
+        const first = !laneTaken.has(model)
+        laneTaken.add(model)
+        expectSpawn(e.tool_use_id, { gear: job, lane: first })
+        logEvent({ ev: 'agent', type: 'general-purpose', asked: `${e.model ?? 'default'}·${e.effort ?? 'default'}`, set: label(job), lane: laneStart(job.effort, standing), why: first ? 'a lane without a hand-off' : `beside the ${model} lane, for this turn only` })
         return next({ ...e, model, effort: laneStart(job.effort, standing) })
       }
     }
@@ -958,6 +1042,7 @@ export const register: Register = (on, options) => {
       const sent = await next(e)
       if (!('isError' in sent && sent.isError)) {
         handedOff.add(k ?? -1)
+        laneTaken.add(lane.model)
         laneEffort.set(lane.id, job)
         lanes = { ...lanes, [lane.model]: { id: lane.id, at: Date.now(), tokens: lane.tokens } }
         logEvent({ ev: 'resume', agent: lane.id, lane: true, effort: job, ...(k !== undefined ? { part: k + 1 } : {}) })
