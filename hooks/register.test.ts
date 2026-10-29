@@ -6,14 +6,15 @@ const MEDIUM = { options: { code_effort: 'medium' } }
 const ZERO = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 const ONE = { ...ZERO, input_tokens: 10, output_tokens: 2 }
 
-type Rig = { steps: string[]; surveys: any[]; readers: string[]; dialogs: string[]; notes: (readonly string[])[]; kv: Map<string, unknown> }
+// `said`: the assistant's replies so far, which a test adds between turns: what a go-ahead approves.
+type Rig = { steps: string[]; surveys: any[]; readers: string[]; dialogs: string[]; notes: (readonly string[])[]; kv: Map<string, unknown>; said: string[] }
 
 type Reply = { answer?: string; toolUses?: { name: string; input: unknown }[] }
 
 // The engine beneath the mod, faked: each survey answers with the next reading, each step records `model·effort`
 // and answers with the next reply (none: an answer with no tool call).
 const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choose?: (labels: string[]) => string; earlier?: string[]; context?: number; replies?: Reply[] } = {}): Rig => {
-  const r: Rig = { steps: [], surveys: [], readers: [], dialogs: [], notes: [], kv: new Map() }
+  const r: Rig = { steps: [], surveys: [], readers: [], dialogs: [], notes: [], kv: new Map(), said: [] }
   const queue = [...readings]
   const replies = [...(o.replies ?? [])]
   for (const quiet of ['ui.status', 'ui.log']) on(quiet, () => ({ value: undefined }))
@@ -21,7 +22,7 @@ const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choos
   on('store.get', (_: unknown, e: any) => ({ value: r.kv.get(e.key) }))
   on('store.set', (_: unknown, e: any) => (r.kv.set(e.key, e.value), { value: undefined }))
   on('session.model', () => ({ value: o.session ?? 'claude-haiku-5-5' }))
-  on('session.messages', () => ({ value: (o.earlier ?? []).map(text => ({ role: 'user', text, toolUses: [] })) }))
+  on('session.messages', () => ({ value: [...(o.earlier ?? []).map(text => ({ role: 'user', text, toolUses: [] })), ...r.said.map(text => ({ role: 'assistant', text, toolUses: [] }))] }))
   on('session.usage', () => ({ value: { startedAt: 1, context: { tokens: o.context ?? 120_000, window: 1_000_000 }, rateLimits: [] } }))
   on('model.complete', (_: unknown, e: any) => {
     r.surveys.push(JSON.parse(e.prompt))
@@ -59,7 +60,7 @@ test('a Haiku session runs each turn in the gear its reading calls for', MEDIUM,
   const r = rig(on, [{ reach: 'system', depth: 2 }])
   await say($, 'the invoice totals drift after a refund')
   expect(r.steps).toEqual(['opus·high'])
-  expect(r.surveys[0]).toEqual({ request: 'the invoice totals drift after a refund', earlier: [], previous: null })
+  expect(r.surveys[0]).toEqual({ request: 'the invoice totals drift after a refund', earlier: [], previous: null, reply: null })
 })
 
 test('with steer off, a session on another model is left alone', { options: { steer: false } }, async ($: any, on) => {
@@ -263,7 +264,7 @@ test('a first prompt the survey cannot read starts at your coding effort', async
   expect(r.steps).toEqual(['sonnet·xhigh'])
 })
 
-test('a nod keeps the gear without a survey', MEDIUM, async ($: any, on) => {
+test('a nod with no reply to read the work by keeps the gear without a survey', MEDIUM, async ($: any, on) => {
   const r = rig(on, [{ reach: 'system', depth: 2 }])
   await say($, 'find why sessions expire early')
   await say($, 'go ahead')
@@ -271,11 +272,158 @@ test('a nod keeps the gear without a survey', MEDIUM, async ($: any, on) => {
   expect(r.steps).toEqual(['opus·high', 'opus·high'])
 })
 
-test('a nod after a question goes ahead at the coding effort', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+test('a nod after a question, with no reply to read the work by, goes ahead at the coding effort', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
   const r = rig(on, [{ reach: 'area', depth: 0, mode: 'answer' }], { session: 'claude-opus-5-5' })
   await sayOn($, 'claude-opus-5-5', 'how would you fix the rounding?')
   await sayOn($, 'claude-opus-5-5', 'do it')
   expect(r.steps).toEqual(['claude-opus-5-5·low', 'claude-opus-5-5·xhigh'])
+})
+
+// What the assistant proposed in the session where "lets do it" ran on Sonnet.
+const PLAN = `Plan for GAUNTLET-1200:
+1. Add the SQL migration \`db/migrations/V45__audit_entries.sql\` (a new \`audit_entries\` table).
+2. Record audit events in \`core/src/audit/AuditService.kt\` and \`core/src/audit/AuditRepository.kt\`.
+3. New routes in the shared Core module: \`core/src/routes/AdminRoutes.kt\`.
+4. Tests in \`core/src/test/AuditServiceTest.kt\`.
+Want me to go ahead?`
+
+test('a go-ahead after a plan runs on the work it approves, not on its words: on Sonnet, a migration goes to an Opus agent', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(
+    on,
+    [
+      { reach: 'area', depth: 1, mode: 'answer' },
+      // "lets do it" on its own few words, as that session's survey read it.
+      { reach: 'area', depth: 1, mode: 'code', ahead: true, cont: true },
+      // The plan itself, read as a request: area-sized even so; what it shows for sure lifts it.
+      { reach: 'area', depth: 1, mode: 'code' },
+    ],
+    { session: 'claude-sonnet-5-5' },
+  )
+  await sayOn($, 'claude-sonnet-5-5', 'how would you build GAUNTLET-1200?')
+  r.said.push(PLAN)
+  await sayOn($, 'claude-sonnet-5-5', 'lets do it')
+  expect(r.surveys[1]).toEqual({ request: 'lets do it', earlier: [], previous: { model: 'sonnet', effort: 'medium' }, reply: PLAN })
+  expect(r.surveys[2]).toEqual({ request: PLAN, earlier: [], previous: null, reply: null, approved: true })
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'opus', effort: 'xhigh' } })])
+  expect(r.steps).toEqual(['claude-sonnet-5-5·medium', 'claude-sonnet-5-5·high'])
+})
+
+test('the GAUNTLET-1200 turn, with the readings Sonnet gave: an Opus agent at xhigh, one piece of work, not a route of the plan’s steps', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const planSteps = [
+    { what: 'backend migration, Core routes, audit, contracts', mode: 'code', depth: 2 },
+    { what: 'admin UI note dialog and notices list', mode: 'code', depth: 1 },
+    { what: 'Playwright tests and browser walkthrough', mode: 'drive', depth: 1 },
+  ]
+  const r = rig(
+    on,
+    [
+      { reach: 'area', depth: 1, mode: 'answer' },
+      { reach: 'area', care: 'routine', depth: 1, mode: 'code', ahead: true },
+      { reach: 'system', care: 'costly', depth: 2, mode: 'code', ahead: true, phases: planSteps } as any,
+    ],
+    { session: 'claude-sonnet-5-5' },
+  )
+  const agents: string[] = []
+  on('tool.call', (_: unknown, e: any) => (agents.push(`${e.subagent_type ?? 'plain'} ${e.model}·${e.effort}`), { result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'lets work on 1200')
+  r.said.push('Work to do:\n1. **Migration `0260_account_notes.sql`:** table `core.account_notes`, RLS enabled and forced.\n2. **Core:** routes under `/tenants/:tenantId/households/:householdId/account-notes`, audited through the same outbox.\nDo you want me to go ahead with these defaults?')
+  await sayOn($, 'claude-sonnet-5-5', 'lets do it')
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'opus', effort: 'xhigh' } })])
+  expect(r.dialogs).toHaveLength(0) // xhigh is the person's own coding effort
+  // The agent that session started was a typed one: it still runs on the work's gear.
+  await $.tool.call({ tool: 'Agent', description: 'backend', prompt: 'p', subagent_type: 'implementer' })
+  expect(agents).toEqual(['implementer opus·xhigh'])
+})
+
+test('a bare nod adds nothing to read: only the work it approves is read, and that sets the gear', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1, mode: 'answer' }, { reach: 'system', depth: 2, mode: 'code' }])
+  await say($, 'how should sessions expire?')
+  r.said.push('Move expiry into `auth/session.ts` and refresh tokens in `auth/refresh.ts`. Shall I?')
+  await say($, 'ok')
+  expect(r.surveys).toHaveLength(2)
+  expect(r.surveys[1]).toMatchObject({ request: 'Move expiry into `auth/session.ts` and refresh tokens in `auth/refresh.ts`. Shall I?', approved: true })
+  // Not the last gear (sonnet·medium, at least the coding effort): the work's.
+  expect(r.steps).toEqual(['sonnet·medium', 'opus·xhigh'])
+})
+
+test('a go-ahead with changes of its own is read by the work too, in its own mode; a new request after a plan is not', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(
+    on,
+    [
+      { reach: 'area', depth: 1, mode: 'answer' },
+      { reach: 'point', depth: 1, mode: 'code', ahead: true },
+      { reach: 'system', depth: 1, mode: 'code' },
+      { reach: 'point', depth: 0, mode: 'code' },
+    ],
+    { session: 'claude-sonnet-5-5' },
+  )
+  await sayOn($, 'claude-sonnet-5-5', 'how would you split the quote service?')
+  r.said.push('Split `quote/service.ts` into a pricing core and adapters. Go ahead?')
+  await sayOn($, 'claude-sonnet-5-5', 'yes, but leave the adapters for later')
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'opus', effort: 'xhigh' } })])
+  r.said.push('Done: the pricing core is split out.')
+  await sayOn($, 'claude-sonnet-5-5', 'separately, fix the typo in the README title')
+  expect(r.surveys.map(s => s.approved ?? false)).toEqual([false, false, true, false])
+  expect(r.notes[2]).toEqual([])
+})
+
+test('deep work under way goes on in its agent when that model is enough for the work approved, at no less than its effort; more goes to a stronger one', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2, mode: 'answer' }, { reach: 'area', depth: 1, mode: 'code' }, { reach: 'frontier', depth: 3, mode: 'code' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: e.resume?.agentId ?? 'a-deep' }))
+  await sayOn($, 'claude-sonnet-5-5', 'why do the shipping quotes differ between the gateway and the price service?')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'analyze', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t1', { model: 'opus' }))
+  r.said.push('The gateway rounds twice. The fix: round once, in `quote/mapper.ts`. Go ahead?')
+  await sayOn($, 'claude-sonnet-5-5', 'go ahead')
+  // The fix fits the Opus agent that found the cause: it goes on there, at the code's effort, not the question's.
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'opus', effort: 'xhigh' }, resume: 'a-deep' })])
+  r.said.push('Fixed. What is left is a new pricing engine, designed from scratch. Go ahead?')
+  await sayOn($, 'claude-sonnet-5-5', 'go ahead')
+  // Open-ended work is Fable's: a fresh Fable agent, asked first, not the Opus one.
+  expect(r.dialogs).toHaveLength(1)
+  expect(r.notes[2]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'fable', effort: 'xhigh' } })])
+  expect(r.surveys).toHaveLength(3)
+})
+
+test('a go-ahead that names a model is the person’s ask, not the running agent’s work', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2, mode: 'answer' }, { reach: 'area', depth: 1, mode: 'code', ahead: true, ask: { model: 'sonnet' } }, { reach: 'area', depth: 1, mode: 'code' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: 'a-deep' }))
+  await sayOn($, 'claude-sonnet-5-5', 'why do the shipping quotes differ between the gateway and the price service?')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'analyze', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t1', { model: 'opus' }))
+  r.said.push('The gateway rounds twice. The fix: round once, in `quote/mapper.ts`. Go ahead?')
+  await sayOn($, 'claude-sonnet-5-5', 'yes, do it here with sonnet')
+  expect(r.notes[1]).toEqual([])
+  expect(r.steps).toEqual(['claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh'])
+})
+
+test('orchestrator: a go-ahead whose work needs a stronger model than the lane that planned it goes to that model’s lane', { options: { code_effort: 'xhigh', orchestrator: true } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }, { reach: 'area', depth: 1, mode: 'code' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: 'lane-s' }))
+  await sayOn($, 'claude-sonnet-5-5', 'how would you record who changed an order?')
+  expect(r.notes[0]).toEqual([handoffNote({ kind: 'lane', gear: { model: 'sonnet', effort: 'high' } })])
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'plan', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  r.said.push('Add `actor_id` with `ALTER TABLE orders ADD COLUMN actor_id uuid` and set it in `orders/service.ts`. Go ahead?')
+  await sayOn($, 'claude-sonnet-5-5', 'go ahead')
+  // A schema change is costly: the Opus lane, fresh, not the Sonnet lane that planned it.
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'lane', gear: { model: 'opus', effort: 'xhigh' } })])
+})
+
+test('a go-ahead whose work cannot be read goes by what the proposal shows for sure, else by the last gear', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
+  // After the first, every read fails.
+  const r = rig(on, [{ reach: 'area', depth: 1, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  await sayOn($, 'claude-sonnet-5-5', 'how would you name the money helpers?')
+  r.said.push('Rename `fmt` to `formatMoney` in `money.ts`. Go ahead?')
+  await sayOn($, 'claude-sonnet-5-5', 'ok')
+  expect(r.notes[1]).toEqual([])
+  r.said.push('Renamed. To record who changed an order: `ALTER TABLE orders ADD COLUMN actor_id uuid`. Go ahead?')
+  await sayOn($, 'claude-sonnet-5-5', 'ok')
+  expect(r.notes[2]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'opus', effort: 'xhigh' } })])
+  expect(r.steps).toEqual(['claude-sonnet-5-5·medium', 'claude-sonnet-5-5·xhigh', 'claude-sonnet-5-5·high'])
 })
 
 test('a turn read as a question rises to the coding effort once it edits files or a test fails', { options: { code_effort: 'xhigh' } }, async ($: any, on) => {
@@ -647,6 +795,20 @@ test('a full log keeps the first 200 characters of each prompt; a nod says it re
   const prompts = events(files).filter(e => e.ev === 'prompt')
   expect(prompts[0].text).toHaveLength(200)
   expect(events(files).filter(e => e.ev === 'gear').map(e => e.why)).toEqual(['survey: code, area, depth 1', 'nod: the last work gear, at least your coding effort'])
+})
+
+test('the log records the read of the work a go-ahead approves, what its text showed for sure, and why the gear', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1, mode: 'answer' }, { reach: 'area', depth: 1, mode: 'code' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'how would you build GAUNTLET-1200?')
+  r.said.push(PLAN)
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  await done($)
+  const work = events(files).filter(e => e.ev === 'survey' && e.of === 'work')
+  expect(work).toHaveLength(1)
+  expect(work[0].floor).toEqual({ care: 'costly', reach: 'system' })
+  expect(events(files).filter(e => e.ev === 'gear').map(e => e.why)).toEqual(['survey: answer, area, depth 1', 'go-ahead, the work it approves: code, system, depth 1, costly'])
 })
 
 test('an unsure survey still sets the effort from its best guess, but hands nothing off', async ($: any, on) => {

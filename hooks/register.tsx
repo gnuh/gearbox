@@ -41,6 +41,8 @@ import {
   STARTER,
   SURVEY,
   gearFor,
+  goAhead,
+  workFloor,
   handoffNote,
   label,
   mainModel,
@@ -227,6 +229,14 @@ const recentAsks = async ($: EngineInterface) =>
     .slice(-3)
     .map(m => m.text.slice(0, 200))
 
+// The assistant's last reply: the work a "lets do it" or a "continue" goes ahead with. Null when there is none.
+const lastReply = async ($: EngineInterface): Promise<string | null> =>
+  (await $.session.messages()).filter(m => m.role === 'assistant' && m.text.trim()).at(-1)?.text.trim() ?? null
+// How much of it goes beside a message the survey reads: its end, where a proposal asks to go ahead.
+const REPLY_TAIL = 1500
+// How much of it the survey reads when it is the work itself.
+const PROPOSAL_MAX = 8000
+
 // What the person said lately, `latest` (their turn's prompt) last, for the brief of a stronger model's subagent.
 const personSaid = async ($: EngineInterface, latest: string): Promise<string[]> => {
   const said = (await $.session.messages()).filter(m => m.role === 'user' && m.text.trim()).map(m => m.text)
@@ -236,12 +246,20 @@ const personSaid = async ($: EngineInterface, latest: string): Promise<string[]>
 // One low-effort call that describes the request; undefined when the reply is unusable. A person's prompt is read
 // by Sonnet: replaying 79 real prompts, Haiku took main work for side tasks 8 times (Sonnet once) and made a
 // question into a route; Sonnet costs about a second more. A subagent's brief only needs its kind of job: Haiku.
-// The request travels inside JSON, so nothing pasted into it can pose as another field.
-const survey = async ($: EngineInterface, request: string, earlier: string[], previous?: Gear, model: 'sonnet' | 'haiku' = 'sonnet') => {
+// The request travels inside JSON, so nothing pasted into it can pose as another field. `approved`: the request is
+// the assistant's proposal, which the person approved, read as the work it lays out.
+type SurveyInput = { request: string; earlier: string[]; previous?: Gear; reply?: string | null; approved?: boolean }
+const survey = async ($: EngineInterface, { request, earlier, previous, reply = null, approved = false }: SurveyInput, model: 'sonnet' | 'haiku' = 'sonnet') => {
   const r = await $.model.complete({
     model,
     system: SURVEY,
-    prompt: JSON.stringify({ request: trimRequest(request), earlier, previous: previous ?? null }),
+    prompt: JSON.stringify({
+      request: trimRequest(request, approved ? PROPOSAL_MAX : undefined),
+      earlier,
+      previous: previous ?? null,
+      reply: reply && reply.slice(-REPLY_TAIL),
+      ...(approved ? { approved } : {}),
+    }),
     effort: 'low',
     // No cap on the answer: a reply that stops mid-correction is unreadable, and a read costs little.
     maxTokens: 64_000,
@@ -254,7 +272,7 @@ const survey = async ($: EngineInterface, request: string, earlier: string[], pr
 // A subagent's effort by its job, read as a prompt is: browsing and long commands run low, code at the coding
 // effort, questions and searches by depth. Undefined when the read fails: the call goes as it was.
 const jobEffort = async ($: EngineInterface, brief: string, standing: ModelEffort): Promise<ModelEffort | undefined> => {
-  const { reading: r } = await survey($, brief, [], undefined, 'haiku')
+  const { reading: r } = await survey($, { request: brief, earlier: [] }, 'haiku')
   if (!r) return undefined
   return r.mode === 'drive' || r.mode === 'wait' ? 'low' : gearFor({ ...r, ask: {} }, standing).effort
 }
@@ -569,8 +587,9 @@ export const register: Register = (on, options) => {
   let handedOff = new Set<number>() // route steps (or -1, a single hand-off) whose subagent has started
   let ownEffort: string | undefined // a turn whose effort Claude Code sets: a slash command or skill, or ultrathink
   let turnText = '' // the person's prompt of the turn under way
-  // Deep work goes on where it started: `lastDeep` is the gear of the last typed turn's deep hand-off (a nod or a
-  // continuation carries it on), `deepAgent` the agent that took it, which follow-ups go back to while worth it.
+  // Deep work goes on where it started: `lastDeep` is the gear of the last typed turn's deep hand-off (a go-ahead
+  // carries it on while its model is enough for the work approved), `deepAgent` the agent that took it, which
+  // follow-ups go back to while worth it.
   let lastDeep: Gear | undefined
   let deepAgent: DeepAgent | undefined
   // The Agent call of a deep or handed-up step, by its tool_use_id: the agent it starts becomes `deepAgent`.
@@ -932,92 +951,136 @@ export const register: Register = (on, options) => {
       main: orchestrator ? orchGear : { model: base ?? STARTER.model, effort: BRIEFING },
       handoff: { kind: orchestrator && g.model !== 'fable' ? 'lane' : 'deep', gear: g, ...sameAgent(g) },
     })
-    if (goesOn && NOD.test(e.text.trim())) {
-      p = goOn(goesOn)
-      why = 'nod after deep work: it goes on in the subagent'
-      brief = ['nod', 'deep work goes on']
-    } else if (previous && NOD.test(e.text.trim())) {
-      // A nod after a proposal is usually the go-ahead to write it: never below the coding effort.
-      p = { main: { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } }
-      why = 'nod: the last work gear, at least your coding effort'
-      brief = ['nod', 'last gear, at least your coding effort']
-    } else {
-      const earlier = await recentAsks($)
-      const started = Date.now()
-      const { reading: r, reply } = await survey($, e.text, earlier, previous)
-      logEvent({ ev: 'survey', ms: Date.now() - started, reply, reading: r ?? null })
-      turnReading = r && { ...r, ask: verifyAsk(r.ask, e.text) }
-      // Carrying on does not swallow independent parts: a continuation the plan would split fans out instead.
-      const splits = !!turnReading && orchestrator && orchestratorPlan(turnReading, gearFor(turnReading, standing), orchGear, orchAgents, standing).handoff?.kind === 'fan'
-      if ((!r || r.cont) && goesOn && !splits) {
-        // Carrying on deep work, or unreadable right after it (a failed read errs up): the same hand-off.
-        p = goOn(goesOn)
-        why = `${r ? 'continuation' : 'survey unreadable'} after deep work: it goes on in the subagent`
-        brief = [r ? 'continuation' : 'unreadable', 'deep work goes on']
-      } else if (!r) {
-        // Unreadable: the last gear, never below the person's coding effort; a failed read errs up.
-        p = { main: previous ? { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } : { model: fixed ?? STARTER.model, effort: everyday(standing) } }
-        why = `survey unreadable: ${previous ? 'previous gear, at least your coding effort' : 'your coding effort'}`
-        brief = ['unreadable', previous ? 'last gear, at least your coding effort' : 'your coding effort']
-      } else if (r.cont && previous && !splits) {
-        p = { main: previous }
-        why = 'continuation: previous gear'
-        brief = ['continuation', 'kept the previous gear']
-      } else {
-        why = `survey: ${r.mode}, ${r.reach}, depth ${r.depth}${r.care === 'costly' ? ', costly' : ''}${r.sure ? '' : r.mode === 'review' ? ' (unsure: its best guess)' : ' (unsure: its best guess, no hand-off)'}`
-        brief = [`${r.mode} · ${r.reach}`, `depth ${r.depth}${r.care === 'costly' ? ' · costly' : ''}${r.sure ? '' : ' · unsure'}`]
-        ask = verifyAsk(r.ask, e.text)
-        lastMode = r.mode
-        const checked = { ...r, ask }
-        const asks = (await $.store.get('consent')) !== false
-        let want = gearFor(checked, standing)
-        // A model named for a step counts only where the person's own words say it.
-        const phases = r.phases.map(ph => ({ ...ph, ask: ph.ask && verifyAsk({ model: ph.ask }, e.text).model === ph.ask ? ph.ask : undefined }))
-        // The orchestrator reads a request with several steps as one piece of work for one lane.
-        if (!orchestrator && r.sure && r.phases.length >= 2) {
-          // Several steps: one route, each step on its own executor and effort. Fable only as a subagent.
-          const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
-          turnRoute = route(phases, lead, standing, r.care === 'costly', navigator, long, upFor(want), escalate)
-          for (const s of turnRoute) {
-            if ((s.by === 'main' || escalated(s)) && asks && needsConsent(s.gear, ask, previous, standing)) {
-              s.gear = await consent($, s.gear)
-              if (s.by === 'main') s.mainEffort = s.gear.effort
-            }
+    const describe = (r: Reading) => `${r.mode}, ${r.reach}, depth ${r.depth}${r.care === 'costly' ? ', costly' : ''}`
+    // The rules on a reading: its gear, a route of its steps, or a hand-off. `goes`: the reading is of the work a
+    // go-ahead approves, not of the message's words.
+    const byRules = async (r: Reading, goes: boolean): Promise<Plan> => {
+      let p: Plan
+      why = `${goes ? 'go-ahead, the work it approves' : 'survey'}: ${describe(r)}${r.sure ? '' : r.mode === 'review' ? ' (unsure: its best guess)' : ' (unsure: its best guess, no hand-off)'}`
+      brief = [`${goes ? 'go-ahead · ' : ''}${r.mode} · ${r.reach}`, `depth ${r.depth}${r.care === 'costly' ? ' · costly' : ''}${r.sure ? '' : ' · unsure'}`]
+      ask = verifyAsk(r.ask, e.text)
+      lastMode = r.mode
+      const checked = { ...r, ask }
+      const asks = (await $.store.get('consent')) !== false
+      let want = gearFor(checked, standing)
+      // A model named for a step counts only where the person's own words say it.
+      const phases = r.phases.map(ph => ({ ...ph, ask: ph.ask && verifyAsk({ model: ph.ask }, e.text).model === ph.ask ? ph.ask : undefined }))
+      // The orchestrator reads a request with several steps as one piece of work for one lane.
+      if (!orchestrator && r.sure && r.phases.length >= 2) {
+        // Several steps: one route, each step on its own executor and effort. Fable only as a subagent.
+        const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
+        turnRoute = route(phases, lead, standing, r.care === 'costly', navigator, long, upFor(want), escalate)
+        for (const s of turnRoute) {
+          if ((s.by === 'main' || escalated(s)) && asks && needsConsent(s.gear, ask, previous, standing)) {
+            s.gear = await consent($, s.gear)
+            if (s.by === 'main') s.mainEffort = s.gear.effort
           }
-          p = { main: { model: lead, effort: workEffort(turnRoute) } }
-          why += `; route of ${turnRoute.length} steps, starting at its work effort`
-          brief = [`route · ${turnRoute.length} steps`, `starts at ${workEffort(turnRoute)}`]
-        } else {
-          if (asks && needsConsent(want, ask, previous, standing)) {
-            const proposed = label(want)
-            want = await consent($, want)
-            why += `; you chose ${label(want)} over ${proposed}`
-          }
-          // Unsure: its best guess for the effort, but nothing handed off on a guess; a review is handed off all the same.
-          p = orchestrator ? orchestratorPlan(checked, want, orchGear, orchAgents, standing) : plan(checked, want, base, earlier.length > 0, fixed, navigator, long, escalate)
-          // More of the same work: back to the agent that holds it. Unrelated work starts clean.
-          if ((p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane') && !r.aside) p = { ...p, handoff: { ...p.handoff, ...sameAgent(p.handoff.gear) } }
-          if (orchestrator && r.parts.length) {
-            const groups = fanOut(r.parts, orchAgents)
-            logEvent({ ev: 'fan', parts: r.parts, cap: orchAgents, kept: p.handoff?.kind === 'fan' ? (p.handoff.parts?.length ?? 0) : 0, merged: groups.filter(g => g.length > 1).map(g => g.map(pt => pt.what).join(' + ')) })
-          }
-          // A fan-out: a costly part's gear goes to the person as a route step's does; then each model's lane, where it
-          // is idle and worth going back to, takes the first part of its model. A nod goes back to the first part a
-          // lane takes.
-          if (p.handoff?.kind === 'fan') p = { ...p, handoff: await seatFan($, p.handoff.parts ?? [], { asks, ask, previous, standing, lanes, fresh: r.aside }) }
-          // A turn the orchestrator keeps still hands out its lookups, long commands and browser checks: a route
-          // whose other steps it does itself, at its own gear.
-          if (orchestrator && keepsRoute(checked, p)) {
-            const own: Gear = { model: ask.model ?? orchModel, effort: ask.effort ?? orchEffort }
-            turnRoute = orchestratorRoute(route(phases, own.model, standing, r.care === 'costly', navigator, long, own.model, escalate), own)
-            why += `; route of ${turnRoute.length} steps, the rest here at ${label(own)}`
-            brief = [`route · ${turnRoute.length} steps`, `the rest at ${label(own)}`]
-          }
-          if (ask.model || ask.effort) why += `; you asked for ${[ask.model, ask.effort].filter(Boolean).join(' ')}`
         }
-        turnWant = want
+        p = { main: { model: lead, effort: workEffort(turnRoute) } }
+        why += `; route of ${turnRoute.length} steps, starting at its work effort`
+        brief = [`route · ${turnRoute.length} steps`, `starts at ${workEffort(turnRoute)}`]
+      } else {
+        if (asks && needsConsent(want, ask, previous, standing)) {
+          const proposed = label(want)
+          want = await consent($, want)
+          why += `; you chose ${label(want)} over ${proposed}`
+        }
+        // Unsure: its best guess for the effort, but nothing handed off on a guess; a review is handed off all the same.
+        p = orchestrator ? orchestratorPlan(checked, want, orchGear, orchAgents, standing) : plan(checked, want, base, earlier.length > 0, fixed, navigator, long, escalate)
+        // More of the same work: back to the agent that holds it. Unrelated work starts clean.
+        if ((p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane') && !r.aside) p = { ...p, handoff: { ...p.handoff, ...sameAgent(p.handoff.gear) } }
+        if (orchestrator && r.parts.length) {
+          const groups = fanOut(r.parts, orchAgents)
+          logEvent({ ev: 'fan', parts: r.parts, cap: orchAgents, kept: p.handoff?.kind === 'fan' ? (p.handoff.parts?.length ?? 0) : 0, merged: groups.filter(g => g.length > 1).map(g => g.map(pt => pt.what).join(' + ')) })
+        }
+        // A fan-out: a costly part's gear goes to the person as a route step's does; then each model's lane, where it
+        // is idle and worth going back to, takes the first part of its model. A nod goes back to the first part a
+        // lane takes.
+        if (p.handoff?.kind === 'fan') p = { ...p, handoff: await seatFan($, p.handoff.parts ?? [], { asks, ask, previous, standing, lanes, fresh: r.aside }) }
+        // A turn the orchestrator keeps still hands out its lookups, long commands and browser checks: a route
+        // whose other steps it does itself, at its own gear.
+        if (orchestrator && keepsRoute(checked, p)) {
+          const own: Gear = { model: ask.model ?? orchModel, effort: ask.effort ?? orchEffort }
+          turnRoute = orchestratorRoute(route(phases, own.model, standing, r.care === 'costly', navigator, long, own.model, escalate), own)
+          why += `; route of ${turnRoute.length} steps, the rest here at ${label(own)}`
+          brief = [`route · ${turnRoute.length} steps`, `the rest at ${label(own)}`]
+        }
+        if (ask.model || ask.effort) why += `; you asked for ${[ask.model, ask.effort].filter(Boolean).join(' ')}`
       }
+      turnWant = want
+      return p
     }
+
+    // A message that goes ahead with work the assistant proposed or is doing ("lets do it", "continue", "yes, but
+    // skip the docs") is geared by that work, never by its own few words: the assistant's last reply, which lays the
+    // work out, is read as a request of its own, and what its text shows for sure (a schema migration, source files
+    // across the project) lifts that reading (goAhead). A nod adds nothing to read, so only the work is read; only
+    // when neither can be read does a nod keep the last gear.
+    const nod = NOD.test(e.text.trim())
+    const proposal = await lastReply($)
+    const earlier = await recentAsks($)
+    let msg: Reading | undefined // the message's own reading; none for a nod
+    if (!nod || (!proposal && !previous && !goesOn)) {
+      const started = Date.now()
+      const s = await survey($, { request: e.text, earlier, previous, reply: proposal })
+      msg = s.reading
+      logEvent({ ev: 'survey', ms: Date.now() - started, reply: s.reply, reading: msg ?? null })
+    }
+    let work: Reading | undefined // the work a go-ahead approves, as the rules read it
+    if (proposal && (nod || msg?.ahead || msg?.cont)) {
+      const started = Date.now()
+      const s = await survey($, { request: proposal, earlier, approved: true })
+      const floor = workFloor(proposal)
+      work = goAhead(s.reading, msg, floor)
+      logEvent({ ev: 'survey', of: 'work', ms: Date.now() - started, reply: s.reply, reading: s.reading ?? null, ...(floor.care || floor.reach ? { floor } : {}) })
+    }
+    const r = work ?? msg
+    turnReading = r && { ...r, ask: verifyAsk(r.ask, e.text) }
+    // Carrying on does not swallow independent parts: a continuation the plan would split fans out instead.
+    const splits = !!turnReading && orchestrator && orchestratorPlan(turnReading, gearFor(turnReading, standing), orchGear, orchAgents, standing).handoff?.kind === 'fan'
+    if (work) {
+      const checked = turnReading!
+      const want = gearFor(checked, standing)
+      if (goesOn && !splits && !checked.ask.model && MODELS.indexOf(want.model) <= MODELS.indexOf(goesOn.model)) {
+        // Deep work under way, and its agent's model is enough for what comes next: it goes on there, never below the
+        // work's effort (an effort the person names wins). Work that needs a stronger model, or a model the person
+        // names, goes by the rules.
+        let g: Gear = { model: goesOn.model, effort: checked.ask.effort ?? upTo(EFFORTS, goesOn.effort, want.effort) }
+        why = `go-ahead after deep work, the work it approves: ${describe(work)}; it goes on in the subagent`
+        if ((await $.store.get('consent')) !== false && needsConsent(g, checked.ask, goesOn, standing)) {
+          const proposed = label(g)
+          g = await consent($, g)
+          why += `; you chose ${label(g)} over ${proposed}`
+        }
+        p = goOn(g)
+        brief = ['go-ahead', `deep work goes on · ${work.mode} · ${work.reach}`]
+        turnWant = want
+      } else p = await byRules(work, true)
+    } else if (nod && goesOn) {
+      p = goOn(goesOn)
+      why = `nod after deep work${proposal ? ', the work it approves unreadable' : ''}: it goes on in the subagent`
+      brief = ['nod', 'deep work goes on']
+    } else if (nod && previous) {
+      // Nothing to read the work by: a nod after a proposal is usually the go-ahead to write it, never below the coding effort.
+      p = { main: { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } }
+      why = `nod${proposal ? ', the work it approves unreadable' : ''}: the last work gear, at least your coding effort`
+      brief = ['nod', 'last gear, at least your coding effort']
+    } else if ((!msg || msg.cont) && goesOn && !splits) {
+      // Carrying on deep work, or unreadable right after it (a failed read errs up): the same hand-off.
+      p = goOn(goesOn)
+      why = `${msg ? 'continuation' : 'survey unreadable'} after deep work: it goes on in the subagent`
+      brief = [msg ? 'continuation' : 'unreadable', 'deep work goes on']
+    } else if (!msg) {
+      // Unreadable: the last gear, never below the person's coding effort; a failed read errs up.
+      p = { main: previous ? { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } : { model: fixed ?? STARTER.model, effort: everyday(standing) } }
+      why = `survey unreadable: ${previous ? 'previous gear, at least your coding effort' : 'your coding effort'}`
+      brief = ['unreadable', previous ? 'last gear, at least your coding effort' : 'your coding effort']
+    } else if (msg.cont && previous && !splits) {
+      // A continuation with no work to read it by.
+      p = { main: previous }
+      why = 'continuation: previous gear'
+      brief = ['continuation', 'kept the previous gear']
+    } else p = await byRules(msg, false)
     // The orchestrator's main conversation runs on its own model, whatever the session or the floor.
     // A person's ask moves the turn only when it stays here; with a lane doing the work the orchestrator is the same.
     turnGear = orchestrator
@@ -1224,7 +1287,7 @@ export const register: Register = (on, options) => {
         ...(up || lane || part ? { prompt: `${e.prompt ?? ''}${ownBrief(await personSaid($, turnText), !!part)}` } : {}),
       })
     }
-    // The orchestrator's turn without a hand-off (a nod, an unreadable prompt): a plain agent is still that model's
+    // The orchestrator's turn without a hand-off (a nod whose work could not be read, an unreadable prompt): a plain agent is still that model's
     // lane, the first of its model this turn only; another beside it is a fresh agent for the turn. Past a fan-out's
     // parts it is not: it gets an effort by its job, below.
     if (orchestrator && e.tool === 'Agent' && plain && !h && turnHandoff?.kind !== 'fan') {

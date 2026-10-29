@@ -2,7 +2,7 @@
 // long-lived subagent per model. A lane starts at the top effort it will need and each message lowers it (bench/lanes:
 // a mod's effort on a resumed agent reaches the API and keeps the cache; lowering takes hold fully, raising only half).
 import type { ModelEffort } from 'claude-code'
-import { EFFORTS, type FanPart, type Gear, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, choreGear, gearFor, upFor, upTo } from './policy'
+import { EFFORTS, type FanPart, type Gear, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, choreGear, filesReach as scope, gearFor, normPath as norm, pathFolder as folder, upFor, upTo } from './policy'
 
 export type OrchestratorSettings = { orchestrator: boolean; orchestrator_model: 'haiku' | 'sonnet' | 'opus'; orchestrator_effort: ModelEffort; orchestrator_agents: number }
 
@@ -60,12 +60,9 @@ export const seatParts = (parts: readonly FanPart[], lanes: Lanes, now: number, 
 }
 
 // Fan-out: how many agents a request's parts go to, decided here from the survey's parts and never more of them.
-// A path as compared: lower case, no leading "./" or trailing "/".
-const norm = (f: string) => f.trim().toLowerCase().replace(/^\.\//, '').replace(/\/+$/, '')
+// Paths are compared as `norm` gives them; `folder` is the folder a path's work sits in.
 // One path is the other or inside it: "src/api" holds "src/api/orders.ts".
 const within = (a: string, b: string) => a === b || b.startsWith(`${a}/`) || a.startsWith(`${b}/`)
-// The folder a path's work sits in: a file's folder, or the path itself when it names no file.
-const folder = (f: string) => (/\.[a-z0-9]+$/.test(f.split('/').pop() ?? '') ? f.split('/').slice(0, -1).join('/') : f)
 const files = (g: Part[]) => g.flatMap(p => p.files.map(norm))
 const edits = (g: Part[]) => g.some(p => p.mode === 'code')
 const deepest = (g: Part[]) => Math.max(...g.map(p => p.depth))
@@ -129,20 +126,14 @@ export const whyNoFan = (parts: readonly Part[], cap: number): string | undefine
   return 'the parts edit the same files, or code in one folder (or code that names no files), so one agent takes them all'
 }
 
-// The reading parts the main conversation names split on when its turn has none (a nod, an unreadable prompt):
+// The reading parts the main conversation names split on when its turn has none (a nod whose work could not be read,
+// an unreadable prompt):
 // ordinary reach and care, so each part's gear comes from its own kind and depth.
-export const NEUTRAL: Reading = { reach: 'area', care: 'routine', depth: 1, mode: 'answer', aside: false, cont: false, ask: {}, sure: true, phases: [], parts: [] }
+export const NEUTRAL: Reading = { reach: 'area', care: 'routine', depth: 1, mode: 'answer', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [] }
 
-// A part's reach, from the files it names, not the whole request's: one file, one folder or a few files are a
-// feature's (area); more than three files, or files in three or more top-level folders, a system's. A root-level file
-// sits in the root. A part that names no files takes the request's reach.
+// A part's reach, from the files it names (`scope`, the rule in policy's filesReach), not the whole request's. A part
+// that names no files takes the request's reach.
 const REACHES: readonly Reading['reach'][] = ['point', 'area', 'system', 'frontier']
-const top = (f: string) => (f.includes('/') ? f.split('/')[0]! : folder(f) === f ? f : '.')
-const scope = (named: readonly string[]): Reading['reach'] | undefined => {
-  const fs = [...new Set(named.map(norm))]
-  if (!fs.length) return undefined
-  return fs.length > 3 || new Set(fs.map(top)).size >= 3 ? 'system' : 'area'
-}
 // A group's reach: the union of its files', never below any of its parts' own.
 const groupReach = (r: Reading, g: Part[]): Reading['reach'] =>
   [scope(files(g)) ?? r.reach, ...g.map(p => scope(p.files) ?? r.reach)].reduce((a, b) => upTo(REACHES, a, b))
