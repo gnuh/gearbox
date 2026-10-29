@@ -668,44 +668,8 @@ const request = async ($: any, index: number) => {
   }
 }
 
-test('on a long conversation a run of reads goes to Haiku; a reply that does more is resent to the main model', async ($: any, on) => {
-  const r = rig(on, [{ mode: 'answer', reach: 'system', depth: 1 }], {
-    session: 'claude-opus-5-5',
-    context: 344_000,
-    replies: [
-      bash('gh pr checks 333 --repo mdfcvp/swanson 2>&1 | head -30'), // Opus: the first read
-      bash('gh run view 4058 --log-failed 2>&1 | grep -E "FAIL|✗" | head -40'), // Opus again: Haiku's cache is cold
-      { answer: 'Getting the stack trace.', ...bash("gh run view 4058 --log-failed | sed 's/\\x1b//g' | sed -n 100,160p") }, // Haiku, kept
-      { answer: 'The test is wrong; fixing it.', toolUses: [{ name: 'Edit', input: { file_path: 'a.test.ts' } }] }, // Haiku, thrown away
-      { answer: 'Found it: the window crosses the clock change.' }, // Opus answers
-    ],
-  })
-  await $.prompt.submit({ text: 'lets check why the CI is failing', asUser: true })
-  for (const i of [0, 1, 2]) await request($, i)
-  const fourth = await request($, 3)
-  const steps = r.steps.map(s => s.split('·')[0]!.replace('claude-', '').replace('-5-5', ''))
-  expect(steps).toEqual(['opus', 'opus', 'haiku', 'haiku', 'opus'])
-  expect(r.steps[2]).toBe('haiku·low')
-  expect(fourth.seen).toEqual(['Found it: the window crosses the clock change.'])
-  expect(fourth.result.usage.model).toBe('claude-opus-5-5')
-})
-
-test('once Haiku has cached the conversation, the first read of a later turn goes to it', async ($: any, on) => {
-  const r = rig(on, [{ mode: 'answer', reach: 'system', depth: 1 }, { mode: 'answer', reach: 'area', depth: 1 }], {
-    session: 'claude-opus-5-5',
-    context: 344_000,
-    // opus, opus, haiku (kept), haiku (an answer: thrown away), opus answers; then the next turn
-    replies: [bash('git log --oneline -5'), bash('git diff main --stat'), bash('cat package.json'), {}, {}, bash('ls src'), bash('cat src/a.ts')],
-  })
-  await $.prompt.submit({ text: 'what changed on this branch?', asUser: true })
-  for (const i of [0, 1, 2, 3]) await request($, i)
-  await $.prompt.submit({ text: 'and where is the entry point?', asUser: true })
-  for (const i of [0, 1]) await request($, i)
-  expect(r.steps.map(s => s.split('·')[0])).toEqual(['claude-opus-5-5', 'claude-opus-5-5', 'haiku', 'haiku', 'claude-opus-5-5', 'claude-opus-5-5', 'haiku'])
-})
-
-test('a short conversation never scouts', async ($: any, on) => {
-  const r = rig(on, [{ mode: 'answer', reach: 'system', depth: 1 }], { session: 'claude-opus-5-5', context: 40_000, replies: [bash('cat a'), bash('cat b'), bash('cat c'), {}] })
+test('a run of reads stays on the main model, on a long conversation too: nothing is tried on Haiku first', async ($: any, on) => {
+  const r = rig(on, [{ mode: 'answer', reach: 'system', depth: 1 }], { session: 'claude-opus-5-5', context: 344_000, replies: [bash('cat a'), bash('cat b'), bash('cat c'), {}] })
   await $.prompt.submit({ text: 'lets check why the CI is failing', asUser: true })
   for (const i of [0, 1, 2, 3]) await request($, i)
   expect(r.steps.every(s => s.startsWith('claude-opus-5-5'))).toBe(true)

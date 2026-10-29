@@ -15,6 +15,10 @@ export type GearboxLoop = {
 // agents alive when it ended.
 export type GearboxReply = { tail?: string; ids?: string[] }
 
+// The reports agents the main conversation started handed back, by agent id: the latest few, and the call that
+// started it (for one run in the foreground, whose report shows under that call).
+export type GearboxReports = Record<string, { texts: string[]; useId?: string }>
+
 // What the person set through /gearbox; unset keys fall back to the plugin's options, then the defaults.
 export type GearboxSettings = { code_effort?: string; navigator?: string; steer?: boolean; strict?: boolean; log?: string; pane?: string; band?: boolean; agent_hooks?: boolean; orchestrator?: boolean; orchestrator_model?: string; orchestrator_effort?: string; orchestrator_agents?: number }
 
@@ -24,6 +28,6 @@ export type GearboxTurn = { requests: Record<string, number>; costAtStart?: numb
 
 declare module 'claude-code' {
   interface PluginState {
-    gearbox: { loops: Shaped<Record<string, GearboxLoop>>; settings: Shaped<GearboxSettings>; turn: Shaped<GearboxTurn>; reply: Shaped<GearboxReply> }
+    gearbox: { loops: Shaped<Record<string, GearboxLoop>>; settings: Shaped<GearboxSettings>; turn: Shaped<GearboxTurn>; reply: Shaped<GearboxReply>; reports: Shaped<GearboxReports> }
   }
 }

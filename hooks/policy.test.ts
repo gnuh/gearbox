@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Reading, BRIEFING_TOOLS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, keepsScout, readKind, readParts, reviewGear, reviews, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
+import { type FanPart, type Reading, BRIEFING_TOOLS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -146,11 +146,13 @@ test('steering a session below the work: weighty work goes to a subagent on the 
   expect(plan(reading({ reach: 'system', depth: 2 }), opusXhigh, 'sonnet', true).handoff).toBeUndefined()
   // A side task keeps its own hand-off.
   expect(plan(reading({ reach: 'system', depth: 2, aside: true }), opusXhigh, 'sonnet', true, 'sonnet').handoff?.kind).toBe('aside')
-  // The brief carries what the subagent cannot see, and the findings come back in full.
+  // The brief carries what the subagent cannot see; its report reaches the person as it comes back, so the main
+  // model adds its review, not a copy.
   const note = handoffNote({ kind: 'deep', gear: opusHigh })
   expect(note).toContain('model "opus" and effort "high"')
   expect(note).toContain('tried and ruled out')
-  expect(note).toContain('in full')
+  expect(note).toContain('reply with your review only')
+  expect(note).not.toContain('in full, not cut down')
 })
 
 test('a hard browser check below Opus is judged by an Opus subagent, not the main model', () => {
@@ -392,23 +394,6 @@ test('isReadOnlyCommand passes only commands that read', () => {
     expect(isReadOnlyCommand(c)).toBe(false)
 })
 
-test('a run of reads ignores plan updates; Haiku keeps only replies that read and say little', () => {
-  const read = { name: 'Bash', input: { command: 'gh pr checks 1' } }
-  const plan = { name: 'mcp__ccd_turn__update_plan', input: {} }
-  expect(readKind([plan, read])).toBe('read')
-  expect(readKind([plan])).toBe('aside')
-  expect(readKind([read, { name: 'Edit', input: {} }])).toBe('other')
-  expect(readKind([])).toBe('other')
-  const reply = { stopReason: 'tool_use', answer: 'Reading the log.', toolUses: [read] }
-  expect(keepsScout(reply)).toBe(true)
-  expect(keepsScout({ ...reply, toolUses: [plan, read] })).toBe(false)
-  expect(keepsScout({ ...reply, answer: 'x'.repeat(700) })).toBe(false)
-  expect(keepsScout({ stopReason: 'end_turn', answer: 'Done.', toolUses: [] })).toBe(false)
-  expect(scouts(1, false)).toBe(false)
-  expect(scouts(2, false)).toBe(true)
-  expect(scouts(1, true)).toBe(true)
-})
-
 test('the survey lists parts that can run side by side, kept only when well formed, at most six; in doubt it does not split', () => {
   expect(SURVEY).toContain('"parts":[]')
   expect(SURVEY).toContain('When in doubt, do not split')
@@ -485,6 +470,7 @@ test('the fan-out note starts every part in one message, says what each hands ba
   expect(two).toContain('the files it changed')
   expect(two).toContain('merge')
   expect(two).toContain('Until all 3 have started')
+  expect(two).toContain('not a copy of the reports')
   expect(two).toContain('Wait for every result')
   expect(two).not.toContain('effort "') // gearbox sets each part's effort, not the brief
   // One editing part works in the working tree: no worktree at all.

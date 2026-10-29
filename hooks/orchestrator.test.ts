@@ -147,17 +147,22 @@ test('a lane starts at the top effort it will need; the job lowers it per messag
   expect(laneStart('max', 'xhigh')).toBe('max')
 })
 
-test('small answers and one-spot edits stay on the orchestrator', () => {
+test('small answers and small code stay on the orchestrator', () => {
   const want = { model: 'sonnet', effort: 'medium' } as const
   expect(orchestratorPlan(reading({ mode: 'answer', reach: 'point', depth: 0 }), want, MAIN)).toEqual({ main: MAIN })
   expect(orchestratorPlan(reading({ mode: 'answer', reach: 'area', depth: 1 }), want, MAIN)).toEqual({ main: MAIN })
   expect(orchestratorPlan(reading({ mode: 'code', reach: 'point', depth: 0 }), want, MAIN)).toEqual({ main: MAIN })
+  // Ordinary code in one feature, on the orchestrator's own model: a hand-off would cost more than the work.
+  expect(orchestratorPlan(reading({ mode: 'code', reach: 'area', depth: 1 }), { model: 'sonnet', effort: 'xhigh' }, MAIN)).toEqual({ main: MAIN })
+  // The same code calling for a stronger model than the orchestrator's goes to that model's lane.
+  expect(orchestratorPlan(reading({ mode: 'code', reach: 'area', depth: 1 }), { model: 'opus', effort: 'xhigh' }, MAIN).handoff).toEqual({ kind: 'lane', gear: { model: 'opus', effort: 'xhigh' } })
   // Nothing is handed off on a guess.
   expect(orchestratorPlan(reading({ sure: false, mode: 'code', reach: 'system', depth: 3 }), want, MAIN)).toEqual({ main: MAIN })
 })
 
 test('everything else goes to the lane of the model the work calls for, at the effort the work calls for', () => {
-  expect(orchestratorPlan(reading({ mode: 'code', reach: 'area', depth: 1 }), { model: 'sonnet', effort: 'xhigh' }, MAIN)).toEqual({ main: MAIN, handoff: { kind: 'lane', gear: { model: 'sonnet', effort: 'xhigh' } } })
+  expect(orchestratorPlan(reading({ mode: 'code', reach: 'area', depth: 2 }), { model: 'sonnet', effort: 'xhigh' }, MAIN)).toEqual({ main: MAIN, handoff: { kind: 'lane', gear: { model: 'sonnet', effort: 'xhigh' } } })
+  expect(orchestratorPlan(reading({ mode: 'code', reach: 'system', depth: 1 }), { model: 'opus', effort: 'xhigh' }, MAIN).handoff?.kind).toBe('lane')
   expect(orchestratorPlan(reading({ mode: 'answer', reach: 'system', depth: 1 }), { model: 'opus', effort: 'medium' }, MAIN)).toEqual({ main: MAIN, handoff: { kind: 'lane', gear: { model: 'opus', effort: 'medium' } } })
   expect(orchestratorPlan(reading({ mode: 'answer', reach: 'area', depth: 2 }), { model: 'sonnet', effort: 'high' }, MAIN)).toEqual({ main: MAIN, handoff: { kind: 'lane', gear: { model: 'sonnet', effort: 'high' } } })
   // One-spot code is a lane when it is subtle.

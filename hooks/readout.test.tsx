@@ -21,8 +21,10 @@ const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = ()
   on('store.get', (_: unknown, e: any) => ({ value: kv.get(e.key) }))
   on('store.set', (_: unknown, e: any) => (kv.set(e.key, e.value), { value: undefined }))
   on('session.model', () => ({ value: session }))
-  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'claude-sonnet-5-5', agentId: e.description === 'deploy' ? 'a-deploy' : e.description === 'browser check' ? 'a-check' : `a-${e.description}` }))
-  on('tool.call', () => ({ result: {} }))
+  const prompts: string[] = []
+  on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt), { model: e.model ?? 'claude-sonnet-5-5', agentId: e.description === 'deploy' ? 'a-deploy' : e.description === 'browser check' ? 'a-check' : `a-${e.description}` }))
+  const calls: any[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push(e), { result: {} }))
   on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
   // Stands for the engine's own empty band, drawn when the mod passes.
   on('ui.render', { component: 'AbovePrompt' }, ($: any, e: any) => {
@@ -32,7 +34,7 @@ const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = ()
   on('turn.step', async function* (_: unknown, e: any) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, model: e.answeredBy ?? e.model } }
   })
-  return { status, setCost: (v: number) => { usd = v } }
+  return { status, calls, prompts, setCost: (v: number) => { usd = v } }
 }
 
 const step = async ($: any, model: string, extra: object = {}) => {
@@ -259,6 +261,69 @@ test('under the last reply: the agents still at work, live, then that they all f
   expect(await live.find({ type: 'Text', text: /all agents finished/ })).toBeUndefined()
   expect(await live.find({ type: 'Text', text: /^Quando terminar/ })).toBeDefined()
   await live.unmount()
+})
+
+test('an agent of the main conversation may start agents that read, on Sonnet at low (Haiku when it asks); none that change code, and none deeper', async ($: any, on) => {
+  const { calls, prompts } = bench(on)
+  mock.clock(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'lane', 'sonnet')
+  // Its brief says what it may start.
+  expect(prompts[0]).toContain('you may start Explore agents to do reading for you')
+  const ask = (agentId: string, extra: object) => $.tool.call({ tool: 'Agent', prompt: 'find where refunds are computed', description: 'scout', agentId, ...extra })
+  await ask('a-lane', { subagent_type: 'Explore' })
+  expect(calls.at(-1)).toMatchObject({ tool: 'Agent', subagent_type: 'Explore', model: 'sonnet', effort: 'low' })
+  await ask('a-lane', { subagent_type: 'Explore', model: 'haiku' })
+  expect(calls.at(-1)).toMatchObject({ model: 'haiku', effort: 'low' })
+  const n = calls.length
+  const writer = await ask('a-lane', { subagent_type: 'general-purpose' })
+  expect(writer.deny).toContain('only agents that read')
+  // The reader it started gets no such line, and may start none of its own.
+  await $.agent.spawn({ tool_use_id: 'scout', prompt: 'p', description: 'scout', subagentType: 'Explore', model: 'sonnet', parentAgentId: 'a-lane', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-sonnet-5-5', background: false, fork: false })
+  expect(prompts.at(-1)).toBe('p')
+  const deeper = await ask('a-scout', { subagent_type: 'Explore' })
+  expect(deeper.deny).toContain('cannot start agents of its own')
+  expect(calls.length).toBe(n)
+  // A loop the main conversation did not start this way (a skill's fork, a workflow's agent) runs its agents as before.
+  await ask('a-fork', { subagent_type: 'general-purpose', model: 'opus' })
+  expect(calls.at(-1)).toMatchObject({ subagent_type: 'general-purpose', model: 'opus' })
+  expect(calls.at(-1).effort).toBeUndefined()
+})
+
+test('an agent’s report shows under its notification, or under its call when it ran in the foreground', async ($: any, on) => {
+  bench(on)
+  on('ui.render', { component: 'UserMessage' }, ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{e.props.text}</Text>
+  })
+  on('ui.render', { component: 'ToolResult' }, ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>Done (12 tool uses)</Text>
+  })
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'sonnet')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await complete($, 'a-deploy', '**Deployed** to staging: build 4058 passed.')
+  const notice = (isExpanded: boolean) => ({ plugin: 'gearbox', component: 'UserMessage', requestId: 'm-1', props: { text: 'Agent "deploy" finished', origin: { kind: 'task-notification' }, isExpanded, task: { id: 'a-deploy', status: 'completed' } } }) as const
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...notice(false), surface })
+    for (const text of [/^Agent "deploy" finished$/, /^its report$/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    expect(JSON.stringify(await ui.find({ type: 'Markdown' }))).toContain('build 4058 passed')
+    await ui.unmount()
+    // ctrl+o shows the engine's own row, report included.
+    const full = await $.ui.mount({ ...notice(true), surface })
+    expect(await full.find({ type: 'Text', text: /^its report$/ })).toBeUndefined()
+    await full.unmount()
+  }
+  // Run in the foreground: under its call.
+  const call = (status: string) => ({ plugin: 'gearbox', component: 'ToolResult', requestId: 'deploy', props: { tool_use_id: 'deploy', tool: 'Agent', output: { status }, isErrored: false } }) as const
+  const fg = await $.ui.mount({ ...call('completed'), surface: 'terminal' })
+  expect(JSON.stringify(await fg.find({ type: 'Markdown' }))).toContain('build 4058 passed')
+  await fg.unmount()
+  // Launched in the background, the call row stays as it was: the report comes with the notification.
+  const bg = await $.ui.mount({ ...call('async_launched'), surface: 'terminal' })
+  expect(await bg.find({ type: 'Markdown' })).toBeUndefined()
+  await bg.unmount()
 })
 
 test('the spinner names the working loop’s model', async ($: any, on) => {
