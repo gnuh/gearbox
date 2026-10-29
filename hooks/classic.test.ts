@@ -242,7 +242,7 @@ test('a hook that stops the prompt refuses the message to an agent too', async (
 const mainSaid = ($: any, text: string, type = 'hook_success') =>
   $.prompt.attachment({ type, text: `UserPromptSubmit hook ${type === 'hook_success' ? 'success' : 'additional context'}: ${text}`, origin: { kind: 'hook', event: 'UserPromptSubmit' } })
 
-test('where no hook can be run here, what the main conversation\'s hooks gave its prompt goes to the agent instead, as the model read it', { options: { steer: false } }, async ($: any, on) => {
+test('where no hook can be run here, what the main conversation\'s hooks gave its prompt goes to the agent instead, as the model read it', async ($: any, on) => {
   const w = world(on, { sources: { user: { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'prompt', prompt: 'judge $ARGUMENTS' }] }] } } } })
   await $.prompt.submit({ text: 'ship it', asUser: true })
   await mainSaid($, 'project note from a hook gearbox cannot run')
@@ -262,7 +262,7 @@ test('where no hook can be run here, what the main conversation\'s hooks gave it
   expect(w.prompts[1]).toBe('fix the billing bug')
 })
 
-test('with a command hook to run, its answer on the agent\'s prompt is what counts, not the main prompt\'s', { options: { steer: false } }, async ($: any, on) => {
+test('with a command hook to run, its answer on the agent\'s prompt is what counts, not the main prompt\'s', async ($: any, on) => {
   const w = world(on, { sources: { user: { hooks: ONE('/h/pre.sh') } }, says: { '/h/pre.sh': { stdout: 'fresh answer' } } })
   await $.prompt.submit({ text: 'ship it', asUser: true })
   await mainSaid($, 'main answer')

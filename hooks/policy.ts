@@ -12,16 +12,17 @@ const below = (m: Model, target: Model) => MODELS.indexOf(m) < MODELS.indexOf(ta
 // The model a reading calls for, as a hand-off runs it: Fable comes in only through its own deep hand-off.
 export const upFor = (want: Gear): Model => (want.model === 'fable' ? 'opus' : want.model)
 
-// Handing a steered session's work up to a stronger model's subagent: `on` hands up code, reviews, costly work and
-// subtle questions; `code` only work that changes files (code, and fixing what a browser check found) and reviews;
-// `off` nothing.
-export type Escalate = 'on' | 'code' | 'off'
-export const ESCALATES: readonly Escalate[] = ['on', 'code', 'off']
-// Whether the setting lets work of this mode go up at all. Mechanical work (depth 0) never does: a cold subagent
-// costs more than the care it would add. A review goes at any depth, under `code` too: it changes no files, but it
-// is never an answer for this setting.
-const mayGoUp = (mode: string, depth: number, escalate: Escalate) =>
-  escalate !== 'off' && (depth >= 1 || mode === 'review') && mode !== 'commit' && !(escalate === 'code' && mode === 'answer')
+// A steered session below the model the work calls for hands code, reviews, costly work and subtle questions up to a
+// stronger model's subagent. Whether work of this mode may go up at all: mechanical work (depth 0) never does, since
+// a cold subagent costs more than the care it would add; a review goes at any depth; a git chore stays a chore.
+const mayGoUp = (mode: string, depth: number) => (depth >= 1 || mode === 'review') && mode !== 'commit'
+
+// The coding model: `auto` lets the rules pick code's model as for any work; a model fixes it, so all code runs on
+// exactly that model, whatever the reach or a costly target would pick.
+export type CodeModel = 'auto' | 'sonnet' | 'opus' | 'fable'
+export const CODE_MODELS: readonly CodeModel[] = ['auto', 'sonnet', 'opus', 'fable']
+// The model code is fixed to, if any.
+export const pinnedModel = (c: CodeModel | undefined): Model | undefined => (c && c !== 'auto' ? c : undefined)
 // What the main conversation runs at while a stronger model's subagent takes its work: writing a brief from a long
 // conversation, and later reviewing the result, is where a hand-off is won or lost.
 export const BRIEFING: ModelEffort = 'high'
@@ -164,11 +165,15 @@ const codeFloor = (depth: number, standing: ModelEffort): ModelEffort => (depth 
 // work's own, as an answer's. One rule for a review prompt and for a reviewing skill's fork.
 export const reviewGear = (g: Gear): Gear => ({ model: upTo(MODELS, g.model, 'opus'), effort: g.effort })
 
+// Whether a reading's model is the coding model the person fixed: code they named no model for.
+export const pins = (r: Reading, code: Model | undefined): code is Model => !!code && r.mode === 'code' && !r.ask.model
+
 // The gear a reading calls for. `standing` is the person's effort for ordinary coding (the code_effort setting):
 // code never runs below it, at any depth, since "a small edit" is a guess made before anyone read the code;
 // other work past depth 0 doesn't either; answers, reviews and git chores follow depth alone. A costly mistake lifts
-// the gear to at least opus·medium, a review to at least opus; the person's own ask wins.
-export const gearFor = (r: Reading, standing: ModelEffort = 'medium'): Gear => {
+// the gear to at least opus·medium, a review to at least opus; the person's own ask wins. `code`: the coding model
+// the person fixed, which code runs on whatever its reach or care (its effort is code's as ever).
+export const gearFor = (r: Reading, standing: ModelEffort = 'medium', code?: Model): Gear => {
   const costly = r.care === 'costly'
   const model = costly ? upTo(MODELS, REACH_MODEL[r.reach], 'opus') : REACH_MODEL[r.reach]
   const byDepth = DEPTH_EFFORT[r.depth]!
@@ -180,7 +185,7 @@ export const gearFor = (r: Reading, standing: ModelEffort = 'medium'): Gear => {
         : byDepth
   const effort = costly ? upTo(EFFORTS, base, 'medium') : base
   const g = r.mode === 'review' ? reviewGear({ model, effort }) : { model, effort }
-  return { model: r.ask.model ?? g.model, effort: r.ask.effort ?? g.effort }
+  return { model: r.ask.model ?? (pins(r, code) ? code : g.model), effort: r.ask.effort ?? g.effort }
 }
 
 // Skills that review: their fork runs at a review's gear. Any other skill runs as Claude Code starts it.
@@ -238,14 +243,19 @@ export type Step = { what: string; mode: Phase['mode'] | 'analyze'; by: 'main' |
 // `up` is the model the request calls for: when the main model is below it, subtle or costly steps (code, answers,
 // judging a browser check) go to a subagent on it, at the step's effort, while the main model briefs it and judges.
 // The same rule as a single request's: code goes up past a mechanical edit, since the request's reach already says it
-// is hard; answers and judgments only when subtle or costly.
-export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet', long = false, up: Model = main, escalate: Escalate = 'on'): Step[] =>
+// is hard; answers and judgments only when subtle or costly. `code`: the coding model the person fixed: a code step
+// runs on exactly it, here when the main model is it, else in a subagent on it, at any depth.
+export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet', long = false, up: Model = main, code?: Model): Step[] =>
   phases.flatMap(({ what, mode, depth, ask }): Step[] => {
     const floor = (e: ModelEffort) => (costly ? upTo(EFFORTS, e, 'medium') : e)
     const doer = (what: string, mode: Step['mode'], effort: ModelEffort): Step =>
-      below(main, up) && mayGoUp(mode, depth, escalate) && (mode === 'code' || depth >= 2 || costly)
-        ? { what, mode, by: 'agent', gear: { model: up, effort }, mainEffort: BRIEFING }
-        : { what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }
+      mode === 'code' && code
+        ? code === main
+          ? { what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }
+          : { what, mode, by: 'agent', gear: { model: code, effort }, mainEffort: BRIEFING }
+        : below(main, up) && mayGoUp(mode, depth) && (mode === 'code' || depth >= 2 || costly)
+          ? { what, mode, by: 'agent', gear: { model: up, effort }, mainEffort: BRIEFING }
+          : { what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }
     if (mode === 'lookup' || mode === 'wait') return [{ what, mode, by: 'agent', gear: { model: ask ?? 'haiku', effort: 'low' }, mainEffort: 'low' }]
     if (mode === 'commit' && long) return [{ what, mode, by: 'agent', gear: choreGear(depth), mainEffort: 'low' }]
     if (mode === 'drive') {
@@ -419,27 +429,35 @@ export const handoffLabel = (h: Handoff) =>
 // Splits a turn between the main conversation and a subagent. `floor` is the main model so far;
 // `hasEarlier` says whether there is earlier work for the request to be unrelated to. With `fixed`, the
 // session keeps that model (steer mode): only effort and handoffs change, and weighty work (code, a review, a costly
-// mistake, subtle reasoning) that calls for a stronger model goes to a subagent on it instead, as `escalate` allows.
+// mistake, subtle reasoning) that calls for a stronger model goes to a subagent on it instead.
+// `pinned`: code on the coding model the person fixed (`want.model`), which runs on exactly that model: where the
+// main conversation runs another (the session's model, or a shift floor above it), a subagent on it takes the code,
+// up or down, mechanical edits too; Fable, as always, only in a subagent.
 // A guess hands nothing off and only sets the effort, a review excepted: that is handed off sure or not, on `want`.
-export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet', long = false, escalate: Escalate = 'on'): Plan => {
-  if (!r.sure && r.mode !== 'review') return { main: fixed ? { model: fixed, effort: want.effort } : want }
+export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet', long = false, pinned = false): Plan => {
+  // A pinned Fable never runs the main conversation on a guess: its stand-in is Opus, as a hand-off's is.
+  if (!r.sure && r.mode !== 'review') return { main: fixed ? { model: fixed, effort: want.effort } : pinned ? { model: upFor(want), effort: want.effort } : want }
   const base = fixed ?? floor ?? 'sonnet'
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
   const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
   const costly = r.care === 'costly'
   if (r.mode === 'drive') {
     const up = upFor(want)
-    const judge = below(planner, up) && mayGoUp('analyze', r.depth, escalate) && (r.depth >= 2 || costly) ? { model: up, effort: upTo(EFFORTS, DEPTH_EFFORT[r.depth]!, 'medium') } : undefined
+    const judge = below(planner, up) && mayGoUp('analyze', r.depth) && (r.depth >= 2 || costly) ? { model: up, effort: upTo(EFFORTS, DEPTH_EFFORT[r.depth]!, 'medium') } : undefined
     return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: r.ask.model === 'haiku' || r.ask.model === 'sonnet' ? r.ask.model : navigator, effort: 'low' }, ...(judge ? { judge } : {}) } }
   }
   if (r.mode === 'wait') return { main: { model: planner, effort: 'low' }, handoff: { kind: 'wait', gear: { model: 'haiku', effort: 'low' } } }
   if (r.mode === 'commit' && long) return { main: { model: planner, effort: 'low' }, handoff: { kind: 'chore', gear: choreGear(r.depth) } }
-  if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable' && !(fixed && escalate === 'off'))
+  if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable')
     return { main: { model: base, effort: BRIEFING }, handoff: { kind: 'deep', gear: want } }
   if (r.aside && hasEarlier && want.model !== 'haiku') return { main: { model: base, effort: 'medium' }, handoff: { kind: 'aside', gear: want } }
+  // Code on a fixed coding model the main conversation is not on: to a subagent on it, at any depth. A shift session
+  // whose main model has risen past it hands it down rather than run it above.
+  const main = fixed ?? floor
+  if (pinned && main && main !== want.model && (fixed || below(want.model, main))) return { main: { model: main, effort: BRIEFING }, handoff: { kind: 'deep', gear: want } }
   // Code goes up at any depth past mechanical, since the reach that calls for the stronger model says it is hard;
   // a review at any depth; a question only when it is subtle or a mistake would be costly.
-  const weighty = mayGoUp(r.mode, r.depth, escalate) && (r.mode === 'code' || r.mode === 'review' || costly || r.depth >= 2)
+  const weighty = mayGoUp(r.mode, r.depth) && (r.mode === 'code' || r.mode === 'review' || costly || r.depth >= 2)
   if (fixed && !r.ask.model && weighty && below(fixed, want.model)) return { main: { model: fixed, effort: BRIEFING }, handoff: { kind: 'deep', gear: want } }
   return { main: fixed ? { model: fixed, effort: want.effort } : want }
 }

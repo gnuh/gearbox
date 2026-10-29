@@ -2,15 +2,15 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentStatus, ClassicHookInputs, ElementTable, EngineInterface, RenderElement, ModelEffort, PluginOptions, PromptOrigin, Register, TurnUsage } from 'claude-code'
 import type { GearboxLoop, GearboxReply, GearboxReports } from '../types'
 import {
+  type CodeModel,
   type DeepAgent,
-  type Escalate,
   type FanPart,
   type Gear,
   type Handoff,
   BRIEFING,
   BRIEFING_TOOLS,
   BRIEF_READS,
-  ESCALATES,
+  CODE_MODELS,
   apartEdits,
   looksUp,
   ownBrief,
@@ -48,6 +48,8 @@ import {
   mainModel,
   needsConsent,
   nextFloor,
+  pinnedModel,
+  pins,
   plan,
   route,
   routeNote,
@@ -270,11 +272,14 @@ const survey = async ($: EngineInterface, { request, earlier, previous, reply = 
 }
 
 // A subagent's effort by its job, read as a prompt is: browsing and long commands run low, code at the coding
-// effort, questions and searches by depth. Undefined when the read fails: the call goes as it was.
-const jobEffort = async ($: EngineInterface, brief: string, standing: ModelEffort): Promise<ModelEffort | undefined> => {
+// effort, questions and searches by depth. Code also takes the coding model the person fixed (`code`), if any; any
+// other job keeps the model its call named. Undefined when the read fails: the call goes as it was.
+const jobGear = async ($: EngineInterface, brief: string, standing: ModelEffort, code?: Model): Promise<{ model?: Model; effort: ModelEffort } | undefined> => {
   const { reading: r } = await survey($, { request: brief, earlier: [] }, 'haiku')
   if (!r) return undefined
-  return r.mode === 'drive' || r.mode === 'wait' ? 'low' : gearFor({ ...r, ask: {} }, standing).effort
+  if (r.mode === 'drive' || r.mode === 'wait') return { effort: 'low' }
+  const g = gearFor({ ...r, ask: {} }, standing, code)
+  return { ...(pins({ ...r, ask: {} }, code) ? { model: g.model } : {}), effort: g.effort }
 }
 
 // The debug log: one JSON line per event in ~/.claude/gearbox/logs/<session>.jsonl. The mod file API replaces a
@@ -299,7 +304,7 @@ const sessionFacts = async ($: EngineInterface, options: PluginOptions) => {
   try {
     gearbox = JSON.parse(String(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))).version
   } catch {}
-  return { ev: 'session', gearbox, claude: (await $.session.version()).version, model: await $.session.model(), fromGearbox: (await $.store.get('settings')) ?? {}, fromPlugin: options }
+  return { ev: 'session', gearbox, claude: (await $.session.version()).version, model: await $.session.model(), fromGearbox: (await storedSettings($)).kept, fromPlugin: withoutRemoved(options) }
 }
 
 // The person's own hooks for agents (classic.ts): what the main conversation's last prompt gave its hooks to run on,
@@ -338,8 +343,9 @@ const stopHooks = async ($: EngineInterface, h: AgentHooks, logEvent: (rec: Reco
 }
 
 // Puts a costly gear to the person; a dismissed dialog, or an answer typed under "Other", takes the cheaper one.
-const consent = async ($: EngineInterface, g: Gear): Promise<Gear> => {
-  const cheaper = stepDown(g)
+// `keepModel`: the model is the person's own pick (their coding model), so only the effort steps down.
+const consent = async ($: EngineInterface, g: Gear, keepModel = false): Promise<Gear> => {
+  const cheaper = keepModel ? { model: g.model, effort: stepDown(g).effort } : stepDown(g)
   try {
     const answer = await $.ui.ask(`gearbox would run this at ${label(g)}${g.model === 'fable' ? ' in a Fable subagent' : ''}. Which gear?`, {
       header: 'gearbox',
@@ -431,10 +437,15 @@ const agentRows = ({ Box, Text }: Pick<ElementTable, 'Box' | 'Text'>, loops: Rec
 
 // A fan-out's parts as the turn hands them out: a costly part's gear goes to the person as a route step's does; then
 // each model's lane, where it is idle and worth going back to, takes the first part of its model. `fresh`: unrelated
-// work, which goes back to no lane.
-const seatFan = async ($: EngineInterface, fan: readonly FanPart[], o: { asks: boolean; ask: Partial<Gear>; previous?: Gear; standing: ModelEffort; lanes: Lanes; fresh: boolean }): Promise<Handoff> => {
+// work, which goes back to no lane. `code`: the coding model the person fixed, which a part that writes code is
+// never put to them for.
+const seatFan = async ($: EngineInterface, fan: readonly FanPart[], o: { asks: boolean; ask: Partial<Gear>; previous?: Gear; standing: ModelEffort; lanes: Lanes; fresh: boolean; code?: Model }): Promise<Handoff> => {
   const parts: FanPart[] = []
-  for (const pt of fan) parts.push(o.asks && needsConsent(pt.gear, o.ask, o.previous, o.standing) ? { ...pt, gear: await consent($, pt.gear) } : pt)
+  for (const pt of fan) {
+    const fixedModel = !!o.code && pt.edits && pt.gear.model === o.code
+    const ask = fixedModel ? { ...o.ask, model: pt.gear.model } : o.ask
+    parts.push(o.asks && needsConsent(pt.gear, ask, o.previous, o.standing) ? { ...pt, gear: await consent($, pt.gear, fixedModel) } : pt)
+  }
   const loops = await read($, LOOPS)
   const seated = seatParts(parts, o.lanes, Date.now(), id => live(loops[id]), o.fresh)
   return { kind: 'fan', gear: (seated.find(pt => pt.resume || pt.lane) ?? seated[0]!).gear, parts: seated }
@@ -479,21 +490,25 @@ const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh', 'max']
 const SEARCHERS = /^(Explore|Plan|claude-code-guide|statusline-setup)$/
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_effort: ModelEffort; steer: boolean; escalate: Escalate; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; band: boolean; agent_hooks: boolean } & OrchestratorSettings
+export type Settings = { code_model: CodeModel; code_effort: ModelEffort; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; agent_hooks: boolean } & OrchestratorSettings
+
+// Settings gearbox once had and now always applies as they were when on: steering a session not on Haiku, handing
+// work up to a stronger model, the band and the list under the last reply, and a models panel that lists every loop.
+// What an older version stored or a plugin option still says for them is ignored, and dropped from the store.
+export const REMOVED_SETTINGS = ['steer', 'escalate', 'band', 'pane'] as const
+const removedKey = (k: string) => (REMOVED_SETTINGS as readonly string[]).includes(k)
+const withoutRemoved = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !removedKey(k)))
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
-// every Claude Code screen lets a person edit.
+// every Claude Code screen lets a person edit. Only known keys are read: a removed setting's value has no say.
 export const settingsFrom = (options: PluginOptions, stored: unknown): Settings => {
   const o: Record<string, unknown> = { ...options, ...(stored && typeof stored === 'object' ? stored : {}) }
   return {
+    code_model: CODE_MODELS.includes(o.code_model as CodeModel) ? (o.code_model as CodeModel) : 'auto',
     code_effort: CODE_EFFORTS.includes(o.code_effort as ModelEffort) ? (o.code_effort as ModelEffort) : 'xhigh',
-    steer: o.steer !== false,
-    escalate: ESCALATES.includes(o.escalate as Escalate) ? (o.escalate as Escalate) : 'on',
     navigator: o.navigator === 'haiku' ? 'haiku' : 'sonnet',
     strict: o.strict !== false,
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
-    pane: o.pane === 'running' ? 'running' : 'all',
-    band: o.band !== false,
     agent_hooks: o.agent_hooks !== false,
     ...orchestratorFrom(o),
   }
@@ -501,21 +516,62 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
 
 // One `/gearbox <setting> <value>`; undefined when the value is not one the setting takes.
 export const settingPatch = (word: string, value: string | undefined): Partial<Settings> | undefined => {
+  if (word === 'model' && CODE_MODELS.includes(value as CodeModel)) return { code_model: value as CodeModel }
   if (word === 'effort' && CODE_EFFORTS.includes(value as ModelEffort)) return { code_effort: value as ModelEffort }
   if (word === 'navigator' && (value === 'haiku' || value === 'sonnet')) return { navigator: value }
-  if (word === 'steer' && (value === 'on' || value === 'off')) return { steer: value === 'on' }
-  if (word === 'escalate' && ESCALATES.includes(value as Escalate)) return { escalate: value as Escalate }
   if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
-  if (word === 'pane' && (value === 'all' || value === 'running')) return { pane: value }
-  if (word === 'band' && (value === 'on' || value === 'off')) return { band: value === 'on' }
   if (word === 'hooks' && (value === 'on' || value === 'off')) return { agent_hooks: value === 'on' }
   return orchestratorPatch(word, value)
 }
 
-const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high, xhigh or max', navigator: 'sonnet or haiku', steer: 'on or off', escalate: 'on, code or off', strict: 'on or off', log: 'on, off or full', band: 'on or off', hooks: 'on or off', orchestrator: 'on or off', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'low, medium, high, xhigh or max', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
+const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or max', navigator: 'sonnet or haiku', strict: 'on or off', log: 'on, off or full', hooks: 'on or off', orchestrator: 'on or off', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'low, medium, high, xhigh or max', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
+// What `/gearbox <word>` of a removed setting answers.
+const REMOVED_WORDS: Record<string, string> = {
+  steer: 'steer is no longer a setting: gearbox always steers a session not on Haiku. To leave sessions alone, turn gearbox off (/gearbox off) or disable the plugin.',
+  escalate: 'escalate is no longer a setting: work a session is below is always handed up (code, reviews, costly work, subtle questions). To fix the model code runs on, use /gearbox model.',
+  band: 'band is no longer a setting: the band above the prompt and the list under the last reply are always shown.',
+}
+// The settings panel's blocks, each under its heading: a row per setting, as [label, /gearbox word, values, the value
+// in use]. The orchestrator's model, effort and parallel agents only matter, and only show, while it is on.
+export type SettingRow = [string, string, readonly string[], string]
+export const settingsSections = (s: Settings): { id: string; title: string; rows: SettingRow[] }[] => [
+  {
+    id: 'coding',
+    title: 'Coding',
+    rows: [
+      ['Model', 'model', CODE_MODELS, s.code_model],
+      ['Effort', 'effort', CODE_EFFORTS, s.code_effort],
+    ],
+  },
+  {
+    id: 'handoffs',
+    title: 'Hand-offs',
+    rows: [
+      ['Browser navigator', 'navigator', ['sonnet', 'haiku'], s.navigator],
+      ['Strict', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
+      ['Hooks for agents', 'hooks', ['on', 'off'], s.agent_hooks ? 'on' : 'off'],
+    ],
+  },
+  {
+    id: 'orchestrator',
+    title: 'Orchestrator',
+    rows: [
+      ['Orchestrator', 'orchestrator', ['on', 'off'], s.orchestrator ? 'on' : 'off'],
+      ...(s.orchestrator
+        ? ([
+            ['Model', 'orchestrator-model', ['sonnet', 'opus', 'haiku'], s.orchestrator_model],
+            ['Effort', 'orchestrator-effort', ['low', 'medium', 'high', 'xhigh', 'max'], s.orchestrator_effort],
+            ['Parallel agents', 'orchestrator-agents', ['1', '2', '3', '4', '5', '6'], String(s.orchestrator_agents)],
+          ] satisfies SettingRow[])
+        : []),
+    ],
+  },
+  { id: 'debug', title: 'Debug', rows: [['Log', 'log', ['off', 'on', 'full'], s.log]] },
+]
+
 const settingsText = (s: Settings) =>
-  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · escalate ${s.escalate} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · band ${s.band ? 'on' : 'off'} · hooks for agents ${s.agent_hooks ? 'on' : 'off'} · orchestrator ${s.orchestrator ? `on (${s.orchestrator_model}·${s.orchestrator_effort}, up to ${s.orchestrator_agents} agent${s.orchestrator_agents === 1 ? '' : 's'} at once)` : 'off'}`
+  `coding model ${s.code_model} · coding effort ${s.code_effort} · navigator ${s.navigator} · strict hand-offs ${s.strict ? 'on' : 'off'} · hooks for agents ${s.agent_hooks ? 'on' : 'off'} · orchestrator ${s.orchestrator ? `on (${s.orchestrator_model}·${s.orchestrator_effort}, up to ${s.orchestrator_agents} agent${s.orchestrator_agents === 1 ? '' : 's'} at once)` : 'off'} · log ${s.log}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -531,8 +587,6 @@ const listAgents = async ($: EngineInterface): Promise<AgentInfo[] | undefined> 
     return undefined
   }
 }
-// A session on Haiku: gearbox shifts its models.
-const onHaiku = async ($: EngineInterface) => (await $.session.model()).includes('haiku')
 
 // A reviewing skill the model called, with the effort of the turn's own work, until the loop it forked is known.
 type SkillCall = { skill: string; args: string; useId?: string; effort: ModelEffort }
@@ -540,33 +594,35 @@ type SkillCall = { skill: string; args: string; useId?: string; effort: ModelEff
 // agent the listing does not know), and whether its re-gearing is logged yet.
 type SkillFork = { call: SkillCall; match: 'result' | 'listed' | 'fallback'; logged?: boolean }
 
+// What /gearbox stored, without the keys of removed settings; `stale` says whether it held any.
+const storedSettings = async ($: EngineInterface): Promise<{ kept: Partial<Settings>; stale: boolean }> => {
+  const raw = await $.store.get('settings')
+  const all: Record<string, unknown> = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return { kept: withoutRemoved(all) as Partial<Settings>, stale: Object.keys(all).some(removedKey) }
+}
+
 const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
-  const stored = ((await $.store.get('settings')) ?? {}) as Partial<Settings>
-  await $.store.set('settings', { ...stored, ...patch })
+  const { kept } = await storedSettings($)
+  await $.store.set('settings', { ...kept, ...patch })
   await update($, SETTINGS, held => ({ ...held, ...patch }))
 }
 
 
 export const register: Register = (on, options) => {
-  // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
-  let { code_effort: standing, steer: steers, escalate, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
-  let paneShows: Settings['pane'] = 'all'
-  let bandOn = true
-  const current = (): Settings => ({ code_effort: standing, steer: steers, escalate, navigator, strict, log: logMode, pane: paneShows, band: bandOn, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
+  // The person's settings (userConfig): the model and effort for code, and the rest of /gearbox settings.
+  let { code_model: codeModel, code_effort: standing, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
+  const current = (): Settings => ({ code_model: codeModel, code_effort: standing, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
     if (logMode !== 'off') log.pending.push(JSON.stringify({ t: Date.now(), ...rec }))
   }
   const apply = (s: Settings) => {
+    codeModel = s.code_model
     standing = s.code_effort
-    steers = s.steer
-    escalate = s.escalate
     navigator = s.navigator
     strict = s.strict
     logMode = s.log
-    paneShows = s.pane
-    bandOn = s.band
     agentHooks = s.agent_hooks
     orchestrator = s.orchestrator
     orchModel = s.orchestrator_model
@@ -704,12 +760,11 @@ export const register: Register = (on, options) => {
     skillForks.clear()
     notForks.clear()
   }
-  // A reviewing skill the model calls, in any loop, while gearbox routes the session: remembered until its fork is
-  // known. The Skill tool's answer names a fork's agent, but the fork may send its first request before that answer
-  // is back, so it is remembered first.
-  const callSkill = async <R,>(e: { skill?: unknown; args?: unknown; tool_use_id?: string }, routed: boolean, run: () => Promise<R>): Promise<R> => {
+  // A reviewing skill the model calls, in any loop: remembered until its fork is known. The Skill tool's answer names
+  // a fork's agent, but the fork may send its first request before that answer is back, so it is remembered first.
+  const callSkill = async <R,>(e: { skill?: unknown; args?: unknown; tool_use_id?: string }, run: () => Promise<R>): Promise<R> => {
     const skill = String(e.skill ?? '')
-    if (!reviews(skill) || !routed) return run()
+    if (!reviews(skill)) return run()
     const call: SkillCall = { skill, args: String(e.args ?? ''), useId: e.tool_use_id, effort: turnWant?.effort ?? 'medium' }
     skillCalls.push(call)
     const done = await run()
@@ -775,10 +830,12 @@ export const register: Register = (on, options) => {
       },
       isDeferred: false,
     })
-    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | effort <level> | navigator <model> | steer on|off | escalate on|code|off | strict on|off | hooks on|off | orchestrator on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | pane | on | off | ask on|off | usage]' })
+    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | strict on|off | hooks on|off | log on|off|full | orchestrator on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | on | off | ask on|off | usage]' })
     enabled = (await $.store.get('enabled')) !== false
+    // What an older version stored for a removed setting is dropped once, so nothing reads or logs it again.
+    const { kept: stored, stale } = await storedSettings($)
+    if (stale) await $.store.set('settings', stored)
     apply(await loadSettings($, options))
-    const stored = ((await $.store.get('settings')) ?? {}) as Partial<Settings>
     await update($, SETTINGS, () => stored)
     // A reload keeps the loops but drops the timer: the engine's list says again what is alive.
     if (enabled) {
@@ -827,7 +884,7 @@ export const register: Register = (on, options) => {
         return {
           text: isPlaced
             ? 'settings open. Press a value to use it; Esc closes.'
-            : `${settingsText(current())}. The settings panel has no room here; set one with /gearbox effort|navigator|steer|strict <value>.`,
+            : `${settingsText(current())}. The settings panel has no room here; set one with /gearbox model|effort|navigator|strict <value>.`,
         }
       }
       const change = settingPatch(word, value)
@@ -841,16 +898,11 @@ export const register: Register = (on, options) => {
       }
       return { text: `${settingsText(current())} (from your next prompt)` }
     }
+    if (Object.hasOwn(REMOVED_WORDS, word)) return { text: REMOVED_WORDS[word]! }
     if (word === 'pane' || word === 'panel') {
-      // /gearbox panel (or pane) running|all also sets what the pane lists, then opens it.
-      if (value) {
-        const change = settingPatch('pane', value)
-        if (!change) return { text: 'pane takes running or all' }
-        await saveSetting($, change)
-        apply(await loadSettings($, options))
-      }
+      // It lists every loop, finished ones included; an old `running` or `all` after it opens it all the same.
       const { isPlaced } = await $.ui.open({ id: PANE, title: 'gearbox: models now' })
-      return { text: isPlaced ? 'pane open' : 'the pane opens once the window has room for it' }
+      return { text: `${isPlaced ? 'pane open' : 'the pane opens once the window has room for it'}${value ? '. It lists every loop, finished ones included: panel running|all is gone' : ''}` }
     }
     if (arg === 'on' || arg === 'off') {
       enabled = arg === 'on'
@@ -869,13 +921,13 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'usage cleared' }
     } else if (arg) {
-      return { text: `unknown "${arg}". Try settings, panel, effort, navigator, steer, escalate, strict, log, band, hooks, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `unknown "${arg}". Try settings, panel, model, effort, navigator, strict, log, hooks, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
-    const mode = session.includes('haiku') ? 'shifting models' : steers ? `steering effort on ${family(session) ?? session}` : 'readout only'
+    const mode = session.includes('haiku') ? 'shifting models' : family(session) || orchestrator ? `steering effort on ${family(session) ?? session}` : `readout only (${session} is not a model gearbox knows)`
     return {
-      text: `${enabled ? `on, ${mode}` : 'off'} · ${settingsText(current())} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox effort|navigator|steer <value>.`,
+      text: `${enabled ? `on, ${mode}` : 'off'} · ${settingsText(current())} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox model|effort|navigator <value>.`,
     }
   })
 
@@ -923,9 +975,9 @@ export const register: Register = (on, options) => {
     const shifting = session.includes('haiku')
     const fixed = shifting ? undefined : family(session)
     logEvent({ ev: 'prompt', kind: ownEffort ?? 'typed', chars: e.text.length, ...(logMode === 'full' ? { text: e.text.slice(0, 200) } : {}), session })
-    if (!orchestrator && !shifting && (!steers || !fixed)) {
-      logEvent({ ev: 'gear', gear: 'untouched', why: 'steer is off for sessions not on Haiku' })
-      await setWhy($, ['untouched', 'steer is off'])
+    if (!orchestrator && !shifting && !fixed) {
+      logEvent({ ev: 'gear', gear: 'untouched', why: 'the session runs a model gearbox does not know' })
+      await setWhy($, ['untouched', 'unknown model'])
       return next(e)
     }
     const base = fixed ?? floor
@@ -946,7 +998,9 @@ export const register: Register = (on, options) => {
       orchestrator && g.model !== 'fable'
         ? laneResumable(lanes[g.model], Date.now()) ? { resume: lanes[g.model]!.id } : {}
         : resumable(deepAgent, Date.now()) && deepAgent.gear.model === g.model ? { resume: deepAgent.id } : {}
-    const goesOn = lastDeep && !(fixed && escalate === 'off' && !orchestrator) ? lastDeep : undefined
+    const goesOn = lastDeep
+    // The model code is fixed to, if the person picked one: code runs on exactly it (see plan).
+    const code = pinnedModel(codeModel)
     const goOn = (g: Gear): Plan => ({
       main: orchestrator ? orchGear : { model: base ?? STARTER.model, effort: BRIEFING },
       handoff: { kind: orchestrator && g.model !== 'fable' ? 'lane' : 'deep', gear: g, ...sameAgent(g) },
@@ -962,17 +1016,24 @@ export const register: Register = (on, options) => {
       lastMode = r.mode
       const checked = { ...r, ask }
       const asks = (await $.store.get('consent')) !== false
-      let want = gearFor(checked, standing)
+      // Code on the coding model the person fixed runs on exactly that model, and is never put to them for it: they
+      // chose it, as they chose their coding effort. A model they name for this request wins over it.
+      const pinned = pins(checked, code)
+      const stepCode = ask.model ? undefined : code
+      const consentAsk = (g: Gear, fixedModel: boolean): Partial<Gear> => (fixedModel ? { ...ask, model: g.model } : ask)
+      let want = gearFor(checked, standing, code)
       // A model named for a step counts only where the person's own words say it.
       const phases = r.phases.map(ph => ({ ...ph, ask: ph.ask && verifyAsk({ model: ph.ask }, e.text).model === ph.ask ? ph.ask : undefined }))
       // The orchestrator reads a request with several steps as one piece of work for one lane.
       if (!orchestrator && r.sure && r.phases.length >= 2) {
-        // Several steps: one route, each step on its own executor and effort. Fable only as a subagent.
-        const lead = fixed ?? mainModel({ main: { model: want.model === 'fable' ? 'opus' : want.model, effort: want.effort } }, ask, base)
-        turnRoute = route(phases, lead, standing, r.care === 'costly', navigator, long, upFor(want), escalate)
+        // Several steps: one route, each step on its own executor and effort. Fable only as a subagent. Steps other
+        // than code go up to the model the rules give the request.
+        const lead = fixed ?? mainModel({ main: { model: upFor(want), effort: want.effort } }, ask, base)
+        turnRoute = route(phases, lead, standing, r.care === 'costly', navigator, long, upFor(gearFor(checked, standing)), stepCode)
         for (const s of turnRoute) {
-          if ((s.by === 'main' || escalated(s)) && asks && needsConsent(s.gear, ask, previous, standing)) {
-            s.gear = await consent($, s.gear)
+          const fixedModel = s.mode === 'code' && !!stepCode
+          if ((s.by === 'main' || escalated(s)) && asks && needsConsent(s.gear, consentAsk(s.gear, fixedModel), previous, standing)) {
+            s.gear = await consent($, s.gear, fixedModel)
             if (s.by === 'main') s.mainEffort = s.gear.effort
           }
         }
@@ -980,13 +1041,14 @@ export const register: Register = (on, options) => {
         why += `; route of ${turnRoute.length} steps, starting at its work effort`
         brief = [`route · ${turnRoute.length} steps`, `starts at ${workEffort(turnRoute)}`]
       } else {
-        if (asks && needsConsent(want, ask, previous, standing)) {
+        if (asks && needsConsent(want, consentAsk(want, pinned), previous, standing)) {
           const proposed = label(want)
-          want = await consent($, want)
+          want = await consent($, want, pinned)
           why += `; you chose ${label(want)} over ${proposed}`
         }
+        if (pinned) why += `; code on your coding model, ${want.model}`
         // Unsure: its best guess for the effort, but nothing handed off on a guess; a review is handed off all the same.
-        p = orchestrator ? orchestratorPlan(checked, want, orchGear, orchAgents, standing) : plan(checked, want, base, earlier.length > 0, fixed, navigator, long, escalate)
+        p = orchestrator ? orchestratorPlan(checked, want, orchGear, orchAgents, standing, code) : plan(checked, want, base, earlier.length > 0, fixed, navigator, long, pinned)
         // More of the same work: back to the agent that holds it. Unrelated work starts clean.
         if ((p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane') && !r.aside) p = { ...p, handoff: { ...p.handoff, ...sameAgent(p.handoff.gear) } }
         if (orchestrator && r.parts.length) {
@@ -996,12 +1058,12 @@ export const register: Register = (on, options) => {
         // A fan-out: a costly part's gear goes to the person as a route step's does; then each model's lane, where it
         // is idle and worth going back to, takes the first part of its model. A nod goes back to the first part a
         // lane takes.
-        if (p.handoff?.kind === 'fan') p = { ...p, handoff: await seatFan($, p.handoff.parts ?? [], { asks, ask, previous, standing, lanes, fresh: r.aside }) }
+        if (p.handoff?.kind === 'fan') p = { ...p, handoff: await seatFan($, p.handoff.parts ?? [], { asks, ask, previous, standing, lanes, fresh: r.aside, code: stepCode }) }
         // A turn the orchestrator keeps still hands out its lookups, long commands and browser checks: a route
         // whose other steps it does itself, at its own gear.
         if (orchestrator && keepsRoute(checked, p)) {
           const own: Gear = { model: ask.model ?? orchModel, effort: ask.effort ?? orchEffort }
-          turnRoute = orchestratorRoute(route(phases, own.model, standing, r.care === 'costly', navigator, long, own.model, escalate), own)
+          turnRoute = orchestratorRoute(route(phases, own.model, standing, r.care === 'costly', navigator, long, own.model, stepCode), own)
           why += `; route of ${turnRoute.length} steps, the rest here at ${label(own)}`
           brief = [`route · ${turnRoute.length} steps`, `the rest at ${label(own)}`]
         }
@@ -1037,19 +1099,22 @@ export const register: Register = (on, options) => {
     const r = work ?? msg
     turnReading = r && { ...r, ask: verifyAsk(r.ask, e.text) }
     // Carrying on does not swallow independent parts: a continuation the plan would split fans out instead.
-    const splits = !!turnReading && orchestrator && orchestratorPlan(turnReading, gearFor(turnReading, standing), orchGear, orchAgents, standing).handoff?.kind === 'fan'
+    const splits = !!turnReading && orchestrator && orchestratorPlan(turnReading, gearFor(turnReading, standing, code), orchGear, orchAgents, standing, code).handoff?.kind === 'fan'
     if (work) {
       const checked = turnReading!
-      const want = gearFor(checked, standing)
-      if (goesOn && !splits && !checked.ask.model && MODELS.indexOf(want.model) <= MODELS.indexOf(goesOn.model)) {
+      const want = gearFor(checked, standing, code)
+      // Code on a fixed coding model goes on only in an agent on that very model.
+      const pinned = pins(checked, code)
+      const enough = (held: Gear) => (pinned ? want.model === held.model : MODELS.indexOf(want.model) <= MODELS.indexOf(held.model))
+      if (goesOn && !splits && !checked.ask.model && enough(goesOn)) {
         // Deep work under way, and its agent's model is enough for what comes next: it goes on there, never below the
         // work's effort (an effort the person names wins). Work that needs a stronger model, or a model the person
         // names, goes by the rules.
         let g: Gear = { model: goesOn.model, effort: checked.ask.effort ?? upTo(EFFORTS, goesOn.effort, want.effort) }
         why = `go-ahead after deep work, the work it approves: ${describe(work)}; it goes on in the subagent`
-        if ((await $.store.get('consent')) !== false && needsConsent(g, checked.ask, goesOn, standing)) {
+        if ((await $.store.get('consent')) !== false && needsConsent(g, pinned ? { ...checked.ask, model: g.model } : checked.ask, goesOn, standing)) {
           const proposed = label(g)
-          g = await consent($, g)
+          g = await consent($, g, pinned)
           why += `; you chose ${label(g)} over ${proposed}`
         }
         p = goOn(g)
@@ -1137,14 +1202,15 @@ export const register: Register = (on, options) => {
     if (turnRoute) return say('gearbox: this turn is a route of steps one after another, and a split inside a step is not supported yet. Follow the route.')
     if (turnHandoff?.kind === 'deep') return say('gearbox: open-ended work goes to one Fable agent and is never split. Start it as the hand-off note says.')
     const r: Reading = { ...(turnReading ?? NEUTRAL), parts }
-    const fan = fanParts(r, orchAgents, standing)
+    const code = r.ask.model ? undefined : pinnedModel(codeModel)
+    const fan = fanParts(r, orchAgents, standing, code)
     const merged = fanOut(parts, orchAgents).filter(g => g.length > 1).map(g => g.map(pt => pt.what).join(' + '))
     if (!fan.length) {
       const why = whyNoFan(parts, orchAgents)
       logEvent({ ev: 'fan', via: 'tool', parts, cap: orchAgents, kept: 0, merged, why })
       return say(`gearbox: not worth splitting: ${why}. Go on with it as one piece of work${turnHandoff ? ', as the hand-off note says' : ''}.`)
     }
-    const handoff = await seatFan($, fan, { asks: (await $.store.get('consent')) !== false, ask: r.ask, previous, standing, lanes, fresh: r.aside })
+    const handoff = await seatFan($, fan, { asks: (await $.store.get('consent')) !== false, ask: r.ask, previous, standing, lanes, fresh: r.aside, code })
     // The turn's hand-off is now the fan-out, as if the survey had listed these parts.
     turnHandoff = handoff
     handedOff = new Set()
@@ -1260,7 +1326,7 @@ export const register: Register = (on, options) => {
       if (why) return { deny: `gearbox: ${why}` }
       return next({ ...e, model: e.model === 'haiku' ? 'haiku' : 'sonnet', effort: 'low' })
     }
-    if (e.agentId) return e.tool === 'Skill' ? callSkill(e, orchestrator || steers || (await onHaiku($)), () => next(e)) : next(e)
+    if (e.agentId) return e.tool === 'Skill' ? callSkill(e, () => next(e)) : next(e)
     // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named; any
     // other plain one keeps its model and gets an effort by its job, not the session's. Work handed up to a
     // stronger model keeps its gear even when the call names a typed agent that works (not a read-only search),
@@ -1280,7 +1346,7 @@ export const register: Register = (on, options) => {
       const start = lane || part ? laneStart(h.gear.effort, standing) : h.gear.effort
       if (lane || part?.lane || part?.resume) laneTaken.add(h.gear.model)
       if (lane || part) expectSpawn(e.tool_use_id, { gear: h.gear, lane: lane || !!part?.lane || !!part?.resume, ...(part ? { part: h.slot + 1 } : {}) })
-      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: label(h.gear), ...(lane || part ? { lane: start } : {}), ...(part ? { part: h.slot + 1, ...(apart ? { isolation: 'worktree' } : {}) } : {}), ...(up ? { up: true } : {}) })
+      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: label(h.gear), ...(lane || part ? { lane: start } : {}), ...(part ? { part: h.slot + 1, ...(apart ? { isolation: 'worktree' } : {}) } : {}), ...(up ? (turnGear && MODELS.indexOf(h.gear.model) < MODELS.indexOf(turnGear.model) ? { down: true } : { up: true }) : {}) })
       return next({
         ...e,
         model: h.gear.model,
@@ -1305,9 +1371,9 @@ export const register: Register = (on, options) => {
     }
     if (e.tool === 'Agent' && plain) {
       const asked = `${e.model ?? 'default'}·${e.effort ?? 'default'}`
-      const effort = await jobEffort($, String(e.prompt ?? e.description ?? ''), standing)
-      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: effort ? `${e.model ?? 'default'}·${effort}` : 'unchanged', why: 'its job' })
-      return next(effort ? { ...e, effort } : e)
+      const job = await jobGear($, String(e.prompt ?? e.description ?? ''), standing, pinnedModel(codeModel))
+      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: job ? `${job.model ?? e.model ?? 'default'}·${job.effort}` : 'unchanged', why: job?.model ? 'its job: code, on your coding model' : 'its job' })
+      return next(job ? { ...e, ...(job.model ? { model: job.model } : {}), effort: job.effort } : e)
     }
     // Going back to the agent that holds deep work counts as this turn's hand-off.
     const sendTo = e.tool === 'SendMessage' ? String((e as any).to ?? '') : ''
@@ -1395,7 +1461,7 @@ export const register: Register = (on, options) => {
       lift('the turn edits files')
       await showStatus($, turnHandoff, stepLabel())
     }
-    const result = tool === 'Skill' ? await callSkill(e, orchestrator || steers || (await onHaiku($)), () => next(e)) : await next(e)
+    const result = tool === 'Skill' ? await callSkill(e, () => next(e)) : await next(e)
     if (/^(Bash|PowerShell)$/.test(tool) && isLongCommand(String((e as any).command ?? '')) && 'isError' in result && result.isError && below()) {
       lift('a test or build failed')
       await showStatus($, turnHandoff, stepLabel())
@@ -1537,7 +1603,7 @@ export const register: Register = (on, options) => {
   // The band above the prompt: coding-effort tabs and actions, five live columns of what gearbox does now, then a
   // row per live subagent, nested under the loop that started it: ● in a turn, ◐ waiting on its own background work. Whatever the mods below draw in this slot stays, under it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (!enabled || !bandOn || e.props.hasSurvey) return next(e)
+    if (!enabled || e.props.hasSurvey) return next(e)
     const below = await next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const loops = await read($, LOOPS)
@@ -1675,7 +1741,7 @@ export const register: Register = (on, options) => {
   // finished-looking reply does not hide work under way; once every agent it left running has ended, it says so,
   // until the next prompt. The reply is told by its text, the one turn.complete handed over.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (!enabled || !bandOn || e.props.isSummary) return next(e)
+    if (!enabled || e.props.isSummary) return next(e)
     const reply = await read($, REPLY)
     const mine = reply.tail !== undefined && tail(e.props.text) !== '' && reply.tail.endsWith(tail(e.props.text))
     if (!mine) return next(e)
@@ -1709,43 +1775,39 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // /gearbox settings: one row of buttons per setting; the value in use is marked, a press saves another.
+  // /gearbox settings: a block per kind of setting under a small heading, framed so each stands apart, and in it a row
+  // of buttons per setting; the value in use is marked, a press saves another.
   on('ui.render', { component: 'Pane', requestId: SETTINGS_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const s = settingsFrom(options, await read($, SETTINGS))
-    const rows: [string, string, readonly string[], string][] = [
-      ['Coding effort', 'effort', ['medium', 'high', 'xhigh', 'max'], s.code_effort],
-      ['Browser navigator', 'navigator', ['sonnet', 'haiku'], s.navigator],
-      ['Steer non-Haiku', 'steer', ['on', 'off'], s.steer ? 'on' : 'off'],
-      ['Hand work up', 'escalate', ['on', 'code', 'off'], s.escalate],
-      ['Strict hand-offs', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
-      ['Debug log', 'log', ['off', 'on', 'full'], s.log],
-      ['Models panel shows', 'pane', ['all', 'running'], s.pane],
-      ['Band', 'band', ['on', 'off'], s.band ? 'on' : 'off'],
-      ['Hooks for agents', 'hooks', ['on', 'off'], s.agent_hooks ? 'on' : 'off'],
-      ['Orchestrator', 'orchestrator', ['on', 'off'], s.orchestrator ? 'on' : 'off'],
-      // Its model, effort and parallel agents only matter while it is on.
-      ...(s.orchestrator
-        ? ([
-            ['Orchestrator model', 'orchestrator-model', ['sonnet', 'opus', 'haiku'], s.orchestrator_model],
-            ['Orchestrator effort', 'orchestrator-effort', ['low', 'medium', 'high', 'xhigh', 'max'], s.orchestrator_effort],
-            ['Parallel agents', 'orchestrator-agents', ['1', '2', '3', '4', '5', '6'], String(s.orchestrator_agents)],
-          ] as [string, string, readonly string[], string][])
-        : []),
-    ]
+    // A desktop pane is narrow and its measured row height ignores wrapped buttons: the label sits above its buttons
+    // there, so they have the whole width and a row's height is its own.
+    const stacked = e.surface !== 'terminal'
+    const labelW = stacked ? 0 : Math.max(...settingsSections(s).flatMap(sec => sec.rows.map(([title]) => title.length))) + 2
     return (
-      <Box flexDirection="column" rowGap={1}>
-        {rows.map(([title, word, values, current]) => (
-          <Box flexDirection="row" columnGap={1} alignItems="center">
-            <Text mono>{title.padEnd(20)}</Text>
-            {values.map(v => (
-              <Button
-                key={`${word}-${v}`}
-                label={v === current ? `${v} ✓` : v}
-                variant={v === current ? 'primary' : 'secondary'}
-                onPress={() => saveSetting($, settingPatch(word, v)!)}
-              />
-            ))}
+      <Box flexDirection="column" rowGap="md">
+        {settingsSections(s).map(({ id, title, rows }) => (
+          <Box key={`settings-${id}`} flexDirection="column">
+            <Text weight="semibold" size="footnote" dimColor>
+              {title}
+            </Text>
+            <Box flexDirection="column" rowGap="sm" borderStyle="round" borderDimColor paddingX="sm" {...(stacked ? { paddingY: 'sm' } : {})}>
+              {rows.map(([label, word, values, current]) => (
+                <Box flexDirection={stacked ? 'column' : 'row'} columnGap={1} rowGap="xs" alignItems={stacked ? 'flex-start' : 'center'}>
+                  <Text mono>{label.padEnd(labelW)}</Text>
+                  <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+                    {values.map(v => (
+                      <Button
+                        key={`${word}-${v}`}
+                        label={v === current ? `${v} ✓` : v}
+                        variant={v === current ? 'primary' : 'secondary'}
+                        onPress={() => saveSetting($, settingPatch(word, v)!)}
+                      />
+                    ))}
+                  </Box>
+                </Box>
+              ))}
+            </Box>
           </Box>
         ))}
         <Text dimColor>The marked value is in use. Changes apply from your next prompt. Esc closes.</Text>
@@ -1753,32 +1815,19 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // /gearbox pane: every loop of the session, nested under the loop that started it.
+  // /gearbox pane: every loop of the session, finished ones included, nested under the loop that started it.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text } = $.ui.resolve(e)
     if (!enabled) return <Text dimColor>gearbox is off. /gearbox on turns it back on.</Text>
     const loops = await read($, LOOPS)
-    // Reading the settings here redraws the pane when the filter changes.
-    const runningOnly = settingsFrom(options, await read($, SETTINGS)).pane === 'running'
-    const all = Object.entries(loops).sort(([a], [b]) => (a === 'main' ? -1 : b === 'main' ? 1 : 0))
-    if (!all.length) return <Text dimColor>No model calls yet. Rows appear as the session works.</Text>
-    // Running only: finished subagents leave; the main conversation stays as the anchor.
-    const rows = runningOnly ? all.filter(([id, l]) => id === 'main' || live(l)) : all
-    const finished = all.filter(([, l]) => l.state === 'done').length
-    const toggle = (
-      <Button
-        key="pane-filter"
-        label={runningOnly ? `Show finished (${finished})` : 'Hide finished'}
-        onPress={() => saveSetting($, { pane: runningOnly ? 'all' : 'running' })}
-      />
-    )
+    const rows = Object.entries(loops).sort(([a], [b]) => (a === 'main' ? -1 : b === 'main' ? 1 : 0))
+    if (!rows.length) return <Text dimColor>No model calls yet. Rows appear as the session works.</Text>
     const width = Math.max(40, e.props.bodyColumns)
     const [gearW, stepsW] = [15, 6]
     const nameW = Math.min(30, Math.max(12, Math.floor((width - gearW - stepsW) * 0.45)))
     const nowW = Math.max(8, width - nameW - gearW - stepsW)
     return (
       <Box flexDirection="column">
-        {finished > 0 || runningOnly ? toggle : null}
         {/* mono keeps the padded columns aligned on the desktop; the terminal is monospaced anyway */}
         <Text dimColor mono>
           {fit('LOOP', nameW)}

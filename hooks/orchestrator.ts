@@ -2,7 +2,7 @@
 // long-lived subagent per model. A lane starts at the top effort it will need and each message lowers it (bench/lanes:
 // a mod's effort on a resumed agent reaches the API and keeps the cache; lowering takes hold fully, raising only half).
 import type { ModelEffort } from 'claude-code'
-import { EFFORTS, type FanPart, type Gear, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, choreGear, filesReach as scope, gearFor, normPath as norm, pathFolder as folder, upFor, upTo } from './policy'
+import { EFFORTS, type FanPart, type Gear, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, choreGear, filesReach as scope, gearFor, normPath as norm, pathFolder as folder, pins, upFor, upTo } from './policy'
 
 export type OrchestratorSettings = { orchestrator: boolean; orchestrator_model: 'haiku' | 'sonnet' | 'opus'; orchestrator_effort: ModelEffort; orchestrator_agents: number }
 
@@ -46,12 +46,13 @@ export const laneResumable = (l: Lane | undefined, now: number): l is Lane => l 
 // a busy lane keeps its work and its place. Other parts, and parts that edit in a worktree of their own, which would
 // leave a lane apart from the working tree, are fresh agents for this turn only. `fresh`: unrelated work, which
 // goes back to no lane. The part a nod goes back to is the first that a lane takes.
+// A part on Fable (code on a Fable coding model) is a fresh agent too: Fable's work is never a lane.
 export const seatParts = (parts: readonly FanPart[], lanes: Lanes, now: number, busy: (id: string) => boolean, fresh = false): FanPart[] => {
   const apart = apartEdits(parts)
   const seated = new Set<Model>()
   return parts.map(p => {
     const m = p.gear.model
-    if (seated.has(m) || (apart && p.edits)) return p
+    if (m === 'fable' || seated.has(m) || (apart && p.edits)) return p
     seated.add(m)
     const lane = lanes[m]
     if (lane && busy(lane.id)) return p
@@ -140,23 +141,27 @@ const groupReach = (r: Reading, g: Part[]): Reading['reach'] =>
 
 // A part's gear, by the same rules as a request's on its own reach: the model by that reach and the request's care,
 // the effort by the part's own depth and kind, a review on at least Opus, and real work (depth 1 and up) never below
-// Sonnet. The person's ask wins. Lookups and long commands run on Haiku at low. A part never runs on Fable: open-ended
-// work is not split.
-const partGear = (r: Reading, p: Part, reach: Reading['reach'], standing: ModelEffort): Gear => {
+// Sonnet. The person's ask wins. Lookups and long commands run on Haiku at low. A part never runs on Fable (open-ended
+// work is not split), save code on a Fable coding model: `code`, the model the person fixed for code, which a code
+// part runs on exactly.
+const partGear = (r: Reading, p: Part, reach: Reading['reach'], standing: ModelEffort, code?: Model): Gear => {
   if (p.mode === 'wait' || p.mode === 'lookup') return { model: 'haiku', effort: 'low' }
   const g = gearFor({ ...r, reach, mode: p.mode, depth: p.depth, ask: {}, phases: [], parts: [] }, standing)
+  const effort = r.ask.effort ?? g.effort
+  if (p.mode === 'code' && code && !r.ask.model) return { model: code, effort }
   const model = r.ask.model ?? (p.depth > 0 ? upTo(LADDER, g.model, 'sonnet') : g.model)
-  return { model: upFor({ model, effort: g.effort }), effort: r.ask.effort ?? g.effort }
+  return { model: upFor({ model, effort: g.effort }), effort }
 }
-// A group's gear: the highest model and effort of its parts, on the group's reach.
-const groupGear = (r: Reading, g: Part[], standing: ModelEffort): Gear => {
+// A group's gear: the highest model and effort of its parts, on the group's reach. Code merged with a review runs on
+// the higher of the two, since a review is never below Opus.
+const groupGear = (r: Reading, g: Part[], standing: ModelEffort, code?: Model): Gear => {
   const reach = groupReach(r, g)
-  return g.map(p => partGear(r, p, reach, standing)).reduce((a, b) => ({ model: upTo(LADDER, a.model, b.model), effort: upTo(EFFORTS, a.effort, b.effort) }))
+  return g.map(p => partGear(r, p, reach, standing, code)).reduce((a, b) => ({ model: upTo(LADDER, a.model, b.model), effort: upTo(EFFORTS, a.effort, b.effort) }))
 }
 
 // The fan-out of a sure reading: each group as one part, on its gear.
-export const fanParts = (r: Reading, cap: number, standing: ModelEffort): FanPart[] =>
-  fanOut(r.parts, cap).map(g => ({ what: g.map(p => p.what).join('; '), gear: groupGear(r, g, standing), edits: edits(g) }))
+export const fanParts = (r: Reading, cap: number, standing: ModelEffort, code?: Model): FanPart[] =>
+  fanOut(r.parts, cap).map(g => ({ what: g.map(p => p.what).join('; '), gear: groupGear(r, g, standing, code), edits: edits(g) }))
 
 // What the orchestrator keeps for itself: answers that need no deep look (one spot or one feature, ordinary care)
 // and small code (one spot or one feature, mechanical or ordinary depth) the work calls for no stronger model than
@@ -164,15 +169,20 @@ export const fanParts = (r: Reading, cap: number, standing: ModelEffort): FanPar
 // needs smarter decisions still goes to its lane. A guess is never handed off, a review excepted. A sure request of
 // independent parts goes out to one agent per part, all at once, up to `cap` of them. Everything else goes to the lane
 // of the model the work calls for, at the effort it calls for, reviews included, sure or not (an unsure review's
-// effort is its best guess); Fable's open-ended work is a fresh agent, not a lane, and never split.
-export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, standing: ModelEffort = 'xhigh'): Plan => {
+// effort is its best guess); Fable's open-ended work is a fresh agent, not a lane, and never split. `code`: the model
+// the person fixed for code (`want` is on it already): small code stays here only on that very model, else it goes to
+// that model's lane (on Fable, a fresh agent), and each code part of a fan-out runs on it.
+export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, standing: ModelEffort = 'xhigh', code?: Model): Plan => {
   if (!r.sure && r.mode !== 'review') return { main }
   const small = r.reach === 'point' || r.reach === 'area'
   const ordinary = r.care !== 'costly'
+  const pinned = pins(r, code)
   if (ordinary && r.mode === 'answer' && r.depth <= 1 && small) return { main }
-  const fan = r.sure && want.model !== 'fable' ? fanParts(r, cap, standing) : []
+  const open = want.model === 'fable' && (!pinned || r.reach === 'frontier')
+  const fan = r.sure && !open ? fanParts(r, cap, standing, code) : []
   if (fan.length) return { main, handoff: { kind: 'fan', gear: fan[0]!.gear, parts: fan } }
-  if (ordinary && r.mode === 'code' && r.depth <= 1 && small && LADDER.indexOf(want.model) <= LADDER.indexOf(main.model)) return { main }
+  const enough = pinned ? want.model === main.model : LADDER.indexOf(want.model) <= LADDER.indexOf(main.model)
+  if (ordinary && r.mode === 'code' && r.depth <= 1 && small && enough) return { main }
   if (r.mode === 'wait') return { main, handoff: { kind: 'lane', gear: { model: 'haiku', effort: 'low' } } }
   if (r.mode === 'commit') return { main, handoff: { kind: 'lane', gear: choreGear(r.depth) } }
   return { main, handoff: { kind: want.model === 'fable' ? 'deep' : 'lane', gear: want } }

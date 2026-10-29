@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Part, type Reading, BRIEFING_TOOLS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
+import { type FanPart, type Part, type Reading, BRIEFING_TOOLS, CODE_MODELS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -61,15 +61,12 @@ test('a review is read by at least Opus; its effort follows its depth as an answ
   expect(steps?.map(p => p.mode)).toEqual(['lookup', 'answer'])
 })
 
-test('steering below Opus: a review goes to an Opus agent at any depth, unless escalate is off', () => {
+test('steering below Opus: a review goes to an Opus agent at any depth', () => {
   const r = reading({ mode: 'review', depth: 1 })
   const want = gearFor(r)
   expect(want).toEqual({ model: 'opus', effort: 'medium' })
   expect(plan(r, want, 'sonnet', true, 'sonnet')).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: want } })
   expect(plan(reading({ mode: 'review', reach: 'point', depth: 0 }), { model: 'opus', effort: 'low' }, 'sonnet', true, 'sonnet').handoff).toEqual({ kind: 'deep', gear: { model: 'opus', effort: 'low' } })
-  // `code` hands up what changes files and every review, which is never an answer; only `off` keeps one here.
-  expect(plan(r, want, 'sonnet', true, 'sonnet', 'sonnet', false, 'code')).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: want } })
-  expect(plan(r, want, 'sonnet', true, 'sonnet', 'sonnet', false, 'off')).toEqual({ main: { model: 'sonnet', effort: 'medium' } })
   // An Opus session reviews itself; a Haiku session shifts up to Opus.
   expect(plan(r, want, 'opus', true, 'opus')).toEqual({ main: want })
   expect(plan(r, want, 'haiku', true)).toEqual({ main: want })
@@ -79,9 +76,7 @@ test('a review is handed up when the survey is unsure too, on its best guess; an
   const r = reading({ mode: 'review', depth: 1, sure: false })
   const want = gearFor(r)
   expect(want).toEqual(gearFor({ ...r, sure: true })) // the same best guess for the effort
-  for (const escalate of ['on', 'code'] as const)
-    expect(plan(r, want, 'sonnet', true, 'sonnet', 'sonnet', false, escalate)).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: want } })
-  expect(plan(r, want, 'sonnet', true, 'sonnet', 'sonnet', false, 'off')).toEqual({ main: { model: 'sonnet', effort: 'medium' } })
+  expect(plan(r, want, 'sonnet', true, 'sonnet')).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: want } })
   // An Opus session reviews itself, a Haiku session shifts up to Opus, as for a sure review.
   expect(plan(r, want, 'opus', true, 'opus')).toEqual({ main: want })
   expect(plan(r, want, 'haiku', true)).toEqual({ main: want })
@@ -200,22 +195,91 @@ test('a route below the model it calls for hands its subtle and costly steps to 
   expect(workEffort(route([{ what: 'read', mode: 'lookup', depth: 0 }, { what: 'build', mode: 'code', depth: 3 }], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus'))).toBe('high')
 })
 
-test('the escalate setting: code hands up work that changes files and reviews, not answers; off keeps everything on the session', () => {
+test('handing up is always on (the escalate setting is gone): subtle questions, fixes, a hard check’s judging and Fable work all leave a session below them', () => {
   const opusHigh = { model: 'opus', effort: 'high' } as const
   const question = reading({ reach: 'system', depth: 2, mode: 'answer' })
   const fix = reading({ reach: 'system', depth: 1 })
   const check = reading({ reach: 'system', mode: 'drive', depth: 2 })
-  expect(plan(question, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'code')).toEqual({ main: { model: 'sonnet', effort: 'high' } })
-  expect(plan(fix, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'code').handoff?.kind).toBe('deep')
-  expect(plan(check, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'code').handoff?.judge).toEqual(opusHigh)
-  for (const r of [question, fix]) expect(plan(r, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'off').handoff).toBeUndefined()
-  expect(plan(check, opusHigh, 'sonnet', true, 'sonnet', 'sonnet', false, 'off').handoff?.judge).toBeUndefined()
-  // Off on a steered session also keeps Fable work here; a Haiku session that shifts models is not steered.
-  expect(plan(reading({ reach: 'frontier', depth: 2 }), { model: 'fable', effort: 'high' }, 'sonnet', true, 'sonnet', 'sonnet', false, 'off').handoff).toBeUndefined()
-  expect(plan(reading({ reach: 'frontier', depth: 2 }), { model: 'fable', effort: 'high' }, 'opus', true, undefined, 'sonnet', false, 'off').handoff?.kind).toBe('deep')
+  // What escalate code kept here (a subtle question) and what escalate off kept here (everything) both go up.
+  expect(plan(question, opusHigh, 'sonnet', true, 'sonnet')).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'deep', gear: opusHigh } })
+  expect(plan(fix, opusHigh, 'sonnet', true, 'sonnet').handoff?.kind).toBe('deep')
+  expect(plan(check, opusHigh, 'sonnet', true, 'sonnet').handoff?.judge).toEqual(opusHigh)
+  expect(plan(reading({ reach: 'frontier', depth: 2 }), { model: 'fable', effort: 'high' }, 'sonnet', true, 'sonnet').handoff?.kind).toBe('deep')
   const phases = [{ what: 'plan it', mode: 'answer', depth: 2 }, { what: 'build it', mode: 'code', depth: 2 }] as const
-  expect(route([...phases], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus', 'code').map(s => s.by)).toEqual(['main', 'agent'])
-  expect(route([...phases], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus', 'off').map(s => s.by)).toEqual(['main', 'main'])
+  expect(route([...phases], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus').map(s => s.by)).toEqual(['agent', 'agent'])
+})
+
+test('a fixed coding model: code’s model is exactly it, whatever its reach or care; its effort, other work and the person’s ask are as before', () => {
+  expect(CODE_MODELS).toEqual(['auto', 'sonnet', 'opus', 'fable'])
+  expect(pinnedModel('auto')).toBeUndefined()
+  expect(pinnedModel(undefined)).toBeUndefined()
+  expect(pinnedModel('opus')).toBe('opus')
+  for (const code of ['sonnet', 'opus', 'fable'] as const) {
+    for (const r of [reading({ reach: 'point', depth: 0 }), reading({ reach: 'system', depth: 2, care: 'costly' }), reading({ reach: 'frontier', depth: 3 })]) {
+      const g = gearFor(r, 'high', code)
+      expect(g.model).toBe(code)
+      expect(g.effort).toBe(gearFor(r, 'high').effort) // the coding effort's rules, unchanged
+    }
+    // Answers, reviews, chores, browser checks and long commands keep the rules.
+    for (const mode of ['answer', 'review', 'commit', 'drive', 'wait'] as const) {
+      const r = reading({ mode, reach: 'system', depth: 2 })
+      expect(gearFor(r, 'high', code)).toEqual(gearFor(r, 'high'))
+    }
+    // A model the person names for this request wins.
+    expect(gearFor(reading({ ask: { model: 'haiku' } }), 'high', code).model).toBe('haiku')
+  }
+  expect(pins(reading(), 'opus')).toBe(true)
+  expect(pins(reading(), undefined)).toBe(false)
+  expect(pins(reading({ mode: 'answer' }), 'opus')).toBe(false)
+  expect(pins(reading({ ask: { model: 'sonnet' } }), 'opus')).toBe(false)
+})
+
+test('a fixed coding model on a steered session: code stays here on that very model, else goes to an agent on it, up or down, mechanical edits too', () => {
+  const at = (model: 'sonnet' | 'opus' | 'fable', effort = 'xhigh' as const) => ({ model, effort })
+  const small = reading({ reach: 'point', depth: 0 })
+  const wide = reading({ reach: 'system', depth: 2 })
+  // The session is on it: here, even for work the rules would hand up to Opus.
+  expect(plan(wide, at('sonnet'), 'sonnet', true, 'sonnet', 'sonnet', false, true)).toEqual({ main: at('sonnet') })
+  expect(plan(small, at('opus'), 'opus', true, 'opus', 'sonnet', false, true)).toEqual({ main: at('opus') })
+  // Another model: an agent on it, briefed here at high, whichever way it goes.
+  for (const [session, code] of [['opus', 'sonnet'], ['sonnet', 'opus'], ['fable', 'sonnet']] as const)
+    for (const r of [small, wide]) expect(plan(r, at(code), session, true, session, 'sonnet', false, true)).toEqual({ main: { model: session, effort: 'high' }, handoff: { kind: 'deep', gear: at(code) } })
+  // Fable: always in a subagent, unless the session itself runs on Fable.
+  expect(plan(small, at('fable'), 'opus', true, 'opus', 'sonnet', false, true)).toEqual({ main: { model: 'opus', effort: 'high' }, handoff: { kind: 'deep', gear: at('fable') } })
+  expect(plan(small, at('fable'), 'fable', true, 'fable', 'sonnet', false, true)).toEqual({ main: at('fable') })
+  // A guess hands nothing off, as ever: the session's model at the guess's effort.
+  expect(plan({ ...wide, sure: false }, at('sonnet'), 'opus', true, 'opus', 'sonnet', false, true)).toEqual({ main: at('opus') })
+  // A side task still goes to its own agent, on the coding model.
+  expect(plan({ ...wide, aside: true }, at('sonnet'), 'opus', true, 'opus', 'sonnet', false, true).handoff).toEqual({ kind: 'aside', gear: at('sonnet') })
+})
+
+test('a fixed coding model in shift mode: the main model moves up to it, hands down to it past it, and never becomes Fable', () => {
+  const at = (model: 'sonnet' | 'opus' | 'fable') => ({ model, effort: 'xhigh' as const })
+  const r = reading({ reach: 'point', depth: 0 })
+  expect(plan(r, at('opus'), undefined, false, undefined, 'sonnet', false, true)).toEqual({ main: at('opus') })
+  expect(plan(r, at('opus'), 'sonnet', true, undefined, 'sonnet', false, true)).toEqual({ main: at('opus') })
+  // The floor has risen past it: an agent on it, rather than code above it.
+  expect(plan(r, at('sonnet'), 'opus', true, undefined, 'sonnet', false, true)).toEqual({ main: { model: 'opus', effort: 'high' }, handoff: { kind: 'deep', gear: at('sonnet') } })
+  expect(plan(r, at('fable'), 'sonnet', true, undefined, 'sonnet', false, true).handoff).toEqual({ kind: 'deep', gear: at('fable') })
+  // An unsure reading hands nothing off; a pinned Fable then runs here on Opus, never Fable.
+  expect(plan({ ...r, sure: false }, at('fable'), 'sonnet', true, undefined, 'sonnet', false, true)).toEqual({ main: { model: 'opus', effort: 'xhigh' } })
+})
+
+test('a fixed coding model in a route: code steps run on it, here when the main model is it, else in an agent; other steps keep the rules', () => {
+  const phases = [
+    { what: 'read the ticket', mode: 'lookup', depth: 0 },
+    { what: 'plan it', mode: 'answer', depth: 2 },
+    { what: 'rename it', mode: 'code', depth: 0 },
+    { what: 'build it', mode: 'code', depth: 2 },
+  ] as const
+  const by = (steps: ReturnType<typeof route>) => steps.map(s => `${s.what} → ${s.by} ${label(s.gear)}`)
+  // A Sonnet session that fixed Sonnet: code stays here, though the request calls for Opus; the plan still goes up.
+  expect(by(route([...phases], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus', 'sonnet'))).toEqual(['read the ticket → agent haiku·low', 'plan it → agent opus·high', 'rename it → main sonnet·xhigh', 'build it → main sonnet·xhigh'])
+  // An Opus session that fixed Sonnet: code goes down to Sonnet agents, mechanical too; the plan stays here.
+  expect(by(route([...phases], 'opus', 'xhigh', false, 'sonnet', false, 'opus', 'sonnet'))).toEqual(['read the ticket → agent haiku·low', 'plan it → main opus·high', 'rename it → agent sonnet·xhigh', 'build it → agent sonnet·xhigh'])
+  const fable = route([...phases], 'opus', 'xhigh', false, 'sonnet', false, 'opus', 'fable')
+  expect(by(fable).slice(2)).toEqual(['rename it → agent fable·xhigh', 'build it → agent fable·xhigh'])
+  expect(routeNote(fable)).toContain('4. build it: start a plain Agent (no subagent_type) with model "fable" and effort "xhigh"')
 })
 
 test('deep work goes on in the agent that holds it, while that is worth it', () => {

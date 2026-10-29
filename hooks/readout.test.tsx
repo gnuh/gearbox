@@ -34,7 +34,7 @@ const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = ()
   on('turn.step', async function* (_: unknown, e: any) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, model: e.answeredBy ?? e.model } }
   })
-  return { status, calls, prompts, setCost: (v: number) => { usd = v } }
+  return { status, calls, prompts, kv, setCost: (v: number) => { usd = v } }
 }
 
 const step = async ($: any, model: string, extra: object = {}) => {
@@ -119,7 +119,7 @@ test('the band groups subagents by gear, lists five at most, and flags a fallbac
   }
 })
 
-test('the band keeps three columns in a narrow terminal, and steps aside when switched off', async ($: any, on) => {
+test('the band keeps three columns in a narrow terminal; it cannot be switched off any more', async ($: any, on) => {
   bench(on)
   await step($, 'claude-opus-5-5')
   const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
@@ -132,11 +132,34 @@ test('the band keeps three columns in a narrow terminal, and steps aside when sw
   const desk = await $.ui.mount({ ...BAND_AT(80), surface: 'desktop' })
   for (const text of [/^this turn$/, /^why$/]) expect(await desk.find({ type: 'Text', text })).toBeDefined()
   await desk.unmount()
-  await $.command.run({ command: 'gearbox', args: 'band off' })
-  const off = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
-  expect(await off.find({ type: 'Text', text: /GearBox/ })).toBeUndefined()
-  expect(await off.find({ type: 'Text', text: /engine band/ })).toBeDefined()
-  await off.unmount()
+  expect((await $.command.run({ command: 'gearbox', args: 'band off' })).text).toContain('band is no longer a setting')
+  const still = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  expect(await still.find({ type: 'Text', text: /GearBox/ })).toBeDefined()
+  expect(await still.find({ type: 'Text', text: /engine band/ })).toBeDefined()
+  await still.unmount()
+})
+
+test('a band: false an older version stored, or a plugin option, is ignored: the band and the list under the last reply still draw', { options: { band: false } }, async ($: any, on) => {
+  const { kv } = bench(on)
+  kv.set('settings', { band: false })
+  mock.clock(on)
+  const agents = listing(on)
+  on('ui.render', { component: 'AssistantMessage' }, ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{e.props.text}</Text>
+  })
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'sonnet')
+  agents['a-deploy'] = 'running'
+  await complete($, undefined, 'Deploying now.')
+  for (const surface of SURFACES) {
+    const band = await $.ui.mount({ ...BAND_AT(120), surface })
+    expect(await band.find({ type: 'Text', text: /^GearBox$/ })).toBeDefined()
+    await band.unmount()
+    const reply = await $.ui.mount({ ...REPLY('Deploying now.'), surface })
+    expect(await reply.find({ type: 'Text', text: /1 agent still at work/ })).toBeDefined()
+    await reply.unmount()
+  }
 })
 
 test('a subagent whose turn ends while it waits on its own background work stays in the band until the engine says it ended', async ($: any, on) => {
@@ -372,8 +395,9 @@ test('/gearbox off clears the readout; /gearbox pane opens it', async ($: any, o
   await ui.unmount()
 })
 
-test('the pane can hide finished subagents and keep only what is running', async ($: any, on) => {
-  bench(on)
+test('the pane lists every loop, finished ones included, with no filter; a pane: running an older version stored is ignored', async ($: any, on) => {
+  const { kv } = bench(on)
+  kv.set('settings', { pane: 'running' })
   await step($, 'claude-opus-5-5')
   await spawn($, 'browser check', 'sonnet')
   await spawn($, 'deploy', 'haiku')
@@ -382,26 +406,17 @@ test('the pane can hide finished subagents and keep only what is running', async
   await complete($, 'a-check')
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /browser check/ })).toBeDefined() // finished, shown by default
-    expect(JSON.stringify(await ui.find({ key: 'pane-filter' }))).toContain('Hide finished')
+    for (const text of [/^main/, /browser check/, /deploy/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    expect(await ui.find({ type: 'Button' })).toBeUndefined() // no Hide finished / Show finished
     await ui.unmount()
   }
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'pane-filter' })
-  await ui.unmount()
-  for (const surface of SURFACES) {
-    const view = await $.ui.mount({ ...PANE, surface })
-    expect(await view.find({ type: 'Text', text: /browser check/ })).toBeUndefined()
-    expect(await view.find({ type: 'Text', text: /deploy/ })).toBeDefined()
-    expect(await view.find({ type: 'Text', text: /^main/ })).toBeDefined()
-    expect(JSON.stringify(await view.find({ key: 'pane-filter' }))).toContain('Show finished (1)')
-    await view.unmount()
-  }
-  expect((await $.command.run({ command: 'gearbox', args: 'pane all' })).text).toBe('pane open')
-  const back = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await back.find({ type: 'Text', text: /browser check/ })).toBeDefined()
-  await back.unmount()
-  expect((await $.command.run({ command: 'gearbox', args: 'pane done' })).text).toBe('pane takes running or all')
+  // /gearbox panel still opens it; the old running|all after it opens it all the same, and says it lists everything.
+  expect((await $.command.run({ command: 'gearbox', args: 'panel' })).text).toBe('pane open')
+  for (const value of ['running', 'all']) expect((await $.command.run({ command: 'gearbox', args: `panel ${value}` })).text).toBe('pane open. It lists every loop, finished ones included: panel running|all is gone')
+  expect(kv.get('settings')).toEqual({ pane: 'running' }) // nothing saved by it
+  const view = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await view.find({ type: 'Text', text: /browser check/ })).toBeDefined()
+  await view.unmount()
 })
 
 
