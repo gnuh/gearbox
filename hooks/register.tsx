@@ -1,6 +1,6 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, ModelEffort, PluginOptions, PromptOrigin, Register, TurnStepChunk, TurnStepResult, TurnUsage } from 'claude-code'
-import type { GearboxLoop } from '../types'
+import type { AgentInfo, AgentStatus, ClassicHookInputs, ElementTable, EngineInterface, ModelEffort, PluginOptions, PromptOrigin, Register, TurnStepChunk, TurnStepResult, TurnUsage } from 'claude-code'
+import type { GearboxLoop, GearboxReply } from '../types'
 import {
   type DeepAgent,
   type Escalate,
@@ -33,6 +33,7 @@ import {
   doesHandoffWork,
   escalated,
   handoffLabel,
+  hookBrief,
   isSkillFork,
   reviewGear,
   reviews,
@@ -60,6 +61,7 @@ import {
   trimRequest,
   verifyAsk,
 } from './policy'
+import { runHooks } from './classic'
 import { NEUTRAL, ORCHESTRATOR, type Lane, type Lanes, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
 
 // US$ per million tokens.
@@ -78,6 +80,7 @@ const KIND: Record<Handoff['kind'], string> = { drive: 'browser check', wait: 'l
 const HUE: Record<Model, string> = { haiku: '#2BB3A0', sonnet: '#5B8DEF', opus: '#D99A2B', fable: '#D062B5' }
 const PANE = 'gearbox'
 const KEEP_LOOPS = 40
+const WAIT_POLL_MS = 3000
 
 // Every loop's model right now, which every readout draws from. The tag declines what another version stored.
 const LOOPS = atom({ plugin: 'gearbox', key: 'loops' } as const, {}, { shape: 'loops-1' })
@@ -86,6 +89,8 @@ const SETTINGS = atom({ plugin: 'gearbox', key: 'settings' } as const, {}, { sha
 const SETTINGS_PANE = 'gearbox-settings'
 // The band's per-turn numbers. The tag declines what another version stored.
 const TURN = atom({ plugin: 'gearbox', key: 'turn' } as const, { requests: {}, costs: [] }, { shape: 'turn-3' })
+// The main conversation's last reply, which the agents still at work are drawn under.
+const REPLY = atom({ plugin: 'gearbox', key: 'reply' } as const, {} as GearboxReply, { shape: 'reply-1' })
 
 const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n))
 
@@ -106,8 +111,27 @@ const patch = ($: EngineInterface, id: string, fn: (l: GearboxLoop | undefined) 
     return next
   })
 
-const working = (loops: Record<string, GearboxLoop>) =>
-  Object.entries(loops).filter(([id, l]) => id !== 'main' && l.state === 'working')
+// A loop still at work: in a turn, or between turns waiting on background work of its own.
+const live = (l?: GearboxLoop) => l?.state === 'working' || l?.state === 'waiting'
+const alive = (loops: Record<string, GearboxLoop>) => Object.entries(loops).filter(([id, l]) => id !== 'main' && live(l))
+// The engine still counts an agent whose turn ended as alive: its turn is not over yet, or it waits on its own work.
+const held = (s?: AgentStatus) => s === 'waiting' || s === 'running' || s === 'pending'
+const WAITING = '#E9A23B'
+const FINISHED = '#4FBF6A'
+// The live subagents in the order they nest: each right under the loop that started it.
+const nested = (loops: Record<string, GearboxLoop>) => {
+  const rows = alive(loops)
+  const out: typeof rows = []
+  const under = (p: string) => {
+    for (const r of rows) if ((r[1].parent ?? 'main') === p && !out.includes(r)) out.push(r), under(r[0])
+  }
+  under('main')
+  return [...out, ...rows.filter(r => !out.includes(r))]
+}
+const counted = (subs: [string, GearboxLoop][]) => {
+  const waits = subs.filter(([, l]) => l.state === 'waiting').length
+  return [subs.length > waits ? `${subs.length - waits} running` : '', waits ? `${waits} waiting` : ''].filter(Boolean).join(' · ')
+}
 
 // What a loop is doing, for the pane and the band: the tool, with its target where that says something.
 export const describeTool = (tool: string, input: Record<string, unknown>): string => {
@@ -132,6 +156,7 @@ const sessionCost = async ($: EngineInterface) => {
 
 // A person's prompt starts a new tally; the turn before it joins the costs the band's bars draw.
 const startTurnTally = async ($: EngineInterface) => {
+  await update($, REPLY, () => ({}))
   const usd = await sessionCost($)
   await update($, TURN, t => ({
     requests: {},
@@ -168,9 +193,10 @@ const showStatus = async ($: EngineInterface, handoff?: Handoff, step?: string) 
   const loops = await read($, LOOPS)
   const main = loops.main
   if (!main) return $.ui.status(undefined)
-  const subs = working(loops)
+  const subs = alive(loops)
+  const waits = subs.filter(([, l]) => l.state === 'waiting').length
   const tail = subs.length
-    ? ` ⇢ ${subs.length} agent${subs.length > 1 ? 's' : ''}: ${gearsText(subs.map(([, l]) => l), ', ')}`
+    ? ` ⇢ ${subs.length} agent${subs.length > 1 ? 's' : ''}: ${gearsText(subs.map(([, l]) => l), ', ')}${waits ? `, ${waits} waiting` : ''}`
     : handoff?.kind === 'fan'
       ? ` ⇢ ${handoff.parts?.length ?? 0} ${KIND.fan}`
       : handoff
@@ -257,6 +283,41 @@ const sessionFacts = async ($: EngineInterface, options: PluginOptions) => {
   return { ev: 'session', gearbox, claude: (await $.session.version()).version, model: await $.session.model(), fromGearbox: (await $.store.get('settings')) ?? {}, fromPlugin: options }
 }
 
+// The person's own hooks for agents (classic.ts): what the main conversation's last prompt gave its hooks to run on,
+// what its UserPromptSubmit hooks said (which stands in when none can be run here), and the agents a Stop hook sent
+// back to work, so their next stop tells the hooks they are continuing.
+type AgentHooks = { base: Record<string, unknown>; context: string[]; continued: Set<string> }
+
+// The UserPromptSubmit hooks on a task an agent is given, as a prompt in the main conversation gets them: the text to
+// add to the task, or why a hook stopped it. A hook that cannot run leaves the task as it is.
+const taskHooks = async ($: EngineInterface, h: AgentHooks, logEvent: (rec: Record<string, unknown>) => void, task: string, agent: string): Promise<{ brief: string; deny?: string } | undefined> => {
+  try {
+    const said = await runHooks($, 'UserPromptSubmit', { session_id: await $.session.id(), transcript_path: '', cwd: await $.session.cwd(), ...h.base, prompt: task, agent_type: agent }, h.context)
+    const stopped = said.block ?? said.stop
+    logEvent({ ev: 'hooks', event: 'UserPromptSubmit', agent, context: said.context.length, ...(stopped ? { stopped } : {}) })
+    return stopped ? { brief: '', deny: `gearbox: your UserPromptSubmit hook stopped this task: ${stopped}` } : { brief: hookBrief(said.context) }
+  } catch (err) {
+    $.ui.log(`hooks not run for an agent's task: ${err}`, { to: 'debug' })
+  }
+}
+
+// An agent that stops, put to the person's Stop hooks as the main conversation is: what they say to send it back to
+// work (a block, or feedback they print), or nothing.
+const stopHooks = async ($: EngineInterface, h: AgentHooks, logEvent: (rec: Record<string, unknown>) => void, e: ClassicHookInputs['SubagentStop']): Promise<{ block?: string; context: string[] }> => {
+  try {
+    const said = await runHooks($, 'Stop', { ...e, stop_hook_active: e.stop_hook_active || h.continued.has(e.agent_id) })
+    // `continue: false` ends it, whatever else the hooks said.
+    const again = !said.stop && (said.block !== undefined || said.context.length > 0)
+    if (again) h.continued.add(e.agent_id)
+    else h.continued.delete(e.agent_id)
+    logEvent({ ev: 'hooks', event: 'Stop', agent: e.agent_id, type: e.agent_type, ...(again ? { again: true, ...(said.block ? { block: said.block } : {}) } : {}) })
+    return again ? said : { context: [] }
+  } catch (err) {
+    $.ui.log(`stop hooks not run for an agent: ${err}`, { to: 'debug' })
+    return { context: [] }
+  }
+}
+
 // Puts a costly gear to the person; a dismissed dialog, or an answer typed under "Other", takes the cheaper one.
 const consent = async ($: EngineInterface, g: Gear): Promise<Gear> => {
   const cheaper = stepDown(g)
@@ -272,6 +333,72 @@ const consent = async ($: EngineInterface, g: Gear): Promise<Gear> => {
   }
 }
 
+// The engine's list says which agents are alive. The rows come from the events gearbox heard, and an agent can be
+// alive with none of them saying so: its turn ended while it waits on background work it started, a reload, a spawn
+// gearbox did not hear. No event says when that changes, so while any agent is alive the list is read every few
+// seconds and the rows follow it. An agent it does not list (a workflow's) keeps what its own events said.
+type AgentWatch = { timer?: { cancel: () => void } }
+const syncAgents = async ($: EngineInterface, w: AgentWatch, changed: () => Promise<void>) => {
+  const agents = await listAgents($)
+  if (!agents) return
+  const loops = await read($, LOOPS)
+  let moved = false
+  for (const a of agents) {
+    const l = loops[a.id]
+    const state = a.status === 'waiting' ? 'waiting' : held(a.status) ? 'working' : live(l) ? 'done' : undefined
+    // One held at its turn's end is working again by its next step, not by the list's lag.
+    if (!state || l?.state === state || (l?.state === 'waiting' && state === 'working')) continue
+    moved = true
+    await patch($, a.id, r => ({ steps: 0, since: Date.now(), parent: a.parentId ?? 'main', asked: a.type, ...r, label: r?.label && r.label !== 'agent' ? r.label : a.description, state }))
+  }
+  const listed = new Set(agents.map(a => a.id))
+  for (const [id, l] of Object.entries(loops)) {
+    if (l.state !== 'waiting' || listed.has(id)) continue
+    moved = true
+    await patch($, id, r => (r?.state === 'waiting' ? { ...r, state: 'done' } : r))
+  }
+  if (moved) await changed()
+  if (!agents.some(a => held(a.status)) && !alive(await read($, LOOPS)).length) {
+    w.timer?.cancel()
+    w.timer = undefined
+  }
+}
+const watchAgents = ($: EngineInterface, w: AgentWatch, changed: () => Promise<void>) => {
+  w.timer ??= $.clock.every(WAIT_POLL_MS, () => void syncAgents($, w, changed).catch(() => undefined))
+}
+
+// A reply's text as the transcript and turn.complete both carry it: whitespace folded, the last 200 characters.
+const tail = (text: string) => text.replace(/\s+/g, ' ').trim().slice(-200)
+
+// One row per live subagent, for the band and for the list under the last reply: ● in a turn, ◐ waiting on its own
+// background work, nested under the loop that started it.
+const agentRows = ({ Box, Text }: Pick<ElementTable, 'Box' | 'Text'>, loops: Record<string, GearboxLoop>, listed: [string, GearboxLoop][], now: number) => {
+  const indent = (id: string) => '  '.repeat(Math.max(0, depth(loops, id) - 1))
+  const labelW = Math.min(28, Math.max(0, ...listed.map(([id, l]) => indent(id).length + l.label.length)) + 2)
+  return listed.map(([id, l]) => (
+    <Box key={`agent-${id}`} flexDirection="row" columnGap={2}>
+      <Box width={labelW} flexShrink={0}>
+        <Text wrap="truncate">
+          {indent(id)}
+          <Text color={l.state === 'waiting' ? WAITING : hue(l)}>{l.state === 'waiting' ? '◐' : '●'}</Text>
+          {` ${l.label}`}
+        </Text>
+      </Box>
+      <Box width={14} flexShrink={0}>
+        <Text weight="semibold" wrap="truncate" color={hue(l)}>
+          {gearText(l)}
+        </Text>
+      </Box>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text dimColor wrap="truncate">
+          {l.state === 'waiting' ? 'waiting on its own background work' : swapped(l) ? `${l.doing ?? 'thinking'} · answered by ${family(l.answered!) ?? l.answered}` : (l.doing ?? 'thinking')}
+        </Text>
+      </Box>
+      <Text dimColor tabular>{`${l.steps} request${l.steps === 1 ? '' : 's'}${l.since !== undefined ? `  ${ran(now - l.since)}` : ''}`}</Text>
+    </Box>
+  ))
+}
+
 // A fan-out's parts as the turn hands them out: a costly part's gear goes to the person as a route step's does; then
 // each model's lane, where it is idle and worth going back to, takes the first part of its model. `fresh`: unrelated
 // work, which goes back to no lane.
@@ -279,7 +406,7 @@ const seatFan = async ($: EngineInterface, fan: readonly FanPart[], o: { asks: b
   const parts: FanPart[] = []
   for (const pt of fan) parts.push(o.asks && needsConsent(pt.gear, o.ask, o.previous, o.standing) ? { ...pt, gear: await consent($, pt.gear) } : pt)
   const loops = await read($, LOOPS)
-  const seated = seatParts(parts, o.lanes, Date.now(), id => loops[id]?.state === 'working', o.fresh)
+  const seated = seatParts(parts, o.lanes, Date.now(), id => live(loops[id]), o.fresh)
   return { kind: 'fan', gear: (seated.find(pt => pt.resume || pt.lane) ?? seated[0]!).gear, parts: seated }
 }
 
@@ -322,7 +449,7 @@ const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh', 'max']
 const SEARCHERS = /^(Explore|Plan|claude-code-guide|statusline-setup)$/
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_effort: ModelEffort; steer: boolean; escalate: Escalate; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; band: boolean } & OrchestratorSettings
+export type Settings = { code_effort: ModelEffort; steer: boolean; escalate: Escalate; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; pane: 'all' | 'running'; band: boolean; agent_hooks: boolean } & OrchestratorSettings
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit.
@@ -337,6 +464,7 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
     pane: o.pane === 'running' ? 'running' : 'all',
     band: o.band !== false,
+    agent_hooks: o.agent_hooks !== false,
     ...orchestratorFrom(o),
   }
 }
@@ -351,12 +479,13 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
   if (word === 'pane' && (value === 'all' || value === 'running')) return { pane: value }
   if (word === 'band' && (value === 'on' || value === 'off')) return { band: value === 'on' }
+  if (word === 'hooks' && (value === 'on' || value === 'off')) return { agent_hooks: value === 'on' }
   return orchestratorPatch(word, value)
 }
 
-const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high, xhigh or max', navigator: 'sonnet or haiku', steer: 'on or off', escalate: 'on, code or off', strict: 'on or off', log: 'on, off or full', band: 'on or off', orchestrator: 'on or off', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'low, medium, high, xhigh or max', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
+const SETTING_CHOICES: Record<string, string> = { effort: 'medium, high, xhigh or max', navigator: 'sonnet or haiku', steer: 'on or off', escalate: 'on, code or off', strict: 'on or off', log: 'on, off or full', band: 'on or off', hooks: 'on or off', orchestrator: 'on or off', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'low, medium, high, xhigh or max', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
 const settingsText = (s: Settings) =>
-  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · escalate ${s.escalate} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · band ${s.band ? 'on' : 'off'} · orchestrator ${s.orchestrator ? `on (${s.orchestrator_model}·${s.orchestrator_effort}, up to ${s.orchestrator_agents} agent${s.orchestrator_agents === 1 ? '' : 's'} at once)` : 'off'}`
+  `coding effort ${s.code_effort} · navigator ${s.navigator} · steer ${s.steer ? 'on' : 'off'} · escalate ${s.escalate} · strict hand-offs ${s.strict ? 'on' : 'off'} · log ${s.log} · band ${s.band ? 'on' : 'off'} · hooks for agents ${s.agent_hooks ? 'on' : 'off'} · orchestrator ${s.orchestrator ? `on (${s.orchestrator_model}·${s.orchestrator_effort}, up to ${s.orchestrator_agents} agent${s.orchestrator_agents === 1 ? '' : 's'} at once)` : 'off'}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -390,10 +519,10 @@ const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
 
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): effort for ordinary coding turns, and whether non-Haiku sessions are steered.
-  let { code_effort: standing, steer: steers, escalate, navigator, strict, log: logMode, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
+  let { code_effort: standing, steer: steers, escalate, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
   let paneShows: Settings['pane'] = 'all'
   let bandOn = true
-  const current = (): Settings => ({ code_effort: standing, steer: steers, escalate, navigator, strict, log: logMode, pane: paneShows, band: bandOn, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
+  const current = (): Settings => ({ code_effort: standing, steer: steers, escalate, navigator, strict, log: logMode, pane: paneShows, band: bandOn, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
@@ -408,11 +537,14 @@ export const register: Register = (on, options) => {
     logMode = s.log
     paneShows = s.pane
     bandOn = s.band
+    agentHooks = s.agent_hooks
     orchestrator = s.orchestrator
     orchModel = s.orchestrator_model
     orchEffort = s.orchestrator_effort
     orchAgents = s.orchestrator_agents
   }
+  // What the person's own hooks for agents need (see taskHooks).
+  const hookState: AgentHooks = { base: {}, context: [], continued: new Set() }
   // shortcut: routing state lives in module variables, so a hot reload forgets the floor; the next prompt picks afresh.
   // The readout's loops live in $.state and survive it.
   let enabled = true
@@ -528,6 +660,7 @@ export const register: Register = (on, options) => {
     ownEffort ? `${ownEffort} sets its own effort` : routeLabel()
   const routeLabel = () => (turnRoute && turnStep ? `step ${turnStep}/${turnRoute.length} ${turnRoute[turnStep - 1]!.what}` : undefined)
   const warmScout = () => scoutedAt !== undefined && Date.now() - scoutedAt < SCOUT_WARM_MS
+  const agentWatch: AgentWatch = {}
   const forget = () => {
     floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = scoutedAt = undefined
     lastDeep = deepAgent = spawningDeep = undefined
@@ -535,6 +668,7 @@ export const register: Register = (on, options) => {
     mainMayEdit = false
     lanes = {}
     laneEffort.clear()
+    hookState.continued.clear()
     laneTaken = new Set()
     turnReading = undefined
     handedOff = new Set()
@@ -615,11 +749,16 @@ export const register: Register = (on, options) => {
       },
       isDeferred: false,
     })
-    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | effort <level> | navigator <model> | steer on|off | escalate on|code|off | strict on|off | orchestrator on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | pane | on | off | ask on|off | usage]' })
+    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | effort <level> | navigator <model> | steer on|off | escalate on|code|off | strict on|off | hooks on|off | orchestrator on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | pane | on | off | ask on|off | usage]' })
     enabled = (await $.store.get('enabled')) !== false
     apply(await loadSettings($, options))
     const stored = ((await $.store.get('settings')) ?? {}) as Partial<Settings>
     await update($, SETTINGS, () => stored)
+    // A reload keeps the loops but drops the timer: the engine's list says again what is alive.
+    if (enabled) {
+      watchAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
+      await syncAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
+    }
     if (logMode !== 'off') logEvent({ ...(await sessionFacts($, options)), settings: current() })
     return next(e)
   })
@@ -704,7 +843,7 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'usage cleared' }
     } else if (arg) {
-      return { text: `unknown "${arg}". Try settings, panel, effort, navigator, steer, escalate, strict, log, band, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `unknown "${arg}". Try settings, panel, effort, navigator, steer, escalate, strict, log, band, hooks, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
@@ -743,6 +882,7 @@ export const register: Register = (on, options) => {
     spawningLanes.clear()
     skillCalls = []
     turnText = e.text
+    hookState.context = []
     deepReads = 0
     // "ultrathink" in the person's own words raises this turn's effort in Claude Code; gearbox leaves it be.
     ownEffort = /\bultrathink\b/i.test(ownWords(e.text)) ? 'ultrathink' : undefined
@@ -947,18 +1087,38 @@ export const register: Register = (on, options) => {
     return say(fanReply(handoff.parts ?? []))
   })
 
+  // Claude Code runs the person's UserPromptSubmit and Stop hooks for the main conversation only. An agent gets them
+  // here, every way it starts or is sent a task (agent.spawn, session.send) and when it stops (classic.SubagentStop).
+  // What the main prompt's hooks ran on is kept to run them on an agent's task, and the context they gave it, as the
+  // model read it, for the agents whose hooks cannot be run here.
+  on('classic.UserPromptSubmit', ($, e, next) => {
+    hookState.base = { session_id: e.session_id, transcript_path: e.transcript_path, cwd: e.cwd, permission_mode: e.permission_mode }
+    return next(e)
+  })
+  on('prompt.attachment', ($, e, next) => {
+    if (e.origin.kind === 'hook' && e.origin.event === 'UserPromptSubmit' && !e.agentId) {
+      const text = e.text.replace(/^UserPromptSubmit hook [\w ]+?: /, '')
+      if (!hookState.context.includes(text)) hookState.context.push(text)
+    }
+    return next(e)
+  })
+
   // An Agent call that names no model and no agent type runs on the main conversation's model.
-  // Every subagent that starts gets a row in the readout.
+  // Every subagent that starts gets a row in the readout, and the person's UserPromptSubmit hooks run on its task.
+  // A resumed run keeps the message it is resumed with (session.send has had its hooks).
   on('agent.spawn', async ($, e, next) => {
     const routed =
       enabled && floor && !e.model && !e.fork && !e.parentAgentId && e.subagentType === 'general-purpose' && e.parentModel.includes('haiku')
         ? { ...e, model: floor }
         : e
-    const started = await next(routed)
+    const hooked = enabled && agentHooks && !e.resume ? await taskHooks($, hookState, logEvent, e.prompt, e.subagentType) : undefined
+    if (hooked?.deny) return { deny: hooked.deny }
+    const started = await next(hooked ? { ...routed, prompt: `${routed.prompt}${hooked.brief}` } : routed)
     if (enabled && !started.deny && started.agentId) {
       // Its first steps may land before this, so keep what they recorded.
-      await patch($, started.agentId, l => ({ steps: 0, state: 'working', asked: started.model, since: Date.now(), ...l, label: e.description, parent: e.parentAgentId ?? 'main' }))
+      await patch($, started.agentId, l => ({ steps: 0, asked: started.model, since: Date.now(), ...l, state: 'working', label: e.description, parent: e.parentAgentId ?? 'main' }))
       await showStatus($, turnHandoff, stepLabel())
+      watchAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
       // The agent a deep or handed-up step started: follow-ups go back to it.
       const deep = !e.parentAgentId && !e.resume && spawningDeep !== undefined && (spawningDeep.useId === undefined || spawningDeep.useId === e.tool_use_id)
       if (deep) {
@@ -975,6 +1135,31 @@ export const register: Register = (on, options) => {
       logEvent({ ev: 'spawn', agent: started.agentId, type: e.subagentType, model: started.model, ...(deep ? { deep: true } : {}), ...(job?.lane ? { lane: true } : {}), ...(job?.part ? { part: job.part } : {}), ...(e.resume ? { resume: true } : {}) })
     }
     return started
+  })
+
+  // A message the main conversation sends an agent is a task as well: the hooks run on it, and what they print goes
+  // with it. One between agents is left alone.
+  on('session.send', async ($, e, next) => {
+    if (!enabled || !agentHooks || e.agentId) return next(e)
+    const agent = (await listAgents($))?.find(a => [a.id, a.name, a.teammateId].includes(e.to))
+    const hooked = agent && (await taskHooks($, hookState, logEvent, e.text, agent.type))
+    if (hooked?.deny) return { isDelivered: false as const, reason: hooked.deny }
+    return next(hooked ? { ...e, text: `${e.text}${hooked.brief}` } : e)
+  })
+
+  // An agent that stops is put to the person's Stop hooks as the main conversation is: a block, or feedback they
+  // print, sends it back to work. Their SubagentStop hooks have run beneath. An agent with no type is one of Claude
+  // Code's own (a suggestion, a side question), not a task.
+  on('classic.SubagentStop', async ($, e, next) => {
+    const own = await next(e)
+    if (!enabled || !agentHooks || !e.agent_type) return own
+    const said = await stopHooks($, hookState, logEvent, e)
+    if (!said.block && !said.context.length) return own
+    return {
+      ...own,
+      ...(said.block ? { block: [own.block, said.block].filter(Boolean).join('\n') } : {}),
+      ...(said.context.length ? { additionalContext: [...(own.additionalContext ?? []), ...said.context] } : {}),
+    }
   })
 
   on('tool.call', async ($, e, next) => {
@@ -1126,11 +1311,24 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     if (enabled) {
+      // A subagent's turn can end with the agent still alive, waiting on background work it started: it is done
+      // only once the engine says so.
+      const waits = e.agentId ? held((await listAgents($))?.find(a => a.id === e.agentId)?.status) : false
       await patch($, e.agentId ?? 'main', l => {
         if (!l) return l
         const { doing: _, ...rest } = l
-        return { ...rest, state: e.agentId ? 'done' : 'idle' }
+        return { ...rest, state: !e.agentId ? 'idle' : waits ? 'waiting' : 'done' }
       })
+      // The main conversation's reply is where a person reads "done": before it is drawn, every agent the engine
+      // holds alive gets its row, however it started, and the reply keeps the ones alive at its end.
+      if (waits || !e.agentId) {
+        watchAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
+        await syncAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
+      }
+      if (!e.agentId && e.answer.trim()) {
+        const ids = alive(await read($, LOOPS)).map(([id]) => id)
+        await update($, REPLY, () => ({ tail: tail(e.answer), ids }))
+      }
       await showStatus($, turnHandoff, stepLabel())
     }
     if (!e.agentId) {
@@ -1191,16 +1389,21 @@ export const register: Register = (on, options) => {
     const id = e.agentId ?? 'main'
     const sending = async (s: typeof e) => {
       if (!enabled) return
-      await patch($, id, l => ({
-        label: fork ? `/${fork.call.skill}` : e.agentId ? 'agent' : 'main',
-        ...(e.agentId ? { parent: 'main', since: Date.now() } : {}),
-        steps: 0,
-        ...l,
-        asked: s.model,
-        ...(s.effort !== undefined ? { effort: String(s.effort) } : {}),
-        state: 'working',
-      }))
-      if (!e.agentId) await showStatus($, turnHandoff, stepLabel())
+      // An agent that waited on its own background work and is back at a turn changes the status line's count too.
+      let woke = false
+      await patch($, id, l => {
+        woke = l?.state === 'waiting'
+        return {
+          label: fork ? `/${fork.call.skill}` : e.agentId ? 'agent' : 'main',
+          ...(e.agentId ? { parent: 'main', since: Date.now() } : {}),
+          steps: 0,
+          ...l,
+          asked: s.model,
+          ...(s.effort !== undefined ? { effort: String(s.effort) } : {}),
+          state: 'working',
+        }
+      })
+      if (!e.agentId || woke) await showStatus($, turnHandoff, stepLabel())
       await countRequest($, family(s.model) ?? String(s.model))
     }
     let result: TurnStepResult | undefined
@@ -1276,7 +1479,7 @@ export const register: Register = (on, options) => {
   })
 
   // The band above the prompt: coding-effort tabs and actions, five live columns of what gearbox does now, then a
-  // row per running subagent. Whatever the mods below draw in this slot stays, under it.
+  // row per live subagent, nested under the loop that started it: ● in a turn, ◐ waiting on its own background work. Whatever the mods below draw in this slot stays, under it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!enabled || !bandOn || e.props.hasSurvey) return next(e)
     const below = await next(e)
@@ -1287,7 +1490,7 @@ export const register: Register = (on, options) => {
     const usd = await sessionCost($)
     const main = loops.main
     const works = main?.state === 'working'
-    const subs = working(loops)
+    const subs = nested(loops)
     const thisTurn = usd !== undefined && turn.costAtStart !== undefined ? usd - turn.costAtStart : undefined
     const turnCosts = thisTurn !== undefined ? [...turn.costs, thisTurn] : turn.costs
     const requests = Object.entries(turn.requests)
@@ -1297,8 +1500,13 @@ export const register: Register = (on, options) => {
     const compare = turnCosts.length > 1
     // [label, value, the line under it, the value's colour, bars after the value]. Nothing unknown is drawn as a dash.
     const cols: [string, string, string, string | undefined, string?][] = [
-      ['now', works ? gearText(main!) : 'idle', works ? (main!.doing ?? 'thinking') : main ? `last ${gearText(main)}` : 'waiting for a prompt', works ? hue(main!) : undefined],
-      ['agents', subs.length ? `${subs.length} running` : 'none', subs.length ? gearsText(subs.map(([, l]) => l), ' · ') : 'no hand-off running', undefined],
+      // Idle with agents still at work is not done: it says so, in amber.
+      works
+        ? ['now', gearText(main!), main!.doing ?? 'thinking', hue(main!)]
+        : subs.length
+          ? ['now', `${subs.some(([, l]) => l.state === 'working') ? '●' : '◐'} agents at work`, 'main waits · not done yet', WAITING]
+          : ['now', 'idle', main ? `last ${gearText(main)}` : 'waiting for a prompt', undefined],
+      ['agents', subs.length ? counted(subs) : 'none', subs.length ? gearsText(subs.map(([, l]) => l), ' · ') : 'no hand-off running', undefined],
       ['this turn', `${total} request${total === 1 ? '' : 's'}`, requests.map(([m, c]) => `${m} ${c}`).join(' · ') || 'none sent yet', undefined],
       [
         'cost',
@@ -1318,7 +1526,6 @@ export const register: Register = (on, options) => {
     const rule = (glyph: string) => (term ? <Text dimColor wrap="truncate">{glyph.repeat(Math.max(1, e.props.bodyColumns))}</Text> : null)
     // Up to five subagent rows; past that, four and a count of the rest.
     const listed = subs.length > 5 ? subs.slice(0, 4) : subs
-    const labelW = Math.min(24, Math.max(0, ...listed.map(([, l]) => l.label.length)) + 2)
     // shortcut: the run time is as of the band's last redraw (any loop's request or tool call); add a clock tick if a long silent tool makes it look stuck.
     const now = Date.now()
     const choose = async (change: Partial<Settings>) => {
@@ -1376,24 +1583,7 @@ export const register: Register = (on, options) => {
         {listed.length ? (
           <Box flexDirection="column">
             {rule('┄')}
-            {listed.map(([id, l]) => (
-              <Box key={`band-agent-${id}`} flexDirection="row" columnGap={2}>
-                <Box width={labelW} flexShrink={0}>
-                  <Text wrap="truncate">{`⇢ ${l.label}`}</Text>
-                </Box>
-                <Box width={14} flexShrink={0}>
-                  <Text weight="semibold" wrap="truncate" color={hue(l)}>
-                    {gearText(l)}
-                  </Text>
-                </Box>
-                <Box flexGrow={1} flexShrink={1}>
-                  <Text dimColor wrap="truncate">
-                    {swapped(l) ? `${l.doing ?? 'thinking'} · answered by ${family(l.answered!) ?? l.answered}` : (l.doing ?? 'thinking')}
-                  </Text>
-                </Box>
-                <Text dimColor tabular>{`${l.steps} request${l.steps === 1 ? '' : 's'}${l.since !== undefined ? `  ${ran(now - l.since)}` : ''}`}</Text>
-              </Box>
-            ))}
+            {agentRows({ Box, Text }, loops, listed, now)}
             {subs.length > listed.length ? <Text dimColor>{`+${subs.length - listed.length} more · Panel`}</Text> : null}
           </Box>
         ) : null}
@@ -1406,6 +1596,44 @@ export const register: Register = (on, options) => {
       </Box>
     ) : (
       mine
+    )
+  })
+
+  // Under the main conversation's last reply, where a person reads "done": the agents still at work, live, so a
+  // finished-looking reply does not hide work under way; once every agent it left running has ended, it says so,
+  // until the next prompt. The reply is told by its text, the one turn.complete handed over.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (!enabled || !bandOn || e.props.isSummary) return next(e)
+    const reply = await read($, REPLY)
+    const mine = reply.tail !== undefined && tail(e.props.text) !== '' && reply.tail.endsWith(tail(e.props.text))
+    if (!mine) return next(e)
+    const loops = await read($, LOOPS)
+    const subs = nested(loops)
+    if (!subs.length && !reply.ids?.length) return next(e)
+    const own = await next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const listed = subs.length > 5 ? subs.slice(0, 4) : subs
+    const runs = subs.some(([, l]) => l.state === 'working')
+    return (
+      <Box flexDirection="column">
+        {own}
+        <Box flexDirection="column" marginTop={1} paddingLeft={2}>
+          {subs.length ? (
+            <Text>
+              <Text color={runs ? hue(subs.find(([, l]) => l.state === 'working')![1]) : WAITING}>{runs ? '●' : '◐'}</Text>
+              <Text weight="bold" color={WAITING}>{` ${subs.length} agent${subs.length > 1 ? 's' : ''} still at work · not done yet`}</Text>
+              <Text dimColor>{`  ${counted(subs)}`}</Text>
+            </Text>
+          ) : (
+            <Text weight="bold" color={FINISHED}>
+              {'✓ all agents finished'}
+              <Text dimColor weight="regular">{` · ${reply.ids!.length} done`}</Text>
+            </Text>
+          )}
+          {agentRows({ Box, Text }, loops, listed, Date.now())}
+          {subs.length > listed.length ? <Text dimColor>{`+${subs.length - listed.length} more · Panel`}</Text> : null}
+        </Box>
+      </Box>
     )
   })
 
@@ -1422,6 +1650,7 @@ export const register: Register = (on, options) => {
       ['Debug log', 'log', ['off', 'on', 'full'], s.log],
       ['Models panel shows', 'pane', ['all', 'running'], s.pane],
       ['Band', 'band', ['on', 'off'], s.band ? 'on' : 'off'],
+      ['Hooks for agents', 'hooks', ['on', 'off'], s.agent_hooks ? 'on' : 'off'],
       ['Orchestrator', 'orchestrator', ['on', 'off'], s.orchestrator ? 'on' : 'off'],
       // Its model, effort and parallel agents only matter while it is on.
       ...(s.orchestrator
@@ -1462,7 +1691,7 @@ export const register: Register = (on, options) => {
     const all = Object.entries(loops).sort(([a], [b]) => (a === 'main' ? -1 : b === 'main' ? 1 : 0))
     if (!all.length) return <Text dimColor>No model calls yet. Rows appear as the session works.</Text>
     // Running only: finished subagents leave; the main conversation stays as the anchor.
-    const rows = runningOnly ? all.filter(([id, l]) => id === 'main' || l.state === 'working') : all
+    const rows = runningOnly ? all.filter(([id, l]) => id === 'main' || live(l)) : all
     const finished = all.filter(([, l]) => l.state === 'done').length
     const toggle = (
       <Button
@@ -1488,7 +1717,7 @@ export const register: Register = (on, options) => {
         {rows.map(([id, l]) => {
           const d = depth(loops, id)
           const name = d === 0 ? 'main' : `${'  '.repeat(d - 1)}└ ${l.label}`
-          const now = l.state === 'working' ? (l.doing ?? 'thinking') : l.state
+          const now = l.state === 'working' ? (l.doing ?? 'thinking') : l.state === 'waiting' ? 'waiting on its own background work' : l.state
           return (
             <Text dimColor={l.state === 'done'} mono>
               {fit(name, nameW)}

@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.13.2",
+  "version": "0.16.0",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, runs of reads on long conversations go to Haiku, an optional orchestrator keeps the main conversation to planning, runs the work in one long-lived lane per model and splits a request of independent parts across several agents at once, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -68,6 +68,12 @@
       "type": "boolean",
       "title": "Band above the prompt",
       "description": "The band above the prompt box: GearBox, the live model·effort and what it does, subagents, cost and why, then a row per running subagent, with Panel, Log and Settings. Bands other mods draw stay under it. Also settable with /gearbox band.",
+      "default": true
+    },
+    "agent_hooks": {
+      "type": "boolean",
+      "title": "Your hooks for subagents",
+      "description": "Run your own UserPromptSubmit and Stop hooks for subagents as the main conversation gets them, which Claude Code does not: a subagent's task goes through your UserPromptSubmit hooks (what they print goes to it), and when it stops through your Stop hooks (a block or feedback sends it back to work). Also settable with /gearbox hooks.",
       "default": true
     },
     "orchestrator": {

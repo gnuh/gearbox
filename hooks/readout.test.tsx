@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import type { AgentStatus } from 'claude-code'
+import { expect, mock, test } from 'claude-code/testing'
 
 const USAGE = { input_tokens: 5, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 const SCROLL = { offset: 0, bodyRows: 20 }
@@ -41,7 +42,16 @@ const step = async ($: any, model: string, extra: object = {}) => {
 const spawn = ($: any, description: string, model: string) =>
   $.agent.spawn({ tool_use_id: description, prompt: 'p', description, subagentType: 'general-purpose', model, provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5', background: true, fork: false })
 
-const complete = ($: any, agentId?: string) => $.turn.complete({ turnId: 't', answer: '', durationMs: 10, isAborted: false, ...(agentId ? { agentId } : {}) })
+const complete = ($: any, agentId?: string, answer = '') => $.turn.complete({ turnId: 't', answer, durationMs: 10, isAborted: false, ...(agentId ? { agentId } : {}) })
+
+// The engine's agent list, as the test sets it: id → status, or status and description.
+const listing = (on: any) => {
+  const agents: Record<string, AgentStatus | { status: AgentStatus; description: string }> = {}
+  on('agent.list', () => ({ value: Object.entries(agents).map(([id, a]) => ({ id, type: 'general-purpose', ...(typeof a === 'string' ? { status: a, description: id } : a) })) }))
+  return agents
+}
+
+const REPLY = (text: string) => ({ plugin: 'gearbox', component: 'AssistantMessage', requestId: `m-${text.length}`, props: { text, isFirstOfReply: true } }) as const
 
 test('the pane lists every loop with its model, nested under main', async ($: any, on) => {
   bench(on)
@@ -72,7 +82,7 @@ test('the band: GearBox and its actions, five live columns and a row per subagen
   setCost(10.4)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^GearBox$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /^⇢ deploy$/, /^Bash: \.\/deploy\.sh staging$/, /^1 request {2}\d+s$/, /engine band/]) {
+    for (const text of [/^GearBox$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /^● deploy$/, /^Bash: \.\/deploy\.sh staging$/, /^1 request {2}\d+s$/, /engine band/]) {
       expect(await ui.find({ type: 'Text', text })).toBeDefined()
     }
     expect(await ui.find({ key: 'band-effort-xhigh' })).toBeUndefined() // the coding effort lives in Settings now
@@ -99,10 +109,10 @@ test('the band groups subagents by gear, lists five at most, and flags a fallbac
   await step($, 'claude-sonnet-5-5', { agentId: 'a-c1', effort: 'low', answeredBy: 'claude-haiku-5-5' })
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^6 running$/, /^sonnet·low · sonnet ×5$/, /^⇢ c1$/, /^⇢ c4$/, /answered by haiku/, /^\+2 more · Panel$/]) {
+    for (const text of [/^6 running$/, /^sonnet·low · sonnet ×5$/, /^● c1$/, /^● c4$/, /answered by haiku/, /^\+2 more · Panel$/]) {
       expect(await ui.find({ type: 'Text', text })).toBeDefined()
     }
-    expect(await ui.find({ type: 'Text', text: /^⇢ c5$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^● c5$/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -114,7 +124,7 @@ test('the band keeps three columns in a narrow terminal, and steps aside when sw
   expect(await narrow.find({ type: 'Text', text: /^now$/ })).toBeDefined()
   expect(await narrow.find({ type: 'Text', text: /^cost$/ })).toBeDefined()
   expect(await narrow.find({ type: 'Text', text: /^this turn$/ })).toBeUndefined()
-  expect(await narrow.find({ type: 'Text', text: /^⇢/ })).toBeUndefined() // no subagent runs
+  expect(await narrow.find({ type: 'Text', text: /^[●◐]/ })).toBeUndefined() // no subagent runs
   await narrow.unmount()
   // The desktop app counts fewer, wider cells: the same count there still holds all five.
   const desk = await $.ui.mount({ ...BAND_AT(80), surface: 'desktop' })
@@ -125,6 +135,130 @@ test('the band keeps three columns in a narrow terminal, and steps aside when sw
   expect(await off.find({ type: 'Text', text: /GearBox/ })).toBeUndefined()
   expect(await off.find({ type: 'Text', text: /engine band/ })).toBeDefined()
   await off.unmount()
+})
+
+test('a subagent whose turn ends while it waits on its own background work stays in the band until the engine says it ended', async ($: any, on) => {
+  const { status } = bench(on)
+  const clock = mock.clock(on)
+  const agents: Record<string, AgentStatus> = {}
+  on('agent.list', () => ({ value: Object.entries(agents).map(([id, s]) => ({ id, description: id, type: 'general-purpose', status: s })) }))
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'sonnet')
+  await spawn($, 'browser check', 'haiku')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  agents['a-deploy'] = 'waiting'
+  await complete($, 'a-deploy')
+  expect(status.at(-1)).toBe('opus·high ⇢ 2 agents: sonnet·low, haiku, 1 waiting')
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
+    for (const text of [/^1 running · 1 waiting$/, /^◐ deploy$/, /^waiting on its own background work$/, /^● browser check$/]) {
+      expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    }
+    await ui.unmount()
+  }
+  // Still alive on the engine's list: it stays; its next turn's steps mark it working again.
+  agents['a-deploy'] = 'running'
+  await clock.advance(3000)
+  expect(status.at(-1)).toBe('opus·high ⇢ 2 agents: sonnet·low, haiku, 1 waiting')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  expect(status.at(-1)).toBe('opus·high ⇢ 2 agents: sonnet·low, haiku')
+  agents['a-deploy'] = 'waiting'
+  await complete($, 'a-deploy')
+  // Ended on the engine's list: the next look drops it.
+  agents['a-deploy'] = 'completed'
+  await clock.advance(3000)
+  expect(status.at(-1)).toBe('opus·high ⇢ 1 agent: haiku')
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /deploy/ })).toBeUndefined()
+  await ui.unmount()
+  // One the engine already lists as ended is done at its turn's end.
+  agents['a-check'] = 'completed'
+  await complete($, 'a-check')
+  expect(status.at(-1)).toBe('opus·high')
+})
+
+test('the band nests a subagent’s own agents right under it', async ($: any, on) => {
+  bench(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'lane', 'sonnet')
+  await spawn($, 'review', 'sonnet')
+  await $.agent.spawn({ tool_use_id: 'scout', prompt: 'p', description: 'scout', subagentType: 'Explore', model: 'haiku', parentAgentId: 'a-lane', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-sonnet-5-5', background: true, fork: false })
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
+    const rows = (await ui.findAll({ type: 'Text', text: /^ *● / })).map((t: any) => t.text)
+    expect(rows).toEqual(['● lane', '  ● scout', '● review'])
+    await ui.unmount()
+  }
+})
+
+test('an agent alive on the engine’s list gets its row when the main turn ends, however gearbox missed it', async ($: any, on) => {
+  const { status } = bench(on)
+  const clock = mock.clock(on)
+  const agents = listing(on)
+  await step($, 'claude-opus-5-5')
+  // Spawned with no agent.spawn gearbox heard, and one it wrongly holds done while the engine still runs it.
+  agents['a-ghost'] = { status: 'running', description: 'ghost task' }
+  await spawn($, 'deploy', 'sonnet')
+  agents['a-deploy'] = 'completed'
+  await complete($, 'a-deploy')
+  expect(status.at(-1)).toBe('opus·high')
+  // While any agent is alive the engine's list is read every few seconds.
+  await clock.advance(3000)
+  expect(status.at(-1)).toBe('opus·high ⇢ 1 agent: general-purpose')
+  agents['a-deploy'] = 'running'
+  await complete($, undefined, 'Pronto.')
+  expect(status.at(-1)).toBe('opus·high ⇢ 2 agents: sonnet, general-purpose')
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
+    for (const text of [/^● ghost task$/, /^● deploy$/, /^2 running$/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('under the last reply: the agents still at work, live, then that they all finished, until the next prompt', async ($: any, on) => {
+  const { status } = bench(on)
+  const clock = mock.clock(on)
+  const agents = listing(on)
+  on('ui.render', { component: 'AssistantMessage' }, ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{e.props.text}</Text>
+  })
+  const answer = 'A verificação vai rodar pelo Docker.\n\nQuando terminar, trago o que mudou.'
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'sonnet')
+  agents['a-deploy'] = 'running'
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await complete($, undefined, answer)
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...REPLY('Quando terminar, trago o que mudou.'), surface })
+    for (const text of [/^Quando terminar/, /1 agent still at work · not done yet/, /^● deploy$/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    await ui.unmount()
+    // Another reply is drawn as it was.
+    const older = await $.ui.mount({ ...REPLY('Feito, revise quando puder.'), surface })
+    expect(await older.find({ type: 'Text', text: /still at work/ })).toBeUndefined()
+    await older.unmount()
+    // Idle with an agent at work is not done.
+    const band = await $.ui.mount({ ...BAND_AT(120), surface })
+    for (const text of [/^● agents at work$/, /^main waits · not done yet$/]) expect(await band.find({ type: 'Text', text })).toBeDefined()
+    await band.unmount()
+  }
+  const live = await $.ui.mount({ ...REPLY('Quando terminar, trago o que mudou.'), surface: 'terminal' })
+  // Its turn ends while it waits on its own background work: the same reply redraws.
+  agents['a-deploy'] = 'waiting'
+  await complete($, 'a-deploy')
+  expect(await live.find({ type: 'Text', text: /^◐ deploy$/ })).toBeDefined()
+  expect(await live.find({ type: 'Text', text: /1 waiting/ })).toBeDefined()
+  // It ends: the next look at the engine's list says so.
+  agents['a-deploy'] = 'completed'
+  await clock.advance(3000)
+  expect(await live.find({ type: 'Text', text: /^✓ all agents finished/ })).toBeDefined()
+  expect(await live.find({ type: 'Text', text: /deploy/ })).toBeUndefined()
+  expect(status.at(-1)).toBe('opus·high')
+  // The next prompt clears it.
+  await $.prompt.submit({ text: 'e agora?' })
+  expect(await live.find({ type: 'Text', text: /all agents finished/ })).toBeUndefined()
+  expect(await live.find({ type: 'Text', text: /^Quando terminar/ })).toBeDefined()
+  await live.unmount()
 })
 
 test('the spinner names the working loop’s model', async ($: any, on) => {
