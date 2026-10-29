@@ -290,13 +290,21 @@ export const hookBrief = (context: readonly string[]): string => {
   return kept.length ? `\n\n---\nAdded by gearbox: what the person's own UserPromptSubmit hooks print for a task like this one (their project knowledge, notes and checklists). Claude Code runs them for the main conversation only, so this agent gets them here.\n\n${kept.join('\n\n')}` : ''
 }
 
+// A subagent's report reaches the person as it comes back: gearbox draws it in the transcript under the agent's
+// notification, or under its call when it ran in the foreground. So the main model adds its review, not a copy.
+export const RELAY = 'Its report shows to the person under its notification or its call as it comes back, so review it before acting on it, and reply with your review only: what you checked, anything you disagree with or found missing, and the next step. Do not repeat the report.'
+
+// What an agent the main conversation starts may start itself: agents that read for it, one level deep. Reading in
+// another agent keeps its own context small; code stays with it, where a second hand-off would cost more than it saves.
+export const NESTING = '\n\n---\nAdded by gearbox: you may start Explore agents to do reading for you (gearbox runs them on Sonnet at low effort; pass model "haiku" for a lookup of one fact: where a file or symbol is, a log line). Make code changes yourself: an agent you start may only read, and cannot start agents of its own.'
+
 const STEP_TASK: Record<Step['mode'], string> = {
   lookup: 'that fetches it and returns the full relevant content word for word (for a ticket: title, description, acceptance criteria, comments that change the scope; for notes: each matching note\'s title and full text), with nothing summarized away',
   drive: 'with a checklist you write here first (where to go and what to do); it must not edit files or judge pass or fail, only report per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests',
   wait: 'that runs only the exact command you settle here, waits until it ends, and answers with passed or failed, the lines that explain a failure, and any link or id it printed',
   commit: 'with a brief that stands on its own: the repository path and branch, the commits, the pull request and any text to write, in full; it runs only that, changes nothing else, and reports what it did with any link, hash or id',
   code: `with ${BRIEF}; it makes the change, checks it, and reports the files it changed and anything left open; review that here`,
-  answer: `with ${BRIEF}; it works it out and reports its findings in full, which you pass on to the person without cutting them down`,
+  answer: `with ${BRIEF}; it works it out and reports its findings in full, which the person sees as they come back: add your review here, not a copy`,
   analyze: 'with the navigator\'s report word for word and what the change should do; it judges what is broken, fixes it, and reports what it found and changed; review that here',
 }
 
@@ -384,32 +392,12 @@ export const isReadOnlyCommand = (command: string): boolean => {
 // A tool call, as a request's response asks for it.
 export type Use = { name: string; input: unknown }
 const LOOKS = /^(Read|Grep|Glob|LS|NotebookRead|WebFetch|WebSearch)$/
-// Tools that neither look nor change anything: they keep a run of reads going without counting as one.
-const ASIDE = /^(TodoWrite|mcp__gearbox__phase)$|__update_plan$/
 const looks = (u: Use) => LOOKS.test(u.name) || (u.name === 'Bash' && isReadOnlyCommand(String((u.input as { command?: unknown } | null)?.command ?? '')))
 export const looksUp = (tool: string, command: string) => looks({ name: tool, input: { command } })
 // While deep work waits for its agent, the main model may still brief it: start or message the agent, load a tool,
 // plan, mark a step, ask the person, and make a few reads to write the brief.
 export const BRIEFING_TOOLS = /^(Agent|SendMessage|ToolSearch|TodoWrite|AskUserQuestion|mcp__gearbox__phase|mcp__gearbox__fan)$|__update_plan$/
 export const BRIEF_READS = 3
-// What a response did: only read (asides allowed), only asides, or anything else (an edit, a command that changes
-// something, an answer with no call).
-export const readKind = (uses: readonly Use[]): 'read' | 'aside' | 'other' => {
-  const own = uses.filter(u => !ASIDE.test(u.name))
-  return !uses.length ? 'other' : !own.length ? 'aside' : own.every(looks) ? 'read' : 'other'
-}
-
-// Scouting: on a long conversation, a run of reads (fetching logs, reading files, grepping) goes to Haiku, whose
-// cached input costs a quarter of Opus's. The main model still decides anything that matters: Haiku's reply is
-// kept only if it calls nothing but reads and says little; any other reply is thrown away and the same request
-// goes to the main model.
-export const SCOUT: Gear = { model: 'haiku', effort: 'low' }
-// Its first request caches the whole conversation for Haiku, which Claude Code keeps for an hour: so scouting
-// starts on the second read in a row, or on the first while that cache is warm.
-export const SCOUT_WARM_MS = 55 * 60_000
-export const scouts = (streak: number, warm: boolean) => streak >= 2 || (streak >= 1 && warm)
-export const keepsScout = (r: { stopReason: string | null; answer: string; toolUses: readonly Use[]; serverToolUses?: readonly unknown[] }) =>
-  r.stopReason === 'tool_use' && r.answer.length <= 600 && !r.serverToolUses?.length && r.toolUses.length > 0 && r.toolUses.every(looks)
 
 // `judge`: a browser check whose evidence a stronger model's subagent analyzes, not the main model.
 // `resume`: a deep hand-off that goes on in the agent that already holds the work, by its id.
@@ -456,7 +444,7 @@ export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlie
   return { main: fixed ? { model: fixed, effort: want.effort } : want }
 }
 
-// A deep hand-off's agent stays worth going back to while its cache is warm (an hour, as for scouting) and its
+// A deep hand-off's agent stays worth going back to while its cache is warm (Claude Code keeps it an hour) and its
 // context is still small enough that a fresh agent with a brief would not read less.
 export const RESUME_MS = 55 * 60_000
 export const RESUME_TOKENS = 150_000
@@ -588,14 +576,14 @@ ${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.eff
       return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.`
     case 'lane':
       return resume
-        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} gearbox sets the effort of each job. Review what it returns here before acting on it, and pass its findings on to the person in full, not cut down.`
-        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. gearbox sets the effort of each job. Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first. Until it starts, edits, commands and more reads are refused here. Review what it returns before acting on it, and pass its findings on to the person in full, not cut down.`
+        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} gearbox sets the effort of each job. ${RELAY}`
+        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. gearbox sets the effort of each job. Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first. Until it starts, edits, commands and more reads are refused here. ${RELAY}`
     case 'fan':
       return fanNote(parts ?? [])
     case 'deep':
       return resume
-        ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}. Review what it returns here before acting on it, and pass its findings on to the person in full, not cut down.`
-        : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage, and review what it returns here before acting on it. Its findings reach the person only through you: pass them on in full, not cut down.`
+        ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}. ${RELAY}`
+        : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage. ${RELAY}`
   }
 }
 
@@ -632,6 +620,6 @@ const fanNote = (parts: readonly FanPart[]): string => {
         `   ${i + 1}. ${p.what}: ${p.resume ? `send it with SendMessage to "${p.resume}", the ${p.gear.model} lane that already holds earlier work, in that same message (load SendMessage with ToolSearch first if it is not loaded)` : `model "${p.gear.model}"${p.edits && apart ? ', isolation "worktree"' : ''}`}; ${back(p)}.`,
     ),
     `2. gearbox sets each agent's effort. Until all ${parts.length} have started, edits, commands and more reads are refused here.`,
-    `3. Wait for every result before going on. Then review each, and reconcile them: overlaps, contradictions, anything one part found that changes another.${apart ? ' Merge the worktree branches into the working tree (git merge or cherry-pick); a conflict that needs editing goes back to an agent.' : ''} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Pass the findings on to the person in full, not cut down.`,
+    `3. Wait for every result before going on. Then review each, and reconcile them: overlaps, contradictions, anything one part found that changes another.${apart ? ' Merge the worktree branches into the working tree (git merge or cherry-pick); a conflict that needs editing goes back to an agent.' : ''} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Each part's report shows to the person under its call: reply with the reconciled outcome and your review, not a copy of the reports.`,
   ].join('\n')
 }

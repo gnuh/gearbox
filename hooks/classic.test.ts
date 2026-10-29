@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { hookBrief } from './policy'
+import { NESTING, hookBrief } from './policy'
 import { readOutput } from './classic'
 
 type Out = { exitCode?: number; stdout?: string; stderr?: string }
@@ -48,7 +48,8 @@ const world = (on: any, w: World = {}) => {
   on('session.cwd', () => ({ value: '/work/app' }))
   on('session.root', () => ({ value: '/work/app' }))
   on('agent.list', () => ({ value: (w.agents ?? []).map(a => ({ description: 'd', type: 'general-purpose', status: 'running', ...a })) }))
-  on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt), { model: 'inherit', agentId: 'a1' }))
+  // The line every agent of the main conversation gets on reading agents has a test of its own (readout.test.tsx).
+  on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt.replace(NESTING, '')), { model: 'inherit', agentId: 'a1' }))
   on('session.send', (_: unknown, e: any) => (sent.push(e.text), { isDelivered: true as const }))
   for (const quiet of ['ui.status', 'ui.log']) on(quiet, () => ({ value: undefined }))
   return { calls, prompts, sent }

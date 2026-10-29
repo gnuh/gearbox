@@ -159,7 +159,9 @@ export const fanParts = (r: Reading, cap: number, standing: ModelEffort): FanPar
   fanOut(r.parts, cap).map(g => ({ what: g.map(p => p.what).join('; '), gear: groupGear(r, g, standing), edits: edits(g) }))
 
 // What the orchestrator keeps for itself: answers that need no deep look (one spot or one feature, ordinary care)
-// and one-spot mechanical edits, never costly work. A guess is never handed off, a review excepted. A sure request of
+// and small code (one spot or one feature, mechanical or ordinary depth) the work calls for no stronger model than
+// its own for, never costly work: a hand-off's brief, start and relay cost more than such work does. Code that
+// needs smarter decisions still goes to its lane. A guess is never handed off, a review excepted. A sure request of
 // independent parts goes out to one agent per part, all at once, up to `cap` of them. Everything else goes to the lane
 // of the model the work calls for, at the effort it calls for, reviews included, sure or not (an unsure review's
 // effort is its best guess); Fable's open-ended work is a fresh agent, not a lane, and never split.
@@ -168,9 +170,9 @@ export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, st
   const small = r.reach === 'point' || r.reach === 'area'
   const ordinary = r.care !== 'costly'
   if (ordinary && r.mode === 'answer' && r.depth <= 1 && small) return { main }
-  if (ordinary && r.mode === 'code' && r.depth === 0 && r.reach === 'point') return { main }
   const fan = r.sure && want.model !== 'fable' ? fanParts(r, cap, standing) : []
   if (fan.length) return { main, handoff: { kind: 'fan', gear: fan[0]!.gear, parts: fan } }
+  if (ordinary && r.mode === 'code' && r.depth <= 1 && small && LADDER.indexOf(want.model) <= LADDER.indexOf(main.model)) return { main }
   if (r.mode === 'wait') return { main, handoff: { kind: 'lane', gear: { model: 'haiku', effort: 'low' } } }
   if (r.mode === 'commit') return { main, handoff: { kind: 'lane', gear: choreGear(r.depth) } }
   return { main, handoff: { kind: want.model === 'fable' ? 'deep' : 'lane', gear: want } }

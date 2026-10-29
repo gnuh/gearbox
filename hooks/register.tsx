@@ -1,6 +1,6 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, AgentStatus, ClassicHookInputs, ElementTable, EngineInterface, ModelEffort, PluginOptions, PromptOrigin, Register, TurnStepChunk, TurnStepResult, TurnUsage } from 'claude-code'
-import type { GearboxLoop, GearboxReply } from '../types'
+import type { AgentInfo, AgentStatus, ClassicHookInputs, ElementTable, EngineInterface, RenderElement, ModelEffort, PluginOptions, PromptOrigin, Register, TurnUsage } from 'claude-code'
+import type { GearboxLoop, GearboxReply, GearboxReports } from '../types'
 import {
   type DeepAgent,
   type Escalate,
@@ -14,6 +14,7 @@ import {
   apartEdits,
   looksUp,
   ownBrief,
+  NESTING,
   resumable,
   type Model,
   type Plan,
@@ -23,11 +24,6 @@ import {
   isChoreCommand,
   isLongCommand,
   LONG_CONTEXT,
-  SCOUT,
-  SCOUT_WARM_MS,
-  keepsScout,
-  readKind,
-  scouts,
   everyday,
   EFFORTS,
   doesHandoffWork,
@@ -74,7 +70,7 @@ const PRICES: Record<Model, { fresh: number; written: number; cached: number; ou
   opus: { fresh: 4, written: 5, cached: 0.2, out: 20 },
   fable: { fresh: 10, written: 12.5, cached: 0.25, out: 50 },
 }
-// Haiku bills a prompt over 100K tokens at five times its rate: scouting on a long conversation pays this one.
+// Haiku bills a prompt over 100K tokens at five times its rate.
 const HAIKU_LONG = { fresh: 0.5, written: 0.625, cached: 0.05, out: 2.5 }
 const LONG_ROW = ' over 100K'
 
@@ -93,6 +89,11 @@ const SETTINGS_PANE = 'gearbox-settings'
 const TURN = atom({ plugin: 'gearbox', key: 'turn' } as const, { requests: {}, costs: [] }, { shape: 'turn-3' })
 // The main conversation's last reply, which the agents still at work are drawn under.
 const REPLY = atom({ plugin: 'gearbox', key: 'reply' } as const, {} as GearboxReply, { shape: 'reply-1' })
+// The reports agents the main conversation started handed back, drawn under their notification or call.
+const REPORTS = atom({ plugin: 'gearbox', key: 'reports' } as const, {} as GearboxReports, { shape: 'reports-1' })
+const KEEP_REPORTS = 30
+// The agent types that only read: what an agent may start itself.
+const READERS = /^(Explore|Plan)$/
 
 const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n))
 
@@ -388,6 +389,17 @@ const watchAgents = ($: EngineInterface, w: AgentWatch, changed: () => Promise<v
 // A reply's text as the transcript and turn.complete both carry it: whitespace folded, the last 200 characters.
 const tail = (text: string) => text.replace(/\s+/g, ' ').trim().slice(-200)
 
+// An agent's report under the row where its end shows, the engine's own drawing kept above it.
+const reportBelow = ({ Box, Text, Markdown }: Pick<ElementTable, 'Box' | 'Text' | 'Markdown'>, own: RenderElement, texts: readonly string[]) => (
+  <Box flexDirection="column">
+    {own}
+    <Box flexDirection="column" paddingLeft={2} marginTop={1}>
+      <Text dimColor>{texts.length > 1 ? `its report (the latest of ${texts.length}; ctrl+o shows each)` : 'its report'}</Text>
+      <Markdown text={texts.at(-1)!} />
+    </Box>
+  </Box>
+)
+
 // One row per live subagent, for the band and for the list under the last reply: ● in a turn, ◐ waiting on its own
 // background work, nested under the loop that started it.
 const agentRows = ({ Box, Text }: Pick<ElementTable, 'Box' | 'Text'>, loops: Record<string, GearboxLoop>, listed: [string, GearboxLoop][], now: number) => {
@@ -574,9 +586,6 @@ export const register: Register = (on, options) => {
   let turnStep: number | undefined // the route step under way
   let handedOff = new Set<number>() // route steps (or -1, a single hand-off) whose subagent has started
   let ownEffort: string | undefined // a turn whose effort Claude Code sets: a slash command or skill, or ultrathink
-  let turnLong = false // the turn started on a long conversation
-  let readStreak = 0 // main requests in a row this turn that only read
-  let scoutedAt: number | undefined // when Haiku last took a main request: its cache of the conversation lasts an hour
   let turnText = '' // the person's prompt of the turn under way
   // Deep work goes on where it started: `lastDeep` is the gear of the last typed turn's deep hand-off (a go-ahead
   // carries it on while its model is enough for the work approved), `deepAgent` the agent that took it, which
@@ -678,10 +687,9 @@ export const register: Register = (on, options) => {
   const stepLabel = (): string | undefined =>
     ownEffort ? `${ownEffort} sets its own effort` : routeLabel()
   const routeLabel = () => (turnRoute && turnStep ? `step ${turnStep}/${turnRoute.length} ${turnRoute[turnStep - 1]!.what}` : undefined)
-  const warmScout = () => scoutedAt !== undefined && Date.now() - scoutedAt < SCOUT_WARM_MS
   const agentWatch: AgentWatch = {}
   const forget = () => {
-    floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = scoutedAt = undefined
+    floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = undefined
     lastDeep = deepAgent = spawningDeep = undefined
     spawningLanes.clear()
     mainMayEdit = false
@@ -691,7 +699,6 @@ export const register: Register = (on, options) => {
     laneTaken = new Set()
     turnReading = undefined
     handedOff = new Set()
-    turnLong = false
     turnWant = undefined
     skillCalls = []
     skillForks.clear()
@@ -925,7 +932,6 @@ export const register: Register = (on, options) => {
     // A long conversation hands git chores to a fresh subagent: every request here re-reads the whole context.
     const context = (await $.session.usage()).context.tokens ?? 0
     const long = context >= LONG_CONTEXT
-    turnLong = long
     let why = ''
     let brief: [string, string] = ['', '']
 
@@ -1087,13 +1093,15 @@ export const register: Register = (on, options) => {
     if (!p.handoff || !previous) previous = turnGear
     turnHandoff = p.handoff
     lastDeep = p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane' || p.handoff?.kind === 'fan' ? p.handoff.gear : undefined
+    // byRules sets the route in a closure, which the type checker does not follow from the reset above.
+    const steps = turnRoute as Step[] | undefined
     logEvent({
       ev: 'gear',
       gear: label(turnGear),
       context,
       why: ownEffort ? `${why}; ultrathink: Claude Code sets the effort` : why,
       ...(p.handoff ? { handoff: handoffLabel(p.handoff) } : {}),
-      ...(turnRoute ? { route: turnRoute.map((s, i) => `${i + 1}. ${s.what}: ${s.by} ${label(s.gear)}`) } : {}),
+      ...(steps ? { route: steps.map((s, i) => `${i + 1}. ${s.what}: ${s.by} ${label(s.gear)}`) } : {}),
     })
     if (p.handoff) brief = [brief[0], `${brief[1]} · ${handoffLabel(p.handoff)}`]
     await setWhy($, ownEffort ? ['ultrathink', 'Claude Code sets the effort'] : brief)
@@ -1176,8 +1184,14 @@ export const register: Register = (on, options) => {
         : e
     const hooked = enabled && agentHooks && !e.resume ? await taskHooks($, hookState, logEvent, e.prompt, e.subagentType) : undefined
     if (hooked?.deny) return { deny: hooked.deny }
-    const started = await next(hooked ? { ...routed, prompt: `${routed.prompt}${hooked.brief}` } : routed)
+    const nests = enabled && !e.parentAgentId && !e.fork && !e.resume
+    const brief = `${hooked?.brief ?? ''}${nests ? NESTING : ''}`
+    const started = await next(brief ? { ...routed, prompt: `${routed.prompt}${brief}` } : routed)
     if (enabled && !started.deny && started.agentId) {
+      if (nests && e.tool_use_id) {
+        const id = started.agentId
+        await update($, REPORTS, all => Object.fromEntries([...Object.entries(all).filter(([k]) => k !== id), [id, { texts: all[id]?.texts ?? [], useId: e.tool_use_id }]].slice(-KEEP_REPORTS)))
+      }
       // Its first steps may land before this, so keep what they recorded.
       await patch($, started.agentId, l => ({ steps: 0, asked: started.model, since: Date.now(), ...l, state: 'working', label: e.description, parent: e.parentAgentId ?? 'main' }))
       await showStatus($, turnHandoff, stepLabel())
@@ -1229,6 +1243,23 @@ export const register: Register = (on, options) => {
     if (!enabled) return next(e)
     await patch($, e.agentId ?? 'main', l => l && { ...l, doing: describeTool(String(e.tool), e as unknown as Record<string, unknown>) })
     // Subagents do the hand-off work; never stand in their way. A reviewing skill one calls is still remembered.
+    if (e.agentId && e.tool === 'Agent') {
+      // An agent the main conversation started may start agents that read for it, on Sonnet at low effort (Haiku
+      // when it asks, for a lookup); not ones that change code, and none deeper. Any other loop (a skill's fork, a
+      // workflow's agent) runs its own agents as it always did.
+      const started = await read($, REPORTS)
+      const parent = (await read($, LOOPS))[e.agentId]?.parent
+      const reader = parent !== undefined && started[parent] !== undefined
+      if (!started[e.agentId] && !reader) return next(e)
+      const why = reader
+        ? 'an agent started by another agent cannot start agents of its own. Do this reading yourself.'
+        : READERS.test(String(e.subagent_type ?? ''))
+          ? undefined
+          : 'an agent may start only agents that read (subagent_type "Explore"); make code changes yourself.'
+      logEvent({ ev: 'nested', agent: e.agentId, type: e.subagent_type ?? 'general-purpose', ...(why ? { refused: true } : { set: `${e.model === 'haiku' ? 'haiku' : 'sonnet'}·low` }) })
+      if (why) return { deny: `gearbox: ${why}` }
+      return next({ ...e, model: e.model === 'haiku' ? 'haiku' : 'sonnet', effort: 'low' })
+    }
     if (e.agentId) return e.tool === 'Skill' ? callSkill(e, orchestrator || steers || (await onHaiku($)), () => next(e)) : next(e)
     // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named; any
     // other plain one keeps its model and gets an effort by its job, not the session's. Work handed up to a
@@ -1388,6 +1419,10 @@ export const register: Register = (on, options) => {
         watchAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
         await syncAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
       }
+      // An agent of the main conversation that ended (not one waiting on its own work) handed back its report.
+      const report = e.agentId && !waits && e.answer.trim() ? e.agentId : undefined
+      if (report && (await read($, LOOPS))[report]?.parent === 'main')
+        await update($, REPORTS, all => ({ ...all, [report]: { ...all[report], texts: [...(all[report]?.texts ?? []), e.answer].slice(-5) } }))
       if (!e.agentId && e.answer.trim()) {
         const ids = alive(await read($, LOOPS)).map(([id]) => id)
         await update($, REPLY, () => ({ tail: tail(e.answer), ids }))
@@ -1406,7 +1441,6 @@ export const register: Register = (on, options) => {
   // for the readout, in any session, and its usage tallied.
   on('turn.step', async function* ($, e, next) {
     let step = e
-    let scout = false
     if (!e.agentId && enabled && orchestrator) {
       // The orchestrator: the main conversation runs on its own model at its own effort, whatever the session is on.
       // The first request on another model writes the conversation into that model's cache once.
@@ -1429,8 +1463,6 @@ export const register: Register = (on, options) => {
       if (model && shifting) floor = nextFloor(model, floor)
       if (model && (shifting || model !== from)) step = { ...step, model }
       if (turnGear && !ownEffort) step = { ...step, effort: turnGear.effort }
-      if (e.index === 0) readStreak = 0
-      scout = turnLong && turnGear !== undefined && !ownEffort && family(step.model) !== 'haiku' && scouts(readStreak, warmScout())
     }
     // A lane's request goes at the effort of the job it is on, lower than the effort the lane started at.
     const job = e.agentId ? laneEffort.get(e.agentId) : undefined
@@ -1469,55 +1501,16 @@ export const register: Register = (on, options) => {
       if (!e.agentId || woke) await showStatus($, turnHandoff, stepLabel())
       await countRequest($, family(s.model) ?? String(s.model))
     }
-    let result: TurnStepResult | undefined
-    let sent = step
-    if (scout) {
-      // Haiku's reply is held back until it is known to be only reads; a reply never yielded is never recorded.
-      const tried = { ...step, model: SCOUT.model, effort: SCOUT.effort }
-      const recache = warmScout() ? undefined : (await $.session.usage()).context.tokens ?? 0
-      await sending(tried)
-      const held: TurnStepChunk[] = []
-      let r: TurnStepResult | undefined
-      try {
-        const s = next(tried)
-        for await (const c of s) held.push(c)
-        r = await s.result
-      } catch {
-        // A failed try goes to the main model below.
-      }
-      scoutedAt = Date.now()
-      const kept = r !== undefined && (keepsScout(r) || next.signal.aborted)
-      const u = r?.usage
-      logEvent({
-        ev: 'scout',
-        index: e.index,
-        kept,
-        uses: r?.toolUses.map(t => t.name) ?? [],
-        ...(u ? { in: u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens, out: u.output_tokens } : {}),
-        ...(recache !== undefined ? { recache, usd: (recache * (recache > 100_000 ? HAIKU_LONG : PRICES.haiku).written) / 1e6 } : {}),
-      })
-      if (kept) {
-        for (const c of held) yield c
-        result = r
-        sent = tried
-      } else if (u) await tally($, u)
-    }
-    if (!result) {
-      await sending(step)
-      result = yield* next(step)
-    }
+    await sending(step)
+    const result = yield* next(step)
     if (enabled) await patch($, id, l => l && { ...l, ...(result.usage ? { answered: result.usage.model } : {}), steps: l.steps + 1 })
-    if (!e.agentId) {
-      const kind = readKind(result.toolUses)
-      readStreak = kind === 'read' ? readStreak + 1 : kind === 'aside' ? readStreak : 0
-    }
     // What gearbox sent next to what Claude Code would have sent (its own setting), and who answered.
     const u = result.usage
     logEvent({
       ev: 'step',
       loop: id,
       index: e.index,
-      sent: `${family(sent.model) ?? sent.model}·${sent.effort ?? 'default'}`,
+      sent: `${family(step.model) ?? step.model}·${step.effort ?? 'default'}`,
       engine: `${family(e.model) ?? e.model}·${e.effort ?? 'default'}`,
       answered: u?.model,
       ...(u ? { in: u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens, out: u.output_tokens } : {}),
@@ -1660,6 +1653,22 @@ export const register: Register = (on, options) => {
     ) : (
       mine
     )
+  })
+
+  // An agent's report, drawn for the person where its end shows: under its notification when it ran in the
+  // background, under its call when it ran in the foreground. The main model then adds its review, not a copy
+  // (RELAY). The expanded view (ctrl+o) shows the engine's own row, report included.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (!enabled || e.props.isExpanded || e.props.origin.kind !== 'task-notification' || !e.props.task?.id) return next(e)
+    const texts = (await read($, REPORTS))[e.props.task.id]?.texts
+    if (!texts?.length) return next(e)
+    return reportBelow($.ui.resolve(e), await next(e), texts)
+  })
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (!enabled || e.props.tool !== 'Agent' || e.props.isExpanded || e.props.isErrored || (e.props.output as { status?: string } | null)?.status !== 'completed') return next(e)
+    const texts = Object.values(await read($, REPORTS)).find(r => r.useId === e.props.tool_use_id)?.texts
+    if (!texts?.length) return next(e)
+    return reportBelow($.ui.resolve(e), await next(e), texts)
   })
 
   // Under the main conversation's last reply, where a person reads "done": the agents still at work, live, so a

@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, runs of reads on long conversations go to Haiku, an optional orchestrator keeps the main conversation to planning, runs the work in one long-lived lane per model and splits a request of independent parts across several agents at once, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
