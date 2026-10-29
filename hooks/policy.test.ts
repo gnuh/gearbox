@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Reading, BRIEFING_TOOLS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, keepsScout, readKind, readParts, reviewGear, reviews, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk } from './policy'
+import { type FanPart, type Reading, BRIEFING_TOOLS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, keepsScout, readKind, readParts, reviewGear, reviews, scouts, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
 
-const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
+const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
 test('readReading takes a reply apart and fills the plain defaults', () => {
   expect(readReading('{"reach":"system","depth":2}')).toEqual(reading({ reach: 'system', depth: 2 }))
@@ -287,6 +287,11 @@ test('nods and long pastes', () => {
   expect(long.length).toBeLessThan(4100)
   expect(long.startsWith('START')).toBe(true)
   expect(long.endsWith('what is wrong here?')).toBe(true)
+  // A proposal read as the work it lays out gets more room.
+  const proposal = trimRequest(`START${'.'.repeat(20000)}go ahead?`, 8000)
+  expect(proposal.length).toBeLessThan(8100)
+  expect(proposal.startsWith('START')).toBe(true)
+  expect(proposal.endsWith('go ahead?')).toBe(true)
 })
 
 test('a multi-step request becomes a route: each step on its own executor and effort', () => {
@@ -440,10 +445,67 @@ test('the survey lists parts that can run side by side, kept only when well form
   expect(readParts(undefined)).toEqual([])
 })
 
-test('an approval of the work under way takes that work’s mode, phrased as a question or not; cont only when it adds nothing', () => {
+test('a go-ahead is read as the work it approves: the survey takes the assistant’s proposal as the request, and the message only says whether it goes ahead', () => {
+  expect(SURVEY).toContain('When "approved" is true, "request" is not a message but the work the assistant proposed or has left to do, which the person has just approved')
   expect(SURVEY).toContain('approves or asks to go on with work the assistant proposed or is doing')
-  expect(SURVEY).toContain("takes that work's mode, not answer")
-  expect(SURVEY).toContain('adds nothing new')
+  expect(SURVEY).toContain("takes that work's mode, not answer, and that work's reach, care and depth, which \"reply\" lays out, not those of its own few words")
+  expect(SURVEY).toContain('"aside":false,"ahead":false,"cont":false')
+  expect(SURVEY).toContain('- ahead: true if the request approves, accepts or asks to go on with work the assistant proposed or is doing in "reply", with or without changes of its own.')
+  // Whether a go-ahead adds anything is all cont says; the work's gear comes from the work.
+  expect(SURVEY).toContain('- cont: true if the request only continues, approves or repeats the previous turn and adds nothing new.\n')
+  // A schema migration and an audit trail are costly mistakes; a shared module is a system's reach.
+  expect(SURVEY).toContain('audit trails, deleting or migrating data, database schema changes')
+  expect(SURVEY).toContain('a change to a shared module much of the project depends on')
+  expect(readReading('{"reach":"area","depth":1,"ahead":true}')).toMatchObject({ ahead: true, cont: false })
+})
+
+// What the assistant proposed in the session where "lets do it" ran on Sonnet.
+const PLAN = `Plan for GAUNTLET-1200:
+1. Add the SQL migration \`db/migrations/V45__audit_entries.sql\` (a new \`audit_entries\` table).
+2. Record audit events in \`core/src/audit/AuditService.kt\` and \`core/src/audit/AuditRepository.kt\`.
+3. New routes in the shared Core module: \`core/src/routes/AdminRoutes.kt\`.
+4. Tests in \`core/src/test/AuditServiceTest.kt\`.
+Want me to go ahead?`
+
+test('what a proposal shows for sure: a schema or data migration is costly, whatever words name it', () => {
+  expect(workFloor(PLAN)).toEqual({ care: 'costly', reach: 'system' })
+  for (const costly of ['ALTER TABLE orders ADD COLUMN actor_id uuid', '`alter table orders add column actor_id uuid`', 'create table if not exists audit_entries (id uuid)', 'CREATE INDEX idx_audit ON audit(at)', 'a new file `prisma/migrations/2026_audit/migration.sql`', 'add `V12_1__audit.sql`', '1. **Migration `0260_account_notes.sql`:** a new table with RLS', '`000001_init.up.sql`', 'write a SQL migration for it', 'a Flyway migration', 'then run `prisma migrate dev`', 'a data migration to backfill actors', 'the migration file'])
+    expect(workFloor(costly).care).toBe('costly')
+  // A bare "migration" may be a framework's or a codemod's, a bare .sql file a query's, lower-case SQL words a UI's;
+  // words in passing never count.
+  for (const routine of ['migrate the page to React 19', 'write a migration guide for v3', 'a migration script with jscodeshift', 'create type definitions for the client', 'create index.ts re-exporting the helpers', 'add column sorting to the orders grid', 'drag and drop table rows', 'alter table styling for dark mode', 'tweak `reports/monthly.sql`', 'handle the migration/upgrade path', 'the auth middleware stays as it is'])
+    expect(workFloor(routine).care).toBeUndefined()
+})
+
+test('the files a proposal names: code spans only, each once, tests aside, by the rule a fan-out part’s files follow', () => {
+  expect(namedFiles('see `src/a.ts:12`, `src/a.ts`, `a.ts` and `https://x.dev/b.ts`; Node.js and Next.js are prose')).toEqual(['src/a.ts'])
+  expect(namedFiles('`bun test src/quote.test.ts` then `src/quote.ts#L3-L9`')).toEqual(['src/quote.test.ts', 'src/quote.ts'])
+  // Three files and their tests are a feature's; a fourth source file, or three top-level folders, a system's.
+  expect(workFloor('`src/a.ts` `src/b.ts` `src/c.ts` `src/a.test.ts` `src/b.spec.ts` `tests/c.py`').reach).toBeUndefined()
+  expect(workFloor('`src/a.ts` `src/b.ts` `src/c.ts` `src/d.ts`').reach).toBe('system')
+  expect(workFloor('`api/a.ts` `web/b.ts` `core/c.kt`').reach).toBe('system')
+  expect(workFloor('`FooTest.kt` `BarTests.cs` `baz_test.go` `test_qux.py` `latest.ts`')).toEqual({})
+  expect(filesReach([])).toBeUndefined()
+})
+
+test('a go-ahead is read by the work it approves, raised by what the proposal shows and by its own words, never lowered', () => {
+  const work = reading({ phases: [{ what: 'migration', mode: 'code', depth: 1 }, { what: 'routes', mode: 'code', depth: 1 }] })
+  // A nod: the work alone, lifted by the proposal's sure signs; the proposal's steps are one piece of work, in order.
+  expect(goAhead(work, undefined, { care: 'costly', reach: 'system' })).toEqual(reading({ reach: 'system', care: 'costly', ahead: true }))
+  // "lets do it", read on its own few words as a small routine continuation, lowers nothing.
+  const lets = reading({ reach: 'point', depth: 0, cont: true, ahead: true })
+  expect(goAhead(reading({ reach: 'system', care: 'costly', depth: 2 }), lets, {})).toEqual(reading({ reach: 'system', care: 'costly', depth: 2, ahead: true }))
+  // That session's turn: an area-sized reading of the plan still runs on Opus, by what the plan shows.
+  expect(gearFor(goAhead(reading(), lets, workFloor(PLAN))!, 'xhigh')).toEqual({ model: 'opus', effort: 'xhigh' })
+  // A message that adds something keeps its own mode, steps and asks.
+  const but = reading({ mode: 'answer', depth: 2, ahead: true, ask: { model: 'opus' }, phases: [{ what: 'explain the rollback', mode: 'answer', depth: 2 }] })
+  expect(goAhead(work, but, {})).toMatchObject({ mode: 'answer', depth: 2, ask: { model: 'opus' }, phases: but.phases })
+  // Its parts are the person's, else the work's.
+  const parts = [{ what: 'a', mode: 'code', depth: 1, files: ['a'] }, { what: 'b', mode: 'code', depth: 1, files: ['b'] }] as const
+  expect(goAhead(reading({ parts: [...parts] }), lets, {})?.parts).toEqual([...parts])
+  // Unread, the work is code at the proposal's sure signs; with none, there is nothing to go by.
+  expect(goAhead(undefined, undefined, { care: 'costly' })).toEqual(reading({ care: 'costly', ahead: true }))
+  expect(goAhead(undefined, lets, {})).toBeUndefined()
 })
 
 test('the fan tool answers each part’s agent and asks for all of them in one message', () => {

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { NEUTRAL, ORCHESTRATOR, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
 import { RESUME_MS, RESUME_TOKENS, type FanPart, type Part, type Phase, type Reading, gearFor, handoffNote, label, route, routeNote } from './policy'
 
-const reading = (r: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...r })
+const reading = (r: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...r })
 const MAIN = ORCHESTRATOR
 const part = (what: string, mode: Part['mode'], depth: Part['depth'], files: string[] = []): Part => ({ what, mode, depth, files })
 const whats = (groups: Part[][]) => groups.map(g => g.map(p => p.what))
