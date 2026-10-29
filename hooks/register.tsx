@@ -1093,13 +1093,15 @@ export const register: Register = (on, options) => {
     if (!p.handoff || !previous) previous = turnGear
     turnHandoff = p.handoff
     lastDeep = p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane' || p.handoff?.kind === 'fan' ? p.handoff.gear : undefined
+    // byRules sets the route in a closure, which the type checker does not follow from the reset above.
+    const steps = turnRoute as Step[] | undefined
     logEvent({
       ev: 'gear',
       gear: label(turnGear),
       context,
       why: ownEffort ? `${why}; ultrathink: Claude Code sets the effort` : why,
       ...(p.handoff ? { handoff: handoffLabel(p.handoff) } : {}),
-      ...(turnRoute ? { route: turnRoute.map((s, i) => `${i + 1}. ${s.what}: ${s.by} ${label(s.gear)}`) } : {}),
+      ...(steps ? { route: steps.map((s, i) => `${i + 1}. ${s.what}: ${s.by} ${label(s.gear)}`) } : {}),
     })
     if (p.handoff) brief = [brief[0], `${brief[1]} · ${handoffLabel(p.handoff)}`]
     await setWhy($, ownEffort ? ['ultrathink', 'Claude Code sets the effort'] : brief)

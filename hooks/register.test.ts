@@ -1,4 +1,7 @@
 import { expect, test } from 'claude-code/testing'
+
+// The test runtime has timers; the hooks' own environment, whose types these files use, does not.
+declare const setTimeout: (done: (value?: unknown) => void, ms: number) => unknown
 import { type Reading, handoffNote } from './policy'
 
 // The routing rules below are written for a medium coding effort; the default is xhigh.
@@ -958,7 +961,7 @@ test('orchestrator: a turn it keeps still hands its lookup to Haiku, and the mai
 
 // A forked skill's loop as $.agent.list() names it (from a real fork's transcript meta), and what the Skill tool
 // answers when it forks.
-const forkRow = (id: string, skill: string) => ({ id, description: `/${skill} https://github.com/acme/shop/pull/68`, type: 'general-purpose', status: 'running', name: skill })
+const forkRow = (id: string, skill: string) => ({ id, description: `/${skill} https://github.com/acme/shop/pull/68`, type: 'general-purpose', status: 'running' as const, name: skill })
 const forked = (agentId: string, skill: string) => ({ success: true, commandName: skill, status: 'forked', agentId, result: `Skill "${skill}" launched`, background: true })
 
 test('a review skill’s fork runs on Opus at the effort of the turn’s own work, on every request; another skill’s fork is left alone', ORCH, async ($: any, on) => {
@@ -1201,7 +1204,7 @@ test('the fan tool is registered at session start, never deferred, and says when
   rig(on, [])
   const tools: any[] = []
   on('tool.register', (_: unknown, e: any) => (tools.push(e), { value: { tool: `mcp__gearbox__${e.name}` } }))
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'gearbox' } }))
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
   const fan = tools.find(t => t.name === 'fan')

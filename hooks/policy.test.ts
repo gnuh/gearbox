@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Reading, BRIEFING_TOOLS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
+import { type FanPart, type Part, type Reading, BRIEFING_TOOLS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -486,7 +486,7 @@ test('a go-ahead is read by the work it approves, raised by what the proposal sh
   const but = reading({ mode: 'answer', depth: 2, ahead: true, ask: { model: 'opus' }, phases: [{ what: 'explain the rollback', mode: 'answer', depth: 2 }] })
   expect(goAhead(work, but, {})).toMatchObject({ mode: 'answer', depth: 2, ask: { model: 'opus' }, phases: but.phases })
   // Its parts are the person's, else the work's.
-  const parts = [{ what: 'a', mode: 'code', depth: 1, files: ['a'] }, { what: 'b', mode: 'code', depth: 1, files: ['b'] }] as const
+  const parts: Part[] = [{ what: 'a', mode: 'code', depth: 1, files: ['a'] }, { what: 'b', mode: 'code', depth: 1, files: ['b'] }]
   expect(goAhead(reading({ parts: [...parts] }), lets, {})?.parts).toEqual([...parts])
   // Unread, the work is code at the proposal's sure signs; with none, there is nothing to go by.
   expect(goAhead(undefined, undefined, { care: 'costly' })).toEqual(reading({ care: 'costly', ahead: true }))
