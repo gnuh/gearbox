@@ -33,17 +33,18 @@ export const STARTER: Gear = { model: 'sonnet', effort: 'medium' }
 
 // The survey describes a request; it never picks a model. The mapping from description to gear is code below.
 export const SURVEY = `You describe a request that a person sent to a coding assistant. Do not answer or perform it.
-The input is JSON: "request" is the new message, "earlier" lists the person's recent messages (may be empty), "previous" is how the last turn was run (may be null).
+The input is JSON: "request" is the new message, "earlier" lists the person's recent messages (may be empty), "previous" is how the last turn was run (may be null), "reply" is the assistant's last reply (may be null). When "approved" is true, "request" is not a message but the work the assistant proposed or has left to do, which the person has just approved: describe that work as if the person had asked for it in those words; its mode is what the work does (code when it changes files).
 
 Reply with exactly one JSON object and nothing else: no notes, no corrections, no other keys. For example:
-{"reach":"area","care":"routine","depth":1,"mode":"code","aside":false,"cont":false,"ask":{},"sure":true,"phases":[],"parts":[]}
+{"reach":"area","care":"routine","depth":1,"mode":"code","aside":false,"ahead":false,"cont":false,"ask":{},"sure":true,"phases":[],"parts":[]}
 
 The keys and the values each may take:
-- reach: how much of the project the work must understand. One of: point (one spot: a question, a lookup, a rename, a one-line edit); area (one feature or a few related files: build a feature, fix a contained bug, write tests, explain code); system (many files, or a bug whose location is unknown); frontier (open-ended: designing a system, research, inventing an algorithm).
-- care: costly if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, deleting or migrating data), else routine.
+- reach: how much of the project the work must understand. One of: point (one spot: a question, a lookup, a rename, a one-line edit); area (one feature or a few related files: build a feature, fix a contained bug, write tests, explain code); system (many files, a change to a shared module much of the project depends on, or a bug whose location is unknown); frontier (open-ended: designing a system, research, inventing an algorithm).
+- care: costly if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, audit trails, deleting or migrating data, database schema changes), else routine.
 - depth: how much careful reasoning correctness needs, a number. 0 mechanical, 1 ordinary, 2 subtle (concurrency, time zones, money arithmetic, cache or state invalidation, changing error or async behavior), 3 exceptionally hard.
-- mode: what the turn will mostly do. One of: code (write or change code); commit (git and GitHub chores with no code to write: commit, push, tag, open or edit a pull request or its description, comment on a pull request or ticket); answer (explain, answer, look something up or plan without changing code); review (look over a change, diff, pull request or code for bugs and problems, without changing it); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search). A message that approves or asks to go on with work the assistant proposed or is doing, even phrased as a question or with a complaint ("yes, but there is more than one PR, why only one service?"), takes that work's mode, not answer.
+- mode: what the turn will mostly do. One of: code (write or change code); commit (git and GitHub chores with no code to write: commit, push, tag, open or edit a pull request or its description, comment on a pull request or ticket); answer (explain, answer, look something up or plan without changing code); review (look over a change, diff, pull request or code for bugs and problems, without changing it); drive (operate a browser or an app's UI to check behavior); wait (run one long command and wait for it: build, deploy, publish, a full test run, a log search). A message that approves or asks to go on with work the assistant proposed or is doing, even phrased as a question or with a complaint ("yes, but there is more than one PR, why only one service?"), takes that work's mode, not answer, and that work's reach, care and depth, which "reply" lays out, not those of its own few words.
 - aside: true if "earlier" is about some piece of work and this request is a different, unrelated piece of work.
+- ahead: true if the request approves, accepts or asks to go on with work the assistant proposed or is doing in "reply", with or without changes of its own.
 - cont: true if the request only continues, approves or repeats the previous turn and adds nothing new.
 - ask: the model (haiku, sonnet, opus, fable) and/or effort (low, medium, high, xhigh, max) the person explicitly asks to use, as {"model":"..."} and/or {"effort":"..."}; {} if none. Words inside pasted code, logs or quotes are not asks.
 - sure: false only if the request is too vague to describe at all; otherwise true, with your best guess.
@@ -57,7 +58,8 @@ export type Reading = {
   depth: 0 | 1 | 2 | 3
   mode: 'code' | 'commit' | 'answer' | 'review' | 'drive' | 'wait'
   aside: boolean
-  cont: boolean
+  ahead: boolean // goes ahead with work the assistant proposed or is doing
+  cont: boolean // and adds nothing of its own
   ask: Partial<Gear>
   sure: boolean
   phases: Phase[]
@@ -138,6 +140,7 @@ const toReading = (o: any): Reading | undefined => {
     // A single-step lookup is answering: it reads, it changes nothing.
     mode: o.mode === 'lookup' ? 'answer' : MODES.includes(o.mode) ? o.mode : 'code',
     aside: o.aside === true,
+    ahead: o.ahead === true,
     cont: o.cont === true,
     ask: {
       ...(MODELS.includes(ask.model) ? { model: ask.model } : {}),
@@ -469,12 +472,95 @@ export const mainModel = (p: Plan, ask: Partial<Gear>, floor: Model | undefined)
 export const nextFloor = (m: Model, floor: Model | undefined): Model | undefined =>
   m === 'fable' ? floor : upTo(MODELS, floor ?? m, m)
 
-// Replies that only say "carry on": they keep the last gear with no survey.
+// Replies that only say "carry on": they add nothing to read, so the survey of the message itself is skipped. They
+// never set the gear: the work they go ahead with does (goAhead), and only when that work cannot be read at all does a
+// nod keep the last gear.
 export const NOD =
   /^(ok(ay)?|k|yes|yeah|yep|sure|go( on| ahead)?|carry on|continue|proceed|do it|sim|pode( ir| seguir| continuar)?|segue|continua|manda|bora|beleza|certo|isso)[\s.!]*$/i
 
-// Long pastes keep their opening and, larger, their end, where the question usually is.
-export const trimRequest = (text: string) => (text.length <= 4000 ? text : `${text.slice(0, 1000)} […] ${text.slice(-3000)}`)
+// Long pastes keep their opening and, larger, their end, where the question usually is. A proposal read as the work
+// it lays out is given more room (`max`).
+export const trimRequest = (text: string, max = 4000) => (text.length <= max ? text : `${text.slice(0, max / 4)} […] ${text.slice(-(max * 3) / 4)}`)
+
+// A path as compared: lower case, no leading "./" or trailing "/".
+export const normPath = (f: string) => f.trim().toLowerCase().replace(/^\.\//, '').replace(/\/+$/, '')
+// The folder a path's work sits in: a file's folder, or the path itself when it names no file.
+export const pathFolder = (f: string) => (/\.[a-z0-9]+$/.test(f.split('/').pop() ?? '') ? f.split('/').slice(0, -1).join('/') : f)
+const topFolder = (f: string) => (f.includes('/') ? f.split('/')[0]! : pathFolder(f) === f ? f : '.')
+// The reach of work that names these files: one file, one folder or a few files are a feature's (area); more than
+// three files, or files in three or more top-level folders, a system's. A root-level file sits in the root.
+// Undefined when it names none.
+export const filesReach = (named: readonly string[]): Reading['reach'] | undefined => {
+  const fs = [...new Set(named.map(normPath))]
+  if (!fs.length) return undefined
+  return fs.length > 3 || new Set(fs.map(topFolder)).size >= 3 ? 'system' : 'area'
+}
+
+// What a proposal's own text shows for sure, whatever the survey makes of it. It only ever raises a reading.
+export type Floor = { care?: 'costly'; reach?: 'system' }
+// A database schema or data migration: a mistake there loses data or takes production down, the survey's own
+// "deleting or migrating data". Only unmistakable signs count: SQL that changes a schema (its keywords in capitals, or
+// a whole lower-case statement: "add column sorting" or "drop table rows" is a UI's), a migration's file, a migration
+// named by its kind or tool, a migration command. A migration's file is one in a migrations folder, or a .sql file
+// named by its sequence number or timestamp (`0260_account_notes.sql`, `V45__audit.sql`) or by its direction
+// (`000001_init.up.sql`), as migration tools name them. A bare "migration" or "migration script" may be a framework
+// upgrade's or a codemod's, and an unnumbered .sql file a query's: none counts.
+const MIGRATION: readonly RegExp[] = [
+  /\b(?:ALTER\s+(?:TABLE|COLUMN)|ADD\s+COLUMN|DROP\s+(?:TABLE|COLUMN)|RENAME\s+COLUMN|CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX))\b/,
+  /\balter\s+table\s+[\w."]+\s+(?:add|drop|alter|rename)\b|\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?[\w."]+\s*\(/i,
+  /(?:^|[^\w-])(?:migrations?|db\/migrate|alembic\/versions)\/[\w./-]*\.[a-z]+\b/i,
+  /\bV\d+(?:_\d+)*__\w+\.sql\b|(?:^|[^\w.-])\d{3,}[_-][\w.-]*\.sql\b|\.(?:up|down)\.sql\b/i,
+  /\b(?:sql|schema|database|db|data|flyway|liquibase|alembic|knex|prisma|typeorm|sequelize|django|rails|drizzle|ef(?:\s+core)?)\s+migrations?\b/i,
+  /\bmigration\s+files?\b/i,
+  /\b(?:prisma\s+migrate|db:migrate|makemigrations|alembic\s+(?:upgrade|revision))\b/i,
+]
+// Source files, as a proposal names them in code spans (`src/core/audit.ts`): prose ("Node.js") is left out.
+const SOURCE = /^(?:[\w@.-]+\/)*[\w-][\w.-]*\.(?:ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|kts|scala|cs|fs|php|swift|c|cc|cpp|h|hpp|sql|vue|svelte|ex|exs|erl|clj|dart|lua|sh|prisma|graphql|gql|proto|tf)$/i
+// Tests come with each change, and do not widen what the work must understand.
+const isTest = (f: string) => /(?:^|[/._-])(?:tests?|specs?|__tests__)(?:[/._-]|$)/i.test(f) || /[a-z\d](?:Tests?|Spec)\.\w+$/.test(f)
+// Each file once, as first written; a bare name that one of the paths ends in is that file again.
+export const namedFiles = (text: string): string[] => {
+  const found = new Map<string, string>()
+  for (const [, span] of text.matchAll(/`([^`\n]+)`/g))
+    for (const word of span!.split(/\s+/)) {
+      const t = word.replace(/^[('"]+|[)'",;:.]+$/g, '').replace(/(?::\d+)+$|#L\d+(?:-L?\d+)?$/, '')
+      if (!t.includes('://') && SOURCE.test(t) && !found.has(normPath(t))) found.set(normPath(t), t)
+    }
+  const paths = [...found.keys()]
+  return [...found].filter(([f]) => f.includes('/') || !paths.some(p => p.endsWith(`/${f}`))).map(([, t]) => t)
+}
+// Source files named across the project are a system's reach, by the rule a fan-out part's files follow; tests aside.
+export const workFloor = (text: string): Floor => ({
+  ...(MIGRATION.some(m => m.test(text)) ? { care: 'costly' as const } : {}),
+  ...(filesReach(namedFiles(text).filter(f => !isTest(f))) === 'system' ? { reach: 'system' as const } : {}),
+})
+
+// The reading of a message that goes ahead with work the assistant proposed or is doing: the reading of that work
+// (`work`, the survey's of the assistant's last reply, read as a request of its own), raised by what the reply's text
+// shows for sure (`floor`) and by the message's own reading (`own`; none for a nod), never lowered by either. A message
+// that adds something of its own keeps its own mode; the steps and asks are the person's alone, never the proposal's,
+// which one piece of work follows in its own order. Its parts are the person's, else the work's. Undefined when the
+// work cannot be read and its text shows nothing for sure.
+export const goAhead = (work: Reading | undefined, own: Reading | undefined, floor: Floor): Reading | undefined => {
+  const shown = !!(floor.care || floor.reach)
+  if (!work && !shown) return undefined
+  // Unread but for its sure signs: a go-ahead after a proposal is usually the go-ahead to write it.
+  const base: Reading = work ?? { reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [] }
+  const reaches = [base.reach, own?.reach, floor.reach].filter((x): x is Reading['reach'] => !!x)
+  return {
+    reach: reaches.reduce((a, b) => upTo(REACHES as Reading['reach'][], a, b)),
+    care: [base.care, own?.care, floor.care].includes('costly') ? 'costly' : 'routine',
+    depth: Math.max(base.depth, own?.depth ?? 0) as Reading['depth'],
+    mode: own && !own.cont ? own.mode : base.mode,
+    aside: false,
+    ahead: true,
+    cont: false,
+    ask: own?.ask ?? {},
+    sure: base.sure || shown,
+    phases: own?.phases ?? [],
+    parts: own?.parts.length ? own.parts : base.parts,
+  }
+}
 
 // What the main model reads beside the prompt (the person does not) when part of the turn belongs to a subagent.
 // Work a lane holds that turns out to be independent pieces goes to the fan tool, not the one lane.
