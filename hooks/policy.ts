@@ -279,6 +279,14 @@ export const ownBrief = (messages: readonly string[], part = false): string => {
     : ''
 }
 
+// What the person's own UserPromptSubmit hooks print for a task given to an agent, which Claude Code runs for the main
+// conversation only: their project knowledge and checklists, as the main model gets them. Each entry is cut at the
+// 10,000 characters Claude Code keeps of one.
+export const hookBrief = (context: readonly string[]): string => {
+  const kept = context.map(c => c.trim()).filter(Boolean).map(c => (c.length <= 10_000 ? c : `${c.slice(0, 10_000)}…`))
+  return kept.length ? `\n\n---\nAdded by gearbox: what the person's own UserPromptSubmit hooks print for a task like this one (their project knowledge, notes and checklists). Claude Code runs them for the main conversation only, so this agent gets them here.\n\n${kept.join('\n\n')}` : ''
+}
+
 const STEP_TASK: Record<Step['mode'], string> = {
   lookup: 'that fetches it and returns the full relevant content word for word (for a ticket: title, description, acceptance criteria, comments that change the scope; for notes: each matching note\'s title and full text), with nothing summarized away',
   drive: 'with a checklist you write here first (where to go and what to do); it must not edit files or judge pass or fail, only report per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests',
