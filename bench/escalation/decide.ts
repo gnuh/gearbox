@@ -1,13 +1,14 @@
 // Layer A of the escalation bench: does each fixed prompt go to the model it should? Runs the survey exactly as
 // gearbox does (SURVEY as the system prompt, the same JSON input, Sonnet at low effort) through `claude -p` in safe
 // mode, so neither gearbox nor your hooks touch the call, then decides with gearbox's own rules from policy.ts, as
-// a steered session would. Consent questions are taken as accepted.
+// a steered session would. Consent questions are taken as accepted. Work a session is below is always handed up (the
+// escalate setting is gone); `--code-model` fixes the model code runs on, as /gearbox model does.
 //
-//   bun bench/escalation/decide.ts [--runs 3] [--only id,id] [--parallel 6] [--session sonnet] [--effort xhigh] [--escalate on]
+//   bun bench/escalation/decide.ts [--runs 3] [--only id,id] [--parallel 6] [--session sonnet] [--effort xhigh] [--code-model auto]
 import { tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { type Escalate, type Gear, type Model, type Reading, SURVEY, escalated, gearFor, label, mainModel, plan, readReading, route, trimRequest, upFor, verifyAsk } from '../../hooks/policy'
+import { type CodeModel, type Gear, type Model, type Reading, SURVEY, escalated, gearFor, label, mainModel, pinnedModel, pins, plan, readReading, route, trimRequest, upFor, verifyAsk } from '../../hooks/policy'
 
 type Case = { id: string; prompt: string; earlier?: string[]; long?: boolean; expect: string | string[]; note?: string }
 type Outcome = { worker: Model; gear: string; how: string }
@@ -21,7 +22,8 @@ const RUNS = Number(flag('runs', '3'))
 const PARALLEL = Number(flag('parallel', '6'))
 const SESSION = flag('session', 'sonnet') as Model
 const STANDING = flag('effort', 'xhigh') as Gear['effort']
-const ESCALATE = flag('escalate', 'on') as Escalate
+const CODE_MODEL = flag('code-model', 'auto') as CodeModel
+const CODE = pinnedModel(CODE_MODEL)
 const only = flag('only', '')
 
 const here = import.meta.dir
@@ -53,15 +55,15 @@ const decide = (r: Reading | undefined, c: Case): Outcome => {
   if (!r) return { worker: base, gear: '-', how: 'survey unreadable' }
   const ask = verifyAsk(r.ask, c.prompt)
   const checked = { ...r, ask }
-  const want = gearFor(checked, STANDING)
+  const want = gearFor(checked, STANDING, CODE)
   const earlier = c.earlier ?? []
   if (r.sure && r.phases.length >= 2) {
     const phases = r.phases.map(ph => ({ ...ph, ask: ph.ask && verifyAsk({ model: ph.ask }, c.prompt).model === ph.ask ? ph.ask : undefined }))
-    const steps = route(phases, base, STANDING, r.care === 'costly', 'sonnet', c.long ?? false, upFor(want), ESCALATE)
+    const steps = route(phases, base, STANDING, r.care === 'costly', 'sonnet', c.long ?? false, upFor(gearFor(checked, STANDING)), ask.model ? undefined : CODE)
     const up = steps.find(escalated)
     return { worker: up ? up.gear.model : base, gear: up ? label(up.gear) : '-', how: `route: ${steps.map(s => `${s.what} → ${s.by === 'agent' ? label(s.gear) : `main ${s.mainEffort}`}`).join('; ')}` }
   }
-  const p = r.sure ? plan(checked, want, base, earlier.length > 0, base, 'sonnet', c.long ?? false, ESCALATE) : { main: { model: base, effort: want.effort } }
+  const p = r.sure ? plan(checked, want, base, earlier.length > 0, base, 'sonnet', c.long ?? false, pins(checked, CODE)) : { main: { model: base, effort: want.effort } }
   const h = p.handoff
   if (h?.kind === 'deep' || h?.kind === 'aside') return { worker: h.gear.model, gear: label(h.gear), how: `${h.kind} hand-off` }
   if (h?.kind === 'drive' && h.judge) return { worker: h.judge.model, gear: label(h.judge), how: `browser check, judged by ${label(h.judge)}` }
@@ -102,7 +104,7 @@ const usd = rows.reduce((n, r) => n + r.rs.reduce((m, x) => m + x.usd, 0), 0)
 const md = [
   `# Escalation bench, layer A: ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
   '',
-  `Session ${SESSION}, coding effort ${STANDING}, escalate ${ESCALATE}, ${RUNS} survey runs per case, ${cases.length} cases. Survey cost $${usd.toFixed(2)}.`,
+  `Session ${SESSION}, coding model ${CODE_MODEL}, coding effort ${STANDING}, ${RUNS} survey runs per case, ${cases.length} cases. Survey cost $${usd.toFixed(2)}.`,
   '',
   `- **Goes up when it should:** ${(rate(up) * 100).toFixed(0)}% of runs (${up.length} cases)`,
   `- **Stays on ${SESSION} when it should:** ${(rate(stay) * 100).toFixed(0)}% of runs (${stay.length} cases)`,

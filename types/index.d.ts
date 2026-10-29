@@ -19,8 +19,9 @@ export type GearboxReply = { tail?: string; ids?: string[] }
 // started it (for one run in the foreground, whose report shows under that call).
 export type GearboxReports = Record<string, { texts: string[]; useId?: string }>
 
-// What the person set through /gearbox; unset keys fall back to the plugin's options, then the defaults.
-export type GearboxSettings = { code_effort?: string; navigator?: string; steer?: boolean; strict?: boolean; log?: string; pane?: string; band?: boolean; agent_hooks?: boolean; orchestrator?: boolean; orchestrator_model?: string; orchestrator_effort?: string; orchestrator_agents?: number }
+// What the person set through /gearbox; unset keys fall back to the plugin's options, then the defaults. Keys of
+// removed settings an older version stored (steer, escalate, band, pane) are ignored, and dropped at session start.
+export type GearboxSettings = { code_model?: string; code_effort?: string; navigator?: string; strict?: boolean; log?: string; agent_hooks?: boolean; orchestrator?: boolean; orchestrator_model?: string; orchestrator_effort?: string; orchestrator_agents?: number }
 
 // This turn, from the person's last prompt: requests per model, the session cost when it began, the costs of the
 // turns before it, and why its gear (a headline and a detail) for the band.

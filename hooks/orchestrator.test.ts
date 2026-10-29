@@ -334,3 +334,34 @@ test('a merged part’s model follows the union of its files, never below its me
   const loose = part('note the rest', 'answer', 0)
   expect(fanParts(reading({ mode: 'answer', reach: 'system', parts: [a, loose, b] }), 6, 'xhigh').map(p => label(p.gear))).toEqual(['opus·medium', 'sonnet·medium'])
 })
+
+test('a fixed coding model under the orchestrator: small code stays here only on that very model, else goes to its lane; Fable is a fresh agent', () => {
+  const small = reading({ mode: 'code', reach: 'point', depth: 1 })
+  const at = (model: 'sonnet' | 'opus' | 'fable') => ({ model, effort: 'xhigh' as const })
+  // The orchestrator runs Sonnet: Sonnet code stays, Opus code (even one spot) goes to the Opus lane.
+  expect(orchestratorPlan(small, at('sonnet'), MAIN, 3, 'xhigh', 'sonnet')).toEqual({ main: MAIN })
+  expect(orchestratorPlan(small, at('opus'), MAIN, 3, 'xhigh', 'opus')).toEqual({ main: MAIN, handoff: { kind: 'lane', gear: at('opus') } })
+  // An Opus orchestrator keeps no Sonnet code: it goes down to the Sonnet lane.
+  const opusMain = { model: 'opus', effort: 'medium' } as const
+  expect(orchestratorPlan(small, at('sonnet'), opusMain, 3, 'xhigh', 'sonnet')).toEqual({ main: opusMain, handoff: { kind: 'lane', gear: at('sonnet') } })
+  expect(orchestratorPlan(small, at('fable'), MAIN, 3, 'xhigh', 'fable')).toEqual({ main: MAIN, handoff: { kind: 'deep', gear: at('fable') } })
+  // Answers keep the rules, coding model or not.
+  const question = reading({ mode: 'answer', reach: 'system', depth: 2 })
+  const want = gearFor(question, 'xhigh', 'sonnet')
+  expect(orchestratorPlan(question, want, MAIN, 3, 'xhigh', 'sonnet')).toEqual(orchestratorPlan(question, gearFor(question, 'xhigh'), MAIN, 3, 'xhigh'))
+})
+
+test('a fixed coding model in a fan-out: each code part runs on it, a Fable one as a fresh agent; reads and reviews keep their rules', () => {
+  const r = reading({ mode: 'code', reach: 'area', depth: 2, parts: PARTS })
+  for (const code of ['sonnet', 'opus', 'fable'] as const) {
+    const plan = orchestratorPlan(r, gearFor(r, 'high', code), MAIN, 3, 'high', code)
+    expect(plan.handoff?.parts?.map(p => `${p.what} ${label(p.gear)}`)).toEqual(['review the retry change opus·medium', `orders: add paging ${code}·high`, `billing: fix rounding ${code}·xhigh`])
+  }
+  const fable = fanParts(r, 3, 'high', 'fable')
+  // A Fable part never becomes a lane, nor goes back to one.
+  const seated = seatParts(fable, { fable: { id: 'f1', at: 1000, tokens: 10 } }, 2000, () => false)
+  expect(seated.map(p => [p.gear.model, !!p.lane, p.resume ?? null])).toEqual([['opus', true, null], ['fable', false, null], ['fable', false, null]])
+  // Code merged with a review of the same files runs on the higher model: a review is never below Opus.
+  const merged = [part('review the mapper', 'review', 1, ['src/quote/mapper.ts']), part('fix the mapper', 'code', 1, ['src/quote/mapper.ts']), part('explain auth', 'answer', 1, ['src/auth'])]
+  expect(fanParts(reading({ mode: 'code', parts: merged }), 3, 'high', 'sonnet').map(p => label(p.gear))).toEqual(['opus·high', 'sonnet·medium'])
+})
