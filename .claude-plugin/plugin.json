@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.18.0",
+  "version": "0.23.1",
   "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, runs of reads on long conversations go to Haiku, an optional orchestrator keeps the main conversation to planning, runs the work in one long-lived lane per model and splits a request of independent parts across several agents at once, and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -11,7 +11,7 @@
     "code_model": {
       "type": "string",
       "title": "Coding model",
-      "description": "The model all code runs on. auto (the default) lets the rules pick it, as for any work: the session's model, handed up to a stronger one when the work calls for it. sonnet, opus or fable fix it: every code turn, code-writing subagent and go-ahead to write code runs on exactly that model at your coding effort, in a subagent when the conversation runs another model (Fable always in a subagent, without asking first); other work keeps the rules. Also settable with /gearbox model.",
+      "description": "The model all code runs on. auto (the default) lets the rules pick it, as for any work: the session's model, handed up to a stronger one when the work calls for it. sonnet, opus or fable fix it: every code turn, code-writing subagent and go-ahead to write code runs on exactly that model at your coding effort, in a subagent when the conversation runs another model, save a mechanical edit at one spot, which stays in the conversation (Fable always in a subagent, without asking first); other work keeps the rules. Also settable with /gearbox model.",
       "options": [
         "auto",
         "sonnet",
@@ -23,12 +23,12 @@
     "code_effort": {
       "type": "string",
       "title": "Coding effort",
-      "description": "Effort for writing code: every code turn runs at least at it, small edits included; answers and explanations follow their difficulty. Default xhigh; max is the most thorough, the slowest and the costliest; Anthropic suggests medium for Opus 5.5 if you prefer faster, cheaper turns. Also settable with /gearbox settings.",
+      "description": "Effort for writing code: every code turn runs at least at it, small edits included; answers and explanations follow their difficulty. Default xhigh; Anthropic suggests medium for Opus 5.5 if you prefer faster, cheaper turns. auto leaves delegation to the main conversation once it has read the work: hand-offs become advice, each agent runs on the model and effort its call names (effort medium to xhigh, a review on Opus at least, Fable asked first; with none named, gearbox picks), and the main conversation may set its own effort with the effort tool; code it writes itself starts at medium and up by its depth. Also settable with /gearbox effort.",
       "options": [
         "medium",
         "high",
         "xhigh",
-        "max"
+        "auto"
       ],
       "default": "xhigh"
     },
@@ -45,7 +45,7 @@
     "strict": {
       "type": "boolean",
       "title": "Strict hand-offs",
-      "description": "During a browser-check or long-command step, keep the main conversation from doing the work itself so a subagent does it; also binds a plain subagent to the step's model and effort. Also settable with /gearbox strict.",
+      "description": "During a browser-check or long-command step, keep the main conversation from doing the work itself so a subagent does it; also binds a plain subagent to the step's model and effort. With a fixed coding effort it also holds the main conversation to a deep, lane or fan-out hand-off; with coding effort auto those are advice. Also settable with /gearbox strict.",
       "default": true
     },
     "log": {
@@ -85,15 +85,15 @@
     "orchestrator_effort": {
       "type": "string",
       "title": "Orchestrator effort",
-      "description": "Effort of the main conversation while the orchestrator is on. Also settable with /gearbox orchestrator-effort.",
+      "description": "Effort of the main conversation while the orchestrator is on. auto (the default) sets it per prompt, xhigh at most: what the orchestrator keeps runs at the effort the rules give that work, a hand-off at high (briefing and reviewing the agent is where it is won or lost; low when the lane only relays a command), an agent's report coming back at high. The other levels pin it. Also settable with /gearbox orchestrator-effort.",
       "options": [
+        "auto",
         "low",
         "medium",
         "high",
-        "xhigh",
-        "max"
+        "xhigh"
       ],
-      "default": "medium"
+      "default": "auto"
     },
     "orchestrator_agents": {
       "type": "number",

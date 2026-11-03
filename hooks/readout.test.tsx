@@ -1,14 +1,19 @@
 import type { AgentStatus } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
+// The test runtime has timers; the hooks' own environment, whose types these files use, does not.
+declare const setTimeout: (done: (value?: unknown) => void, ms: number) => unknown
+const pause = () => new Promise(done => setTimeout(done, 5))
+
 const USAGE = { input_tokens: 5, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 const SCROLL = { offset: 0, bodyRows: 20 }
 const BAND = { plugin: 'gearbox', component: 'AbovePrompt', requestId: 'band', props: { hasSurvey: false, isWorking: true, maxRows: 6, bodyColumns: 100, scroll: SCROLL, view: {} } } as const
 const PANE = { plugin: 'gearbox', component: 'Pane', requestId: 'gearbox', props: { title: 'gearbox: models now', isFocused: false, bodyColumns: 90, placement: 'dock', scroll: SCROLL, view: {} } } as const
 const SURFACES = ['terminal', 'desktop'] as const
 
-// The engine beneath the mod, faked for a session that is not on Haiku: gearbox only watches here.
-const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = () => []) => {
+// The engine beneath the mod, faked for a session that is not on Haiku: gearbox only watches here. `ids` names the agent a
+// spawn starts (by default after its description).
+const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = () => [], ids: (e: any) => string = e => `a-${e.description}`) => {
   const kv = new Map<string, unknown>()
   let usd = 1.25
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 1000, window: 1e6 }, rateLimits: [], cost: { usd } } }))
@@ -22,7 +27,7 @@ const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = ()
   on('store.set', (_: unknown, e: any) => (kv.set(e.key, e.value), { value: undefined }))
   on('session.model', () => ({ value: session }))
   const prompts: string[] = []
-  on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt), { model: e.model ?? 'claude-sonnet-5-5', agentId: e.description === 'deploy' ? 'a-deploy' : e.description === 'browser check' ? 'a-check' : `a-${e.description}` }))
+  on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt), { model: e.model ?? 'claude-sonnet-5-5', agentId: e.description === 'deploy' ? 'a-deploy' : e.description === 'browser check' ? 'a-check' : ids(e) }))
   const calls: any[] = []
   on('tool.call', (_: unknown, e: any) => (calls.push(e), { result: {} }))
   on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
@@ -31,10 +36,20 @@ const bench = (on: any, session = 'claude-opus-5-5', panes: () => unknown[] = ()
     const { Text } = $.ui.resolve(e)
     return <Text dimColor>engine band</Text>
   })
+  // The text each next request writes before it ends, which arrives in small pieces of block 0.
+  const texts: string[] = []
+  let ended = 0 // requests whose stream ran its cleanup, finished or stopped early
+  let usage = USAGE // what each request used
   on('turn.step', async function* (_: unknown, e: any) {
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, model: e.answeredBy ?? e.model } }
+    const text = texts.shift() ?? ''
+    try {
+      for (let i = 0; i < text.length; i += 7) yield { kind: 'text', index: 0, text: text.slice(i, i + 7), ref: i }
+    } finally {
+      ended++
+    }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.answeredBy ?? e.model } }
   })
-  return { status, calls, prompts, kv, setCost: (v: number) => { usd = v } }
+  return { status, calls, prompts, kv, writes: (...t: string[]) => texts.push(...t), settled: () => ended, setCost: (v: number) => { usd = v }, setUsage: (u: typeof USAGE) => { usage = u } }
 }
 
 const step = async ($: any, model: string, extra: object = {}) => {
@@ -55,7 +70,122 @@ const listing = (on: any) => {
 
 const REPLY = (text: string) => ({ plugin: 'gearbox', component: 'AssistantMessage', requestId: `m-${text.length}`, props: { text, isFirstOfReply: true } }) as const
 
-test('the pane lists every loop with its model, nested under main', async ($: any, on) => {
+// A mini layout of a drawn tree as text: enough of flex (widths, growth, gaps) to read what a surface is handed.
+type El = { type: string; props?: Record<string, any>; children?: (El | string)[] }
+const isEl = (c: unknown): c is El => typeof c === 'object' && c !== null
+const inline = (n: El | string): string => (typeof n === 'string' ? n : n.type === 'Button' ? `[ ${n.props?.label} ]` : (n.children ?? []).map(inline).join(''))
+const cut = (s: string, w: number, truncate: boolean) => (truncate && s.length > w ? `${s.slice(0, Math.max(0, w - 1))}…` : s)
+const natural = (n: El | string): number => (typeof n === 'string' ? n.length : n.type === 'Text' || n.type === 'Button' ? Math.max(0, ...inline(n).split('\n').map(l => l.length)) : n.props?.flexDirection === 'row' ? (n.children ?? []).reduce((w: number, c) => w + natural(c), 0) + (Number(n.props?.columnGap ?? 0) || 0) * Math.max(0, (n.children ?? []).length - 1) : Math.max(0, ...(n.children ?? []).map(natural)))
+const sp = (v: unknown) => (typeof v === 'number' ? v : v === 'xs' || v === 'sm' ? 1 : v === 'md' ? 2 : v === 'lg' ? 3 : 0)
+const lay = (n: El | string, w: number): string[] => {
+  if (typeof n === 'string') return [n]
+  const p = n.props ?? {}
+  if (n.type === 'Text' || n.type === 'Button') return inline(n).split('\n').map(l => cut(l, w, p.wrap === 'truncate' || p.wrap === 'end'))
+  const pl = sp(p.paddingLeft ?? p.paddingX ?? p.padding), pr = sp(p.paddingRight ?? p.paddingX ?? p.padding)
+  const border = p.borderStyle ? 1 : 0
+  const inner = Math.max(0, w - pl - pr - 2 * border)
+  const kids = (n.children ?? []).filter(c => c !== '')
+  let lines: string[]
+  if (p.flexDirection === 'row') {
+    const gap = sp(p.columnGap ?? p.gap)
+    const nat = kids.map(natural)
+    const fixed = kids.map(c => (isEl(c) && typeof c.props?.width === 'number' ? (c.props.width as number) : undefined))
+    const grow = kids.map(c => (isEl(c) ? Number(c.props?.flexGrow ?? 0) : 0))
+    const base = kids.map((_, i) => fixed[i] ?? (grow[i] ? 0 : nat[i]!))
+    let room = inner - base.reduce((a, b) => a + b, 0) - gap * Math.max(0, kids.length - 1)
+    const widths = [...base]
+    const growers = grow.reduce((a, b) => a + b, 0)
+    if (room > 0 && growers) kids.forEach((_, i) => { if (grow[i]) widths[i] = Math.floor((room * grow[i]!) / growers) })
+    else if (room < 0) {
+      const shr = kids.map((c, i) => (fixed[i] === undefined && !(isEl(c) && c.props?.flexShrink === 0) ? i : -1)).filter(i => i >= 0)
+      for (const i of shr) { const take = Math.min(widths[i]!, -room); widths[i] = widths[i]! - take; room += take; if (room >= 0) break }
+    }
+    const cells = kids.map((c, i) => (isEl(c) && c.props?.backgroundColor && !(c.children ?? []).length ? [] : lay(c, widths[i]!)))
+    const h = Math.max(1, ...cells.map(c => c.length))
+    lines = Array.from({ length: h }, (_, r) => kids.map((c, i) => (isEl(c) && c.props?.backgroundColor && !(c.children ?? []).length ? '▌'.padEnd(widths[i]!) : (cells[i]![r] ?? '').padEnd(widths[i]!))).join(' '.repeat(gap)).trimEnd())
+  } else {
+    const gap = sp(p.rowGap ?? p.gap)
+    lines = kids.flatMap((c, i) => [...(i && gap ? Array(gap).fill('') : []), ...(isEl(c) ? Array(sp(c.props?.marginTop)).fill('') : []), ...lay(c, inner)])
+  }
+  lines = lines.map(l => ' '.repeat(pl) + l)
+  if (border) {
+    const iw = Math.max(0, ...lines.map(l => l.length))
+    if (lines.length === 1 && iw <= 24) return [`(${lines[0]!.trim()})`]
+    const bw = Math.max(iw, inner + pl)
+    return [`╭${'─'.repeat(bw + pr)}╮`, ...lines.map(l => `│${l.padEnd(bw)}${' '.repeat(pr)}│`), `╰${'─'.repeat(bw + pr)}╯`]
+  }
+  return lines
+}
+const plain = (tree: unknown, columns: number) => lay(tree as El, columns).map(l => l.trimEnd()).join('\n')
+
+const BAND_AT = (bodyColumns: number) => ({ ...BAND, props: { ...BAND.props, bodyColumns } })
+const PANE_AT = (bodyColumns: number) => ({ ...PANE, props: { ...PANE.props, bodyColumns } })
+
+// A drawing as text, its times calmed ("38s" is "Ns", "14:02:31" is "hh:mm:ss") so a test can read the lines it drew.
+const calm = (text: string) => text.replace(/\b(?:\d+m )?\d+s\b/g, 'Ns').replace(/\b\d\d:\d\d:\d\d\b/g, 'hh:mm:ss')
+const show = async (ui: any, columns: number): Promise<string> => calm(plain(await ui.drawn(), columns))
+// The lines the mod drew, without the engine band a test stands in beneath it.
+const lines = async (ui: any, columns: number): Promise<string[]> => (await show(ui, columns)).split('\nengine band')[0]!.trimEnd().split('\n')
+
+// What a drawing's lines should be, one pattern each, in order: a line more or less fails the test.
+const expectLines = (got: string[], want: RegExp[]) => {
+  expect(got).toHaveLength(want.length)
+  want.forEach((re, i) => expect(got[i]).toMatch(re))
+}
+
+// An agent spawned under another loop (its own agents, one level down).
+const spawnUnder = ($: any, description: string, model: string, parentAgentId: string, id = description, subagentType = 'Explore') =>
+  $.agent.spawn({ tool_use_id: id, prompt: 'p', description, subagentType, model, parentAgentId, provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-sonnet-5-5', background: true, fork: false })
+
+// The crew the design draws: the main conversation on Opus, its effort left to the orchestrator, splits a request into
+// parts that run at once: two on Sonnet whose effort it names, a review on Opus that has already reported; part 2
+// started an Explore of its own. `owed`: a fourth part, which the main conversation has not started.
+const CREW = { options: { orchestrator: true, orchestrator_model: 'opus', orchestrator_effort: 'auto', code_effort: 'auto', orchestrator_agents: 4 } }
+const CREW_PARTS = [
+  { what: 'customers', mode: 'code', depth: 1, files: ['services/customers'] },
+  { what: 'README', mode: 'code', depth: 1, files: ['docs/README.md'] },
+  { what: 'review money.ts', mode: 'review', depth: 1, files: ['services/money'] },
+  { what: 'billing', mode: 'code', depth: 1, files: ['services/billing'] },
+]
+const crew = async ($: any, on: any, o: { owed?: boolean } = {}) => {
+  const b = bench(on, 'claude-opus-5-5', () => [], e => `a-${e.tool_use_id}`)
+  b.kv.set('consent', false)
+  b.setUsage({ ...USAGE, input_tokens: 31000, output_tokens: 2100 })
+  b.setCost(12.87)
+  mock.clock(on)
+  on('session.cwd', () => ({ value: '/w/app' }))
+  on('session.messages', () => ({ value: [] }))
+  on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ reach: 'area', depth: 2, mode: 'code', parts: o.owed ? CREW_PARTS : CREW_PARTS.slice(0, 3) }), usage: USAGE } }) as never)
+  const start = (id: string, description: string, model: string, extra: object = {}) =>
+    $.agent.spawn({ tool_use_id: id, prompt: 'p', description, subagentType: 'general-purpose', model, provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra })
+  // One request of agent `id`, in which it says something and then calls a tool.
+  const run = async (id: string, say: string, call: object, o: { model?: string; effort?: string } = {}) => {
+    b.writes(say)
+    await step($, o.model ?? 'claude-sonnet-5-5', { agentId: `a-${id}`, effort: o.effort ?? 'xhigh' })
+    await $.tool.call({ ...call, agentId: `a-${id}` })
+  }
+  await $.prompt.submit({ text: 'build the customers report, update the README and review money.ts' })
+  b.writes('Waiting for the 2 parts; part 1 already has green tests')
+  await step($, 'claude-opus-5-5')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'part 1: customers', prompt: 'p', effort: 'medium' })
+  await start('t1', 'part 1: customers', 'sonnet')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't2', description: 'part 2: README', prompt: 'p', effort: 'medium' })
+  await start('t2', 'part 2: README', 'sonnet')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't3', description: 'part 3: review money.ts', prompt: 'p' })
+  await start('t3', 'part 3: review money.ts', 'opus')
+  await run('t1', 'Reading orders.ts to reuse paginate', { tool: 'Read', file_path: '/w/app/src/orders.ts' })
+  await run('t1', 'Grouping orders by customer and adding the totals', { tool: 'Write', file_path: '/w/app/src/customers.ts' })
+  await run('t2', 'Starting an Explore for every use of paginate', { tool: 'Agent', tool_use_id: 'e1', description: 'Explore · uses of paginate', prompt: 'find', subagent_type: 'Explore' })
+  await spawnUnder($, 'Explore · uses of paginate', 'sonnet', 'a-t2', 'e1')
+  await run('t2', 'Running the examples to paste real output into the README', { tool: 'Bash', command: 'bun run examples' })
+  await run('e1', 'Looking for calls to paginate in src/', { tool: 'Grep', pattern: 'paginate' }, { effort: 'low' })
+  await step($, 'claude-opus-5-5', { agentId: 'a-t3', effort: 'xhigh' })
+  await $.turn.complete({ turnId: 't', answer: '**6 findings** (1 medium: a fractional discount loses 1 cent)\n\nDetails below.', durationMs: 10, isAborted: false, agentId: 'a-t3' })
+  b.setCost(13.27)
+  return { ...b, start, run }
+}
+
+test('the panel lists every loop with its model, nested under main', async ($: any, on) => {
   bench(on)
   await step($, 'claude-opus-5-5')
   await spawn($, 'browser check', 'sonnet')
@@ -63,17 +193,16 @@ test('the pane lists every loop with its model, nested under main', async ($: an
   await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a-check' })
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /^main/ }))?.text).toContain('opus·high')
-    const row = await ui.find({ type: 'Text', text: /browser check/ })
-    expect(row?.text).toContain('sonnet·medium')
-    expect(row?.text).toContain('Bash')
+    const text = await show(ui, 90)
+    expect(text).toMatch(/^1 running · 0 done$/m)
+    expect(text).toMatch(/^● main +opus·high/m)
+    expect(text).toMatch(/^└─● browser check +sonnet·medium/m)
+    expect(text).toContain('Bash: ls') // no note yet: the call
     await ui.unmount()
   }
 })
 
-const BAND_AT = (bodyColumns: number) => ({ ...BAND, props: { ...BAND.props, bodyColumns } })
-
-test('the band: GearBox and its actions, five live columns and a row per subagent, above what the mods below draw', async ($: any, on) => {
+test('the band: a header, main and a row per subagent, above what the mods below draw', async ($: any, on) => {
   const { setCost } = bench(on)
   setCost(10)
   await $.prompt.submit({ text: '/review', command: { name: 'review', args: '' } } as any) // a person's prompt starts the tally
@@ -82,18 +211,29 @@ test('the band: GearBox and its actions, five live columns and a row per subagen
   await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
   await $.tool.call({ tool: 'Bash', command: './deploy.sh staging', agentId: 'a-deploy' })
   setCost(10.4)
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^GearBox$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /^● deploy$/, /^Bash: \.\/deploy\.sh staging$/, /^1 request {2}\d+s$/, /engine band/]) {
-      expect(await ui.find({ type: 'Text', text })).toBeDefined()
-    }
-    expect(await ui.find({ key: 'band-effort-xhigh' })).toBeUndefined() // the coding effort lives in Settings now
-    for (const key of ['band-pane', 'band-log', 'band-settings']) expect(await ui.find({ key })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /—|⌀|avg/ })).toBeUndefined() // no dash, and no average of one turn
-    // Rules and column separators are text only the terminal draws as lines; a desktop draws a card.
-    for (const text of [/^─+$/, /^│$/, /^┄+$/]) expect(!!(await ui.find({ type: 'Text', text }))).toBe(surface === 'terminal')
-    await ui.unmount()
+  const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  for (const text of [/^GearBox$/, /^opus·high$/, /^1 agent$/, /^2 req$/, /^\$10\.40$/, /^\/review$/, /engine band/]) expect(await term.find({ type: 'Text', text })).toBeDefined()
+  expectLines(await lines(term, 120), [
+    /^GearBox +opus·high · 1 agent · this turn 2 req · \$10\.40 · why \/review +\[ Panel \] +\[ Log \] +\[ Settings \]$/,
+    /^─+$/,
+    /^● main +opus·high +1 req +Ns$/,
+    /^ {2}thinking$/,
+    /^└─● deploy +haiku·low +1 req +Ns$/,
+    /^ {4}Bash: \.\/deploy\.sh staging$/,
+  ])
+  expect(await term.find({ type: 'Text', text: /—|⌀|avg/ })).toBeUndefined() // no dash, and no average of one turn
+  for (const key of ['band-pane', 'band-log', 'band-settings']) expect(await term.find({ key })).toBeDefined()
+  expect(await term.find({ key: 'band-effort-xhigh' })).toBeUndefined() // the coding effort lives in Settings now
+  expect(await term.find({ type: 'Text', text: /^─+$/ })).toBeDefined() // the terminal rules its band
+  await term.unmount()
+  // The desktop draws metrics and cards, no rule.
+  const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  for (const text of [/^GearBox$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /^deploy$/, /^Bash: \.\/deploy\.sh staging$/, /engine band/]) {
+    expect(await desk.find({ type: 'Text', text })).toBeDefined()
   }
+  for (const key of ['band-pane', 'band-log', 'band-settings', 'card-main', 'card-a-deploy']) expect(await desk.find({ key })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: /^─+$/ })).toBeUndefined()
+  await desk.unmount()
   // A second turn brings the bars and the average.
   await $.prompt.submit({ text: 'and the coupon too' })
   setCost(10.9)
@@ -101,37 +241,106 @@ test('the band: GearBox and its actions, five live columns and a row per subagen
   expect(await two.find({ type: 'Text', text: /^ [▁▂▃▄▅▆▇█]{2}$/ })).toBeDefined()
   expect(await two.find({ type: 'Text', text: /this turn \$0\.50 · avg \$0\.45/ })).toBeDefined()
   await two.unmount()
+  const bars = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await bars.find({ type: 'Text', text: /^ [▁▂▃▄▅▆▇█]{2}$/ })).toBeDefined()
+  await bars.unmount()
 })
 
-test('the band groups subagents by gear, lists five at most, and flags a fallback', async ($: any, on) => {
+test('the band draws main and its agents as a tree, two lines each: the identity, then the note and its tool; an agent’s own agent nests deeper', CREW, async ($: any, on) => {
+  await crew($, on)
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expectLines(await lines(ui, 120), [
+    /^GearBox +opus·high \(auto\) · 3 agents · this turn 7 req · \$13\.27 · why code · area +\[ Panel \] +\[ Log \] +\[ Settings \]$/,
+    /^─+$/,
+    /^● main +opus·high +1 req +Ns$/,
+    /^ {2}Waiting for the 2 parts; part 1 already has green tests · Agent$/,
+    /^├─● part 1 · customers +sonnet·medium +main +2 req +Ns$/,
+    /^│ {3}Grouping orders by customer and adding the totals · Write$/,
+    /^├─● part 2 · README +sonnet·medium +main +2 req +Ns$/,
+    /^│ {3}Running the examples to paste real output into the README · Bash$/,
+    /^│ └─● Explore · uses of paginate +sonnet·low +rules +1 req +Ns$/,
+    /^│ {5}Looking for calls to paginate in src\/ · Grep$/,
+    /^└─✓ part 3 · review money\.ts +opus·medium +rules +done · 6 findings \(1 medium: a fractional discount… +1 req +Ns$/,
+  ])
+  // The tool is its own, dimmed, piece after the note.
+  expect(await ui.find({ type: 'Text', text: /^Grouping orders by customer and adding the totals · Write$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ · Write$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a terminal under 100 columns draws the narrow band: no tool, no source of the effort, no worktree, an agent’s own agent in one line', CREW, async ($: any, on) => {
+  await crew($, on)
+  const ui = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  expectLines(await lines(ui, 80), [
+    /^GearBox opus·high \(auto\) · 3 agents · \$13\.27 +\[ Panel \] \[ Log \] \[ Settings \]$/,
+    /^─+$/,
+    /^● main +opus·high +Ns$/,
+    /^ {2}Waiting for the 2 parts; part 1 already has green tests$/,
+    /^├─● part 1 +sonnet·medium +Ns$/,
+    /^│ {3}Grouping orders by customer and adding the totals$/,
+    /^├─● part 2 +sonnet·medium +Ns$/,
+    /^│ {3}Running the examples to paste real output into the README$/,
+    /^│ └─● Explore +sonnet·low +Ns$/,
+    /^└─✓ part 3 · review money\.ts · 6 findings .*$/,
+  ])
+  expect(await ui.find({ type: 'Text', text: /this turn|why|rules|· Write/ })).toBeUndefined()
+  await ui.unmount()
+  // A long note is cut with an ellipsis.
+  const tight = await $.ui.mount({ ...BAND_AT(50), surface: 'terminal' })
+  expect((await lines(tight, 50)).some(l => l.endsWith('…'))).toBe(true)
+  await tight.unmount()
+})
+
+test('the band draws four live agents at most and counts the rest; an answer from another model shows as ⚠', async ($: any, on) => {
   const { status } = bench(on)
   await step($, 'claude-opus-5-5')
   for (const n of [1, 2, 3, 4, 5, 6]) await spawn($, `c${n}`, 'sonnet')
   expect(status.at(-1)).toBe('opus·high ⇢ 6 agents: sonnet ×6')
   await step($, 'claude-sonnet-5-5', { agentId: 'a-c1', effort: 'low', answeredBy: 'claude-haiku-5-5' })
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^6 running$/, /^sonnet·low · sonnet ×5$/, /^● c1$/, /^● c4$/, /answered by haiku/, /^\+2 more · Panel$/]) {
-      expect(await ui.find({ type: 'Text', text })).toBeDefined()
-    }
-    expect(await ui.find({ type: 'Text', text: /^● c5$/ })).toBeUndefined()
-    await ui.unmount()
-  }
+  const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expectLines(await lines(term, 120), [
+    /^GearBox +opus·high · 6 agents · /,
+    /^─+$/,
+    /^● main /,
+    /^ {2}thinking$/,
+    /^├─⚠ c1 +sonnet·low +1 req +Ns$/,
+    /^│ {3}thinking · answered by haiku$/,
+    /^├─● c2 +sonnet +0 req +Ns$/,
+    /^│ {3}thinking$/,
+    /^├─● c3 /,
+    /^│ {3}thinking$/,
+    /^└─● c4 /,
+    /^ {4}thinking$/,
+    /^\+2 agents · Panel$/,
+  ])
+  expect(await term.find({ type: 'Text', text: /c5/ })).toBeUndefined()
+  await term.unmount()
+  const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  for (const n of [1, 2, 3, 4]) expect(await desk.find({ key: `card-a-c${n}` })).toBeDefined()
+  for (const n of [5, 6]) expect(await desk.find({ key: `card-a-c${n}` })).toBeUndefined()
+  expect(await desk.find({ type: 'Text', text: /^\+2 agents · Panel$/ })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: /^⚠ answered by haiku$/ })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: /^6 running$/ })).toBeDefined()
+  await desk.unmount()
 })
 
-test('the band keeps three columns in a narrow terminal; it cannot be switched off any more', async ($: any, on) => {
+test('the band keeps a short header in a narrow terminal, and the desktop three metrics in a narrow window; it cannot be switched off any more', async ($: any, on) => {
   bench(on)
   await step($, 'claude-opus-5-5')
   const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
-  expect(await narrow.find({ type: 'Text', text: /^now$/ })).toBeDefined()
-  expect(await narrow.find({ type: 'Text', text: /^cost$/ })).toBeDefined()
-  expect(await narrow.find({ type: 'Text', text: /^this turn$/ })).toBeUndefined()
-  expect(await narrow.find({ type: 'Text', text: /^[●◐]/ })).toBeUndefined() // no subagent runs
+  expect(await narrow.find({ type: 'Text', text: /^GearBox$/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /^\$1\.25$/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /this turn/ })).toBeUndefined()
+  expect(await narrow.find({ type: 'Text', text: /^[├└]─/ })).toBeUndefined() // no subagent runs
   await narrow.unmount()
-  // The desktop app counts fewer, wider cells: the same count there still holds all five.
+  // The desktop app counts fewer, wider cells: 100 columns there still hold all five metrics, 50 keep three.
   const desk = await $.ui.mount({ ...BAND_AT(80), surface: 'desktop' })
   for (const text of [/^this turn$/, /^why$/]) expect(await desk.find({ type: 'Text', text })).toBeDefined()
   await desk.unmount()
+  const tiny = await $.ui.mount({ ...BAND_AT(50), surface: 'desktop' })
+  for (const text of [/^now$/, /^agents$/, /^cost$/]) expect(await tiny.find({ type: 'Text', text })).toBeDefined()
+  for (const text of [/^this turn$/, /^why$/]) expect(await tiny.find({ type: 'Text', text })).toBeUndefined()
+  await tiny.unmount()
   expect((await $.command.run({ command: 'gearbox', args: 'band off' })).text).toContain('band is no longer a setting')
   const still = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
   expect(await still.find({ type: 'Text', text: /GearBox/ })).toBeDefined()
@@ -139,7 +348,7 @@ test('the band keeps three columns in a narrow terminal; it cannot be switched o
   await still.unmount()
 })
 
-test('a band: false an older version stored, or a plugin option, is ignored: the band and the list under the last reply still draw', { options: { band: false } }, async ($: any, on) => {
+test('a band: false an older version stored, or a plugin option, is ignored: the band still draws', { options: { band: false } }, async ($: any, on) => {
   const { kv } = bench(on)
   kv.set('settings', { band: false })
   mock.clock(on)
@@ -155,9 +364,11 @@ test('a band: false an older version stored, or a plugin option, is ignored: the
   for (const surface of SURFACES) {
     const band = await $.ui.mount({ ...BAND_AT(120), surface })
     expect(await band.find({ type: 'Text', text: /^GearBox$/ })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: /deploy/ })).toBeDefined()
     await band.unmount()
+    // Nothing is drawn under the reply.
     const reply = await $.ui.mount({ ...REPLY('Deploying now.'), surface })
-    expect(await reply.find({ type: 'Text', text: /1 agent still at work/ })).toBeDefined()
+    expect(await reply.find({ type: 'Text', text: /still at work/ })).toBeUndefined()
     await reply.unmount()
   }
 })
@@ -176,9 +387,10 @@ test('a subagent whose turn ends while it waits on its own background work stays
   expect(status.at(-1)).toBe('opus·high ⇢ 2 agents: sonnet·low, haiku, 1 waiting')
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^1 running · 1 waiting$/, /^◐ deploy$/, /^waiting on its own background work$/, /^● browser check$/]) {
+    for (const text of [surface === 'terminal' ? /^├─◐ deploy$/ : /^◐$/, /^waiting on its own background work$/, surface === 'terminal' ? /^└─● browser check$/ : /^browser check$/]) {
       expect(await ui.find({ type: 'Text', text })).toBeDefined()
     }
+    expect(await ui.find({ type: 'Text', text: surface === 'terminal' ? /^2 agents$/ : /^1 running · 1 waiting$/ })).toBeDefined()
     await ui.unmount()
   }
   // Still alive on the engine's list: it stays; its next turn's steps mark it working again.
@@ -189,12 +401,13 @@ test('a subagent whose turn ends while it waits on its own background work stays
   expect(status.at(-1)).toBe('opus·high ⇢ 2 agents: sonnet·low, haiku')
   agents['a-deploy'] = 'waiting'
   await complete($, 'a-deploy')
-  // Ended on the engine's list: the next look drops it.
+  // Ended on the engine's list: the next look drops it from the live agents; its end is one dimmed line.
   agents['a-deploy'] = 'completed'
   await clock.advance(3000)
   expect(status.at(-1)).toBe('opus·high ⇢ 1 agent: haiku')
   const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /deploy/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /◐ deploy/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^├─✓ deploy$/ })).toBeDefined()
   await ui.unmount()
   // One the engine already lists as ended is done at its turn's end.
   agents['a-check'] = 'completed'
@@ -207,13 +420,18 @@ test('the band nests a subagent’s own agents right under it', async ($: any, o
   await step($, 'claude-opus-5-5')
   await spawn($, 'lane', 'sonnet')
   await spawn($, 'review', 'sonnet')
-  await $.agent.spawn({ tool_use_id: 'scout', prompt: 'p', description: 'scout', subagentType: 'Explore', model: 'haiku', parentAgentId: 'a-lane', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-sonnet-5-5', background: true, fork: false })
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    const rows = (await ui.findAll({ type: 'Text', text: /^ *● / })).map((t: any) => t.text)
-    expect(rows).toEqual(['● lane', '  ● scout', '● review'])
-    await ui.unmount()
-  }
+  await spawnUnder($, 'scout', 'haiku', 'a-lane')
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  const rows = (await lines(ui, 120)).map(l => /^([│ ├└─]*[●◐✓✗◌⚠]) (\S+)/.exec(l)).filter(Boolean).map(m => `${m![1]} ${m![2]}`)
+  expect(rows).toEqual(['● main', '├─● lane', '│ └─● scout', '└─● review'])
+  await ui.unmount()
+  const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  // On the desktop the scout's card is inside the lane's, and the review's is beside it.
+  const lane = JSON.stringify(await desk.find({ key: 'card-a-lane' }))
+  expect(lane).toContain('card-a-scout')
+  expect(lane).not.toContain('card-a-review')
+  expect(await desk.find({ type: 'Text', text: /^started by lane$/ })).toBeDefined()
+  await desk.unmount()
 })
 
 test('an agent alive on the engine’s list gets its row when the main turn ends, however gearbox missed it', async ($: any, on) => {
@@ -235,12 +453,12 @@ test('an agent alive on the engine’s list gets its row when the main turn ends
   expect(status.at(-1)).toBe('opus·high ⇢ 2 agents: sonnet, general-purpose')
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^● ghost task$/, /^● deploy$/, /^2 running$/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    for (const text of surface === 'terminal' ? [/● ghost task$/, /● deploy$/, /^2 agents$/] : [/^ghost task$/, /^deploy$/, /^2 running$/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
     await ui.unmount()
   }
 })
 
-test('under the last reply: the agents still at work, live, then that they all finished, until the next prompt', async ($: any, on) => {
+test('agents are shown in the band only: nothing is drawn under the last reply while they work or after they finish', async ($: any, on) => {
   const { status } = bench(on)
   const clock = mock.clock(on)
   const agents = listing(on)
@@ -249,41 +467,238 @@ test('under the last reply: the agents still at work, live, then that they all f
     return <Text>{e.props.text}</Text>
   })
   const answer = 'A verificação vai rodar pelo Docker.\n\nQuando terminar, trago o que mudou.'
+  const bare = ['Quando terminar, trago o que mudou.']
   await step($, 'claude-opus-5-5')
   await spawn($, 'deploy', 'sonnet')
   agents['a-deploy'] = 'running'
   await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await $.tool.call({ tool: 'Bash', command: './deploy.sh', agentId: 'a-deploy' })
   await complete($, undefined, answer)
   for (const surface of SURFACES) {
+    // An agent at work: the reply is the engine's own, with no rows and no count under it.
     const ui = await $.ui.mount({ ...REPLY('Quando terminar, trago o que mudou.'), surface })
-    for (const text of [/^Quando terminar/, /1 agent still at work · not done yet/, /^● deploy$/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    expect(await lines(ui, 100)).toEqual(bare)
+    expect(await ui.find({ type: 'Text', text: /still at work|not done yet|deploy|sonnet|Bash/ })).toBeUndefined()
     await ui.unmount()
-    // Another reply is drawn as it was.
-    const older = await $.ui.mount({ ...REPLY('Feito, revise quando puder.'), surface })
-    expect(await older.find({ type: 'Text', text: /still at work/ })).toBeUndefined()
-    await older.unmount()
-    // Idle with an agent at work is not done.
+    // The band above the prompt is where it shows, and that main waits on it.
     const band = await $.ui.mount({ ...BAND_AT(120), surface })
-    for (const text of [/^● agents at work$/, /^main waits · not done yet$/]) expect(await band.find({ type: 'Text', text })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: surface === 'terminal' ? /^└─● deploy$/ : /^deploy$/ })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: /^agents at work · main waits · not done yet$/ })).toBeDefined()
     await band.unmount()
   }
   const live = await $.ui.mount({ ...REPLY('Quando terminar, trago o que mudou.'), surface: 'terminal' })
-  // Its turn ends while it waits on its own background work: the same reply redraws.
+  // Its turn ends while it waits on its own background work: the reply stays as it was.
   agents['a-deploy'] = 'waiting'
   await complete($, 'a-deploy')
-  expect(await live.find({ type: 'Text', text: /^◐ deploy$/ })).toBeDefined()
-  expect(await live.find({ type: 'Text', text: /1 waiting/ })).toBeDefined()
-  // It ends: the next look at the engine's list says so.
+  expect(await lines(live, 100)).toEqual(bare)
+  // It ends: no line says so under the reply; the band keeps it, dimmed, until the next prompt.
+  await pause()
   agents['a-deploy'] = 'completed'
   await clock.advance(3000)
-  expect(await live.find({ type: 'Text', text: /^✓ all agents finished/ })).toBeDefined()
-  expect(await live.find({ type: 'Text', text: /deploy/ })).toBeUndefined()
+  expect(await lines(live, 100)).toEqual(bare)
+  expect(await live.find({ type: 'Text', text: /all agents finished|still at work|deploy|✓|◐/ })).toBeUndefined()
   expect(status.at(-1)).toBe('opus·high')
-  // The next prompt clears it.
+  const band = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await band.find({ type: 'Text', text: /^└─✓ deploy$/ })).toBeDefined()
+  await band.unmount()
+  // The next prompt changes nothing under the reply either.
   await $.prompt.submit({ text: 'e agora?' })
-  expect(await live.find({ type: 'Text', text: /all agents finished/ })).toBeUndefined()
-  expect(await live.find({ type: 'Text', text: /^Quando terminar/ })).toBeDefined()
+  expect(await lines(live, 100)).toEqual(bare)
   await live.unmount()
+})
+
+test('a new note keeps the last tool beside it, in the band and the panel, until a new call replaces it', async ($: any, on) => {
+  const b = bench(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'sonnet')
+  b.writes('Reading the config')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await $.tool.call({ tool: 'Read', file_path: '/w/app/config.ts', agentId: 'a-deploy' })
+  // A new note, and no call yet: the line is the note and the tool called before it.
+  b.writes('Now the migration')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await term.find({ type: 'Text', text: /^Now the migration · Read$/ })).toBeDefined()
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const before = await show(pane, 100)
+  expect(before).toMatch(/hh:mm:ss {2}Now the migration$/m) // the note itself has not been followed by a call
+  expect(before).toMatch(/hh:mm:ss {2}Reading the config · Read$/m)
+  const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  expect(await desk.find({ type: 'Text', text: /^Now the migration$/ })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: /^Read$/ })).toBeDefined()
+  // A new call replaces it, and the note it follows is the one on the line.
+  await $.tool.call({ tool: 'Bash', command: 'bun run migrate', agentId: 'a-deploy' })
+  expect(await term.find({ type: 'Text', text: /^Now the migration · Bash$/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /· Read/ })).toBeUndefined()
+  expect(await show(pane, 100)).toMatch(/hh:mm:ss {2}Now the migration · Bash$/m)
+  expect(await desk.find({ type: 'Text', text: /^Bash$/ })).toBeDefined()
+  // Main's line keeps its tool as well.
+  b.writes('Waiting for the deploy')
+  await step($, 'claude-opus-5-5')
+  await $.tool.call({ tool: 'Agent', description: 'deploy', prompt: 'p' })
+  b.writes('Checking the result')
+  await step($, 'claude-opus-5-5')
+  expect(await term.find({ type: 'Text', text: /^Checking the result · Agent$/ })).toBeDefined()
+  for (const ui of [term, pane, desk]) await ui.unmount()
+})
+
+// A long note the way an agent writes it: one sentence of about 130 characters.
+const LONG = 'Checking that the new endpoint refuses a request that carries no attribution token before I write the migration that adds the column'
+
+// What the note on a drawn line shows: the text after the tree's guides, up to the tool dimmed after it.
+const shownNote = (line: string, guides: RegExp = /^[│ ├└─]*/) => line.replace(guides, '').replace(/ · (Write|Bash)$/, '')
+// A note cut at a word: the text before its ellipsis is a prefix of the whole whose next character is a space.
+const cutAtWord = (shown: string, whole: string) => shown.endsWith('…') && whole.startsWith(shown.slice(0, -1)) && whole[shown.length - 1] === ' '
+
+test('a long note is stored cut at a word, and each text surface cuts it at a word again to fit its width, keeping the tool', async ($: any, on) => {
+  const b = bench(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'sonnet')
+  b.writes(LONG)
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await $.tool.call({ tool: 'Write', file_path: '/w/app/migration.ts', agentId: 'a-deploy' })
+  expect(LONG.length).toBeGreaterThan(120)
+  // Stored: the panel, wide enough to show it whole, has it cut at a word within 120 characters.
+  const wide = await $.ui.mount({ ...PANE_AT(200), surface: 'terminal' })
+  const stored = /hh:mm:ss {2}(.+?) · Write$/m.exec(await show(wide, 200))![1]!
+  expect(stored.length).toBeLessThanOrEqual(120)
+  expect(cutAtWord(stored, LONG)).toBe(true)
+  await wide.unmount()
+  // Drawn: a band of 100 columns fits the note (the tool stays after it) cut at a word within the line.
+  const term = await $.ui.mount({ ...BAND_AT(100), surface: 'terminal' })
+  const line = (await lines(term, 100)).find(l => l.includes('Checking'))!
+  expect(line.length).toBeLessThanOrEqual(100)
+  expect(line).toEndWith('… · Write')
+  const fitted = shownNote(line)
+  expect(fitted.length).toBeLessThan(stored.length)
+  expect(cutAtWord(fitted, LONG)).toBe(true)
+  await term.unmount()
+  // A narrow band has no tool and cuts at a word as well.
+  const narrow = await $.ui.mount({ ...BAND_AT(60), surface: 'terminal' })
+  const small = (await lines(narrow, 60)).find(l => l.includes('Checking'))!
+  expect(small.length).toBeLessThanOrEqual(60)
+  expect(cutAtWord(shownNote(small), LONG)).toBe(true)
+  await narrow.unmount()
+  // The panel in a narrow pane too.
+  const tight = await $.ui.mount({ ...PANE_AT(60), surface: 'terminal' })
+  const row = (await show(tight, 60)).split('\n').find(l => l.includes('Checking'))!
+  expect(row.length).toBeLessThanOrEqual(60)
+  expect(row).toEndWith('… · Write')
+  expect(cutAtWord(shownNote(row, /^.*hh:mm:ss {2}/), LONG)).toBe(true)
+  await tight.unmount()
+  // The desktop's card is as wide as its window lets the text be: it gets the stored note.
+  const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  expect(await desk.find({ type: 'Text', text: new RegExp(`^${stored.replace('…', '…')}$`) })).toBeDefined()
+  await desk.unmount()
+})
+
+test('a finished agent is one dimmed line with its result, a failed one has a ✗, and the next prompt takes both off the band; the panel keeps them', async ($: any, on) => {
+  bench(on)
+  mock.clock(on)
+  await $.prompt.submit({ text: 'review it and migrate' })
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'review money.ts', 'opus')
+  await spawn($, 'migrate', 'haiku')
+  await spawn($, 'deploy', 'sonnet')
+  await step($, 'claude-opus-5-5', { agentId: 'a-review money.ts', effort: 'medium' })
+  await $.turn.complete({ turnId: 't', answer: '## 6 findings\n\n1 medium: a fractional discount loses 1 cent.', durationMs: 10, isAborted: false, agentId: 'a-review money.ts' })
+  await $.turn.complete({ turnId: 't', answer: 'Could not reach the database.', durationMs: 10, isAborted: false, reason: 'error', agentId: 'a-migrate' })
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
+    if (surface === 'terminal') {
+      expectLines(await lines(ui, 120), [
+        /^GearBox +opus·high · 1 agent · /,
+        /^─+$/,
+        /^● main /,
+        /^ {2}thinking$/,
+        /^├─✓ review money\.ts +opus·medium +done · 6 findings +1 req +Ns$/,
+        /^├─✗ migrate +haiku +failed · Could not reach the database\. +0 req +Ns$/,
+        /^└─● deploy +sonnet /,
+        /^ {4}thinking$/,
+      ])
+    } else {
+      expect(await ui.find({ type: 'Text', text: /^done — 6 findings$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^failed — Could not reach the database\.$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^✓$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^✗$/ })).toBeDefined()
+    }
+    await ui.unmount()
+  }
+  // A done line is dimmed, except its ✓, which keeps the state's colour.
+  const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  const done = JSON.stringify(await term.find({ type: 'Text', text: /^├─✓ review money\.ts$/ }))
+  expect(done).toContain('"dimColor":true')
+  expect(done).toContain('"color":"#4FBF6A"')
+  expect(JSON.stringify(await term.find({ type: 'Text', text: /^├─✗ migrate$/ }))).toContain('"color":"#E5646E"')
+  await term.unmount()
+  await pause()
+  await $.prompt.submit({ text: 'and now the docs' })
+  const next = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await next.find({ type: 'Text', text: /review money\.ts|migrate/ })).toBeUndefined()
+  expect(await next.find({ type: 'Text', text: /deploy/ })).toBeDefined() // still at work
+  await next.unmount()
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const text = await show(pane, 100)
+  expect(text).toMatch(/✓ review money\.ts/)
+  expect(text).toMatch(/done hh:mm:ss — 6 findings/)
+  expect(text).toMatch(/failed hh:mm:ss — Could not reach the database\./)
+  await pane.unmount()
+})
+
+test('a fan-out part whose agent has not started is queued (◌) under main, until it starts', CREW, async ($: any, on) => {
+  const { start } = await crew($, on, { owed: true })
+  const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  const queued = (await lines(term, 120)).slice(-2)
+  expect(queued[0]).toMatch(/^├─✓ part 3 · review money\.ts /)
+  expect(queued[1]).toMatch(/^└─◌ part 4 · billing +sonnet·\w+ +queued$/)
+  expect(await term.find({ type: 'Text', text: /^3 agents$/ })).toBeDefined() // a queued part is no agent yet
+  await term.unmount()
+  const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  expect((await lines(narrow, 80)).at(-1)).toMatch(/^└─◌ part 4 +sonnet·\w+ +queued$/)
+  await narrow.unmount()
+  const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  expect(await desk.find({ key: 'card-queued:0' })).toBeDefined()
+  expect(await desk.find({ type: 'Text', text: /^queued — ?/ })).toBeUndefined()
+  await desk.unmount()
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await show(pane, 100)).toMatch(/^3 running · 1 done · 1 queued$/m)
+  await pane.unmount()
+  // Its agent starts: the part is no longer queued.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't4', description: 'part 4: billing', prompt: 'p', effort: 'high' })
+  await start('t4', 'part 4: billing', 'sonnet')
+  const after = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await after.find({ type: 'Text', text: /◌|queued/ })).toBeUndefined()
+  expect(await after.find({ type: 'Text', text: /part 4 · billing/ })).toBeDefined()
+  await after.unmount()
+})
+
+test('the panel gives each agent its last three notes, the files it touched, its worktree and what it cost, nested as the band is', CREW, async ($: any, on) => {
+  const { run } = await crew($, on)
+  // Part 1 makes a worktree, writes two more notes and edits: four notes in all, of which the panel keeps three.
+  await run('t1', 'Creating the worktree for the part', { tool: 'Bash', command: 'git -C /w/app worktree add /tmp/gb-wt-customers -b part/customers' })
+  await run('t1', 'Testing the grouping', { tool: 'Edit', file_path: '/w/app/src/customers.ts' })
+  await run('t1', 'Fixing the totals', { tool: 'Edit', file_path: '/w/app/src/orders.ts' })
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE_AT(110), surface })
+    expectLines((await lines(ui, 110)).filter(l => !/^\s*$/.test(l)).slice(0, 15), [
+      /^3 running · 1 done$/,
+      /^● main +opus·high +\(auto: hand-off\) +1 req · Ns · \$0\.17$/,
+      /^ {2}hh:mm:ss {2}Waiting for the 2 parts; part 1 already has green tests · Agent$/,
+      /^├─● part 1 · customers +sonnet·medium +chosen by main +⎇ part\/customers {2}\/tmp\/gb-wt-customers$/,
+      /^│ {3}5 req · Ns · 155\.0k in \/ 10\.5k out · \$0\.4[12]$/,
+      /^│ {3}hh:mm:ss {2}Fixing the totals · Edit$/,
+      /^│ {3}hh:mm:ss {2}Testing the grouping · Edit$/,
+      /^│ {3}hh:mm:ss {2}Creating the worktree for the part · Bash$/,
+      /^│ {3}files: src\/orders\.ts \(edited\) · src\/customers\.ts \(new\)$/,
+      /^├─● part 2 · README +sonnet·medium +chosen by main$/,
+      /^│ {3}2 req · Ns · 62\.0k in \/ 4\.2k out · \$0\.17$/,
+      /^│ {3}hh:mm:ss {2}Running the examples to paste real output into the README · Bash$/,
+      /^│ {3}hh:mm:ss {2}Starting an Explore for every use of paginate · Agent$/,
+      /^│ └─● Explore · uses of paginate +sonnet·low +by rules$/,
+      /^│ {5}1 req · Ns · 31\.0k in \/ 2\.1k out · \$0\.08$/,
+    ])
+    await ui.unmount()
+  }
 })
 
 test('an agent of the main conversation may start agents that read, on Sonnet at low (Haiku when it asks); none that change code, and none deeper', async ($: any, on) => {
@@ -370,7 +785,7 @@ test('the spinner names the working loop’s model', async ($: any, on) => {
   }
 })
 
-test('the status line counts running subagents, and a fallback is flagged in the pane', async ($: any, on) => {
+test('the status line counts running subagents, and a fallback is flagged in the panel', async ($: any, on) => {
   const { status } = bench(on)
   await step($, 'claude-opus-5-5')
   expect(status.at(-1)).toBe('opus·high')
@@ -378,7 +793,7 @@ test('the status line counts running subagents, and a fallback is flagged in the
   expect(status.at(-1)).toBe('opus·high ⇢ 1 agent: sonnet')
   await step($, 'claude-sonnet-5-5', { agentId: 'a-check', effort: 'medium', answeredBy: 'claude-haiku-5-5' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /browser check/ }))?.text).toContain('answered by haiku')
+  expect(await show(ui, 90)).toMatch(/^└─⚠ browser check +sonnet·medium +⚠ answered by haiku$/m)
   await ui.unmount()
   await complete($, 'a-check')
   expect(status.at(-1)).toBe('opus·high')
@@ -395,7 +810,7 @@ test('/gearbox off clears the readout; /gearbox pane opens it', async ($: any, o
   await ui.unmount()
 })
 
-test('the pane lists every loop, finished ones included, with no filter; a pane: running an older version stored is ignored', async ($: any, on) => {
+test('the panel lists every loop, finished ones included, with no filter; a pane: running an older version stored is ignored', async ($: any, on) => {
   const { kv } = bench(on)
   kv.set('settings', { pane: 'running' })
   await step($, 'claude-opus-5-5')
@@ -406,7 +821,8 @@ test('the pane lists every loop, finished ones included, with no filter; a pane:
   await complete($, 'a-check')
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    for (const text of [/^main/, /browser check/, /deploy/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    for (const text of [/main/, /browser check/, /deploy/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    expect(await show(ui, 90)).toMatch(/^1 running · 1 done$/m)
     expect(await ui.find({ type: 'Button' })).toBeUndefined() // no Hide finished / Show finished
     await ui.unmount()
   }
@@ -419,4 +835,195 @@ test('the pane lists every loop, finished ones included, with no filter; a pane:
   await view.unmount()
 })
 
+// What a loop says before it calls a tool shows in place of the call: the first line of its note, then the tool dimmed.
+test('the band and the panel show an agent’s note and its tool in place of the command', async ($: any, on) => {
+  const { writes } = bench(on)
+  mock.clock(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'haiku')
+  await spawn($, 'checks', 'haiku')
+  writes('Deploying to staging.')
+  await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await $.tool.call({ tool: 'Bash', command: './deploy.sh staging', agentId: 'a-deploy' })
+  // No note yet: the command, as before.
+  await step($, 'claude-haiku-5-5', { agentId: 'a-checks', effort: 'low' })
+  await $.tool.call({ tool: 'Grep', pattern: 'TODO', agentId: 'a-checks' })
+  for (const surface of SURFACES) {
+    // The panel and the terminal's band draw the note and its tool in one line; the desktop's card, a chip beside the note.
+    for (const mount of [{ ...BAND_AT(120), surface }, { ...PANE, surface }]) {
+      const ui = await $.ui.mount(mount)
+      const card = surface === 'desktop' && mount.component === 'AbovePrompt'
+      expect(await ui.find({ type: 'Text', text: card ? /^Deploying to staging\.$/ : /Deploying to staging\. · Bash/ })).toBeDefined()
+      if (card) expect(await ui.find({ type: 'Text', text: /^Bash$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /deploy\.sh/ })).toBeUndefined()
+      await ui.unmount()
+    }
+    // A narrow terminal keeps the note and drops the tool.
+    if (surface === 'terminal') {
+      const narrow = await $.ui.mount({ ...BAND_AT(80), surface })
+      expect(await narrow.find({ type: 'Text', text: /^Deploying to staging\.$/ })).toBeDefined()
+      expect(await narrow.find({ type: 'Text', text: /Bash/ })).toBeUndefined()
+      await narrow.unmount()
+    }
+    const band = await $.ui.mount({ ...BAND_AT(120), surface })
+    if (surface === 'terminal') expect(await band.find({ type: 'Text', text: /^ · Bash$/ })).toBeDefined() // the tool is its own, dimmed, piece
+    expect(await band.find({ type: 'Text', text: /^Grep TODO$/ })).toBeDefined()
+    await band.unmount()
+  }
+})
+
+test('a note is its first line with the markdown off; a request that writes none keeps the last; the turn’s end clears it', async ($: any, on) => {
+  const { writes } = bench(on)
+  mock.clock(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'haiku')
+  writes('> - ## **Reading** the `orders` _file_ now\n\nA long second paragraph that is not shown.')
+  await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await $.tool.call({ tool: 'Read', file_path: '/src/orders.ts', agentId: 'a-deploy' })
+  await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' }) // writes no text
+  await $.tool.call({ tool: 'Edit', file_path: '/src/orders.ts', agentId: 'a-deploy' })
+  const band = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await band.find({ type: 'Text', text: /^Reading the orders file now · Edit$/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /second paragraph/ })).toBeUndefined()
+  await band.unmount()
+  await complete($, 'a-deploy')
+  const after = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await after.find({ type: 'Text', text: /Reading/ })).toBeUndefined() // a finished agent shows how it ended, not its note
+  expect(await after.find({ type: 'Text', text: /^└─✓ deploy$/ })).toBeDefined()
+  await after.unmount()
+  // The panel keeps what it said, as one note: the later request wrote none.
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const text = await show(pane, 100)
+  expect(text).toMatch(/└─✓ deploy +haiku·low/)
+  await pane.unmount()
+})
+
+// The loops record as the plugin last wrote it: a test calls this before its first call on `$`, and reads the loops with the function it
+// returns (the kit's own bottom still keeps the value for the plugin).
+const watchLoops = (on: any): (() => Record<string, any>) => {
+  let loops: Record<string, any> = {}
+  on('state.set', (_: unknown, e: any, next: any) => {
+    if (e.plugin === 'gearbox' && e.key === 'loops') loops = e.value.value
+    return next(e)
+  })
+  return () => loops
+}
+
+test('a loop keeps the last three things it said, each followed by the tool it called; a line a request is still writing is one note; a new prompt clears main’s', async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  const { writes } = bench(on)
+  mock.clock(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'haiku')
+  const say = async (text: string, call: object) => {
+    writes(text)
+    await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
+    await $.tool.call({ ...call, agentId: 'a-deploy' })
+  }
+  const notes = () => loopsOf()['a-deploy'].notes.map((n: any) => [n.text, n.tool])
+  // The text arrives in pieces of seven characters, and is one note.
+  await say('Reading the config.', { tool: 'Read', file_path: '/w/a.ts' })
+  expect(notes()).toEqual([['Reading the config.', 'Read']])
+  // A request that says nothing and calls a tool: the note is followed by that one.
+  await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
+  await $.tool.call({ tool: 'Grep', pattern: 'TODO', agentId: 'a-deploy' })
+  expect(notes()).toEqual([['Reading the config.', 'Grep']])
+  await say('Editing it.', { tool: 'Edit', file_path: '/w/a.ts' })
+  await say('Editing it.', { tool: 'Edit', file_path: '/w/b.ts' }) // the same line again is not a new note
+  await say('Running the tests.', { tool: 'Bash', command: 'bun test' })
+  await say('Reporting.', { tool: 'Read', file_path: '/w/c.ts' })
+  expect(notes()).toEqual([['Editing it.', 'Edit'], ['Running the tests.', 'Bash'], ['Reporting.', 'Read']])
+  const at = loopsOf()['a-deploy'].notes.map((n: any) => n.at)
+  expect(at[0] <= at[1] && at[1] <= at[2] && at[0] > 0).toBe(true)
+  // Main's notes are this turn's.
+  writes('Waiting for the deploy.')
+  await step($, 'claude-opus-5-5')
+  expect(loopsOf().main.notes.map((n: any) => n.text)).toEqual(['Waiting for the deploy.'])
+  await $.prompt.submit({ text: '/review', command: { name: 'review', args: '' } } as any)
+  expect(loopsOf().main.notes).toEqual([])
+  expect(loopsOf()['a-deploy'].notes).toHaveLength(3) // an agent keeps its own
+})
+
+test('the main conversation shows its own note and tool on its row, and the turn’s end clears it', async ($: any, on) => {
+  const { writes } = bench(on)
+  writes('Checking the totals against the ledger.')
+  await step($, 'claude-opus-5-5')
+  await $.tool.call({ tool: 'Bash', command: 'bun test' })
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
+    expect(await ui.find({ type: 'Text', text: surface === 'terminal' ? /^Checking the totals against the ledger\. · Bash$/ : /^Checking the totals against the ledger\.$/ })).toBeDefined()
+    if (surface === 'desktop') expect(await ui.find({ type: 'Text', text: /^Bash$/ })).toBeDefined() // a chip
+    await ui.unmount()
+  }
+  const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  expect(await narrow.find({ type: 'Text', text: /^Checking the totals against the ledger\.$/ })).toBeDefined()
+  await narrow.unmount()
+  await complete($)
+  const idle = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  expect(await idle.find({ type: 'Text', text: /Checking the totals/ })).toBeUndefined()
+  expect(await idle.find({ type: 'Text', text: /^waiting for a prompt$/ })).toBeDefined()
+  await idle.unmount()
+})
+
+test('the desktop band draws a card per agent: a rail in its model’s colour, chips for its gear, who chose the effort and its worktree, the note with a tool chip, the note before it; its own agents inside, a finished one dimmed', CREW, async ($: any, on) => {
+  const { run } = await crew($, on)
+  await run('t1', 'Creating the worktree for the part', { tool: 'Bash', command: 'git -C /w/app worktree add /tmp/gb-wt-customers -b part/customers' })
+  await run('t1', 'Grouping orders by customer and adding the totals', { tool: 'Write', file_path: '/w/app/src/customers.ts' })
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  const card = async (id: string) => JSON.stringify(await ui.find({ key: `card-${id}` }))
+  // Main first, then a card for each part; the Explore is inside part 2's card, the review beside it.
+  const [main, one, two, review] = [await card('main'), await card('a-t1'), await card('a-t2'), await card('a-t3')]
+  expect(two).toContain('card-a-e1')
+  for (const other of [main, one, review]) expect(other).not.toContain('card-a-e1')
+  expect(one).not.toContain('card-a-t2')
+  // Rails: Opus's amber for main and the review, Sonnet's blue for the parts and the Explore.
+  expect(main).toContain('"backgroundColor":"#D99A2B"')
+  expect(one).toContain('"backgroundColor":"#5B8DEF"')
+  expect(review).toContain('"backgroundColor":"#D99A2B"')
+  // Chips: gear, who chose the effort, the worktree.
+  for (const chip of [/^sonnet·medium$/, /^chosen by main$/, /^⎇ part\/customers$/, /^by rules$/, /^auto$/]) expect(await ui.find({ type: 'Text', text: chip })).toBeDefined()
+  // Main's card: its role, the note and the tool chip; the card of a part: the note, the tool chip, the note before.
+  expect(main).toContain('main session')
+  expect(await ui.find({ type: 'Text', text: /^Waiting for the 2 parts; part 1 already has green tests$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Agent$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Grouping orders by customer and adding the totals$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Write$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^before: Creating the worktree for the part$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^started by part 2$/ })).toBeDefined()
+  // The finished review: its result under it, and no note.
+  expect(review).toContain('done — 6 findings (1 medium: a fractional discount loses 1 cent)')
+  expect(review).not.toContain('before:')
+  expect(JSON.stringify(await ui.find({ type: 'Text', text: /^done — 6 findings/ }))).toContain('"dimColor":true')
+  await ui.unmount()
+})
+
+test('an agent’s worktree is the one Claude Code reports, or its isolation; the agent’s result carries the branch and the path', async ($: any, on) => {
+  // Claude Code reports where an agent that ran in a worktree of its own worked, once it has ended.
+  on('tool.call', { tool: 'Agent' }, () => ({ result: { agentId: 'a-isolated', worktreePath: '/w/app/.claude/worktrees/agent-1', worktreeBranch: 'worktree-agent-1' } }) as never)
+  bench(on)
+  mock.clock(on)
+  on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ reach: 'point', depth: 0, mode: 'answer' }), usage: USAGE } }) as never)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'isolated', 'sonnet')
+  const pane = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const text = await show(ui, 120)
+    await ui.unmount()
+    return text
+  }
+  expect(await pane()).not.toContain('⎇')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'isolated', description: 'isolated', prompt: 'p', isolation: 'worktree' })
+  expect(await pane()).toMatch(/⎇ worktree-agent-1 {2}\/w\/app\/\.claude\/worktrees\/agent-1/)
+})
+
+test('a response stopped early (Esc) reaches the stream beneath, which settles', async ($: any, on) => {
+  const { writes, settled } = bench(on)
+  writes('Reading the orders, then the totals.') // five pieces
+  const stream = $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 3 })
+  await stream.next()
+  await stream.next()
+  expect(settled()).toBe(0)
+  await stream.return(undefined)
+  expect(settled()).toBe(1)
+})
 

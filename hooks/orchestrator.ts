@@ -2,12 +2,15 @@
 // long-lived subagent per model. A lane starts at the top effort it will need and each message lowers it (bench/lanes:
 // a mod's effort on a resumed agent reaches the API and keeps the cache; lowering takes hold fully, raising only half).
 import type { ModelEffort } from 'claude-code'
-import { EFFORTS, type FanPart, type Gear, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, choreGear, filesReach as scope, gearFor, normPath as norm, pathFolder as folder, pins, upFor, upTo } from './policy'
+import { BRIEFING, EFFORTS, type FanPart, type Gear, type Handoff, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, capXhigh, choreGear, filesReach as scope, gearFor, mechanical, normPath as norm, pathFolder as folder, pins, staysPut, upFor, upTo } from './policy'
 
-export type OrchestratorSettings = { orchestrator: boolean; orchestrator_model: 'haiku' | 'sonnet' | 'opus'; orchestrator_effort: ModelEffort; orchestrator_agents: number }
+// The orchestrator's effort: a level, or `auto`, which sets the main conversation's effort per prompt (see orchestratorPlan).
+export type OrchestratorEffort = ModelEffort | 'auto'
+export const ORCHESTRATOR_EFFORTS: readonly OrchestratorEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh']
+export type OrchestratorSettings = { orchestrator: boolean; orchestrator_model: 'haiku' | 'sonnet' | 'opus'; orchestrator_effort: OrchestratorEffort; orchestrator_agents: number }
 
 // What the main conversation runs on while the orchestrator is on, unless the person picks another.
-export const ORCHESTRATOR: Gear = { model: 'sonnet', effort: 'medium' }
+export const ORCHESTRATOR: { model: 'sonnet'; effort: OrchestratorEffort } = { model: 'sonnet', effort: 'auto' }
 const MODELS = ['haiku', 'sonnet', 'opus'] as const
 // How many agents a request may fan out to at once: 1 to 6, 3 unless the person picks another; 1 is no fan-out.
 export const AGENTS = 3
@@ -19,7 +22,7 @@ const agentsFrom = (v: unknown): number => {
 export const orchestratorFrom = (o: Record<string, unknown>): OrchestratorSettings => ({
   orchestrator: o.orchestrator === true,
   orchestrator_model: MODELS.includes(o.orchestrator_model as never) ? (o.orchestrator_model as OrchestratorSettings['orchestrator_model']) : ORCHESTRATOR.model as 'sonnet',
-  orchestrator_effort: EFFORTS.includes(o.orchestrator_effort as ModelEffort) ? (o.orchestrator_effort as ModelEffort) : ORCHESTRATOR.effort,
+  orchestrator_effort: ORCHESTRATOR_EFFORTS.includes(o.orchestrator_effort as OrchestratorEffort) ? (o.orchestrator_effort as OrchestratorEffort) : o.orchestrator_effort === 'max' ? 'xhigh' : ORCHESTRATOR.effort,
   orchestrator_agents: agentsFrom(o.orchestrator_agents),
 })
 
@@ -27,14 +30,14 @@ export const orchestratorFrom = (o: Record<string, unknown>): OrchestratorSettin
 export const orchestratorPatch = (word: string, value: string | undefined): Partial<OrchestratorSettings> | undefined => {
   if (word === 'orchestrator' && (value === 'on' || value === 'off')) return { orchestrator: value === 'on' }
   if (word === 'orchestrator-model' && MODELS.includes(value as never)) return { orchestrator_model: value as OrchestratorSettings['orchestrator_model'] }
-  if (word === 'orchestrator-effort' && EFFORTS.includes(value as ModelEffort)) return { orchestrator_effort: value as ModelEffort }
+  if (word === 'orchestrator-effort' && ORCHESTRATOR_EFFORTS.includes(value as OrchestratorEffort)) return { orchestrator_effort: value as OrchestratorEffort }
   if (word === 'orchestrator-agents' && value !== undefined && /^[1-6]$/.test(value)) return { orchestrator_agents: Number(value) }
   return undefined
 }
 
-// The effort a lane is started at: the top it will need, so each job can lower it. A job that asks for max, or a max
-// coding effort, starts the lane at max.
-export const laneStart = (job: ModelEffort, standing: ModelEffort): ModelEffort => upTo(EFFORTS, standing === 'max' ? 'max' : 'xhigh', job)
+// The effort a lane is started at: the top it will need, so each job can lower it. A job that asks for max starts the
+// lane at max.
+export const laneStart = (job: ModelEffort): ModelEffort => upTo(EFFORTS, 'xhigh', job)
 
 // A lane: the agent that holds a model's work, with when its cache was last warmed and how big its context is.
 export type Lane = { id: string; at: number; tokens: number }
@@ -159,9 +162,10 @@ const groupGear = (r: Reading, g: Part[], standing: ModelEffort, code?: Model): 
   return g.map(p => partGear(r, p, reach, standing, code)).reduce((a, b) => ({ model: upTo(LADDER, a.model, b.model), effort: upTo(EFFORTS, a.effort, b.effort) }))
 }
 
-// The fan-out of a sure reading: each group as one part, on its gear.
+// The fan-out of a sure reading: each group as one part, on its gear. A group with a review says so: whatever model its
+// call names, it never runs below Opus.
 export const fanParts = (r: Reading, cap: number, standing: ModelEffort, code?: Model): FanPart[] =>
-  fanOut(r.parts, cap).map(g => ({ what: g.map(p => p.what).join('; '), gear: groupGear(r, g, standing, code), edits: edits(g) }))
+  fanOut(r.parts, cap).map(g => ({ what: g.map(p => p.what).join('; '), gear: groupGear(r, g, standing, code), edits: edits(g), ...(g.some(p => p.mode === 'review') ? { review: true } : {}) }))
 
 // What the orchestrator keeps for itself: answers that need no deep look (one spot or one feature, ordinary care)
 // and small code (one spot or one feature, mechanical or ordinary depth) the work calls for no stronger model than
@@ -170,22 +174,29 @@ export const fanParts = (r: Reading, cap: number, standing: ModelEffort, code?: 
 // independent parts goes out to one agent per part, all at once, up to `cap` of them. Everything else goes to the lane
 // of the model the work calls for, at the effort it calls for, reviews included, sure or not (an unsure review's
 // effort is its best guess); Fable's open-ended work is a fresh agent, not a lane, and never split. `code`: the model
-// the person fixed for code (`want` is on it already): small code stays here only on that very model, else it goes to
-// that model's lane (on Fable, a fresh agent), and each code part of a fan-out runs on it.
-export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, standing: ModelEffort = 'xhigh', code?: Model): Plan => {
-  if (!r.sure && r.mode !== 'review') return { main }
+// the person fixed for code (`want` is on it already): small code stays here only on that very model, or when it is a
+// mechanical edit at one spot, else it goes to that model's lane (on Fable, a fresh agent), and each code part of a
+// fan-out runs on it. `auto`: the orchestrator's effort is set per turn, not pinned (the plan's `main` carries it): what
+// it keeps runs at the rules' effort for the reading (`want`), xhigh at most; a hand-off at BRIEFING, since briefing
+// and later choosing the agent's effort is where it is won or lost, save a lane that only relays a command (a long
+// command, a git chore), which runs low. `advice`: the coding effort is `auto`, so the hand-off is advice, and none is
+// given for what stays put (staysPut): an answer at depth 0 or 1 of any reach or care, and any guess, a review's included.
+export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, standing: ModelEffort = 'xhigh', code?: Model, auto = false, advice = false): Plan => {
+  const keep = (): Plan => ({ main: auto ? { ...main, effort: capXhigh(want.effort) } : main })
+  const hand = (handoff: Handoff, relay = false): Plan => ({ main: auto ? { ...main, effort: relay ? 'low' : BRIEFING } : main, handoff })
+  if ((!r.sure && r.mode !== 'review') || (advice && staysPut(r))) return keep()
   const small = r.reach === 'point' || r.reach === 'area'
   const ordinary = r.care !== 'costly'
   const pinned = pins(r, code)
-  if (ordinary && r.mode === 'answer' && r.depth <= 1 && small) return { main }
+  if (ordinary && r.mode === 'answer' && r.depth <= 1 && small) return keep()
   const open = want.model === 'fable' && (!pinned || r.reach === 'frontier')
   const fan = r.sure && !open ? fanParts(r, cap, standing, code) : []
-  if (fan.length) return { main, handoff: { kind: 'fan', gear: fan[0]!.gear, parts: fan } }
-  const enough = pinned ? want.model === main.model : LADDER.indexOf(want.model) <= LADDER.indexOf(main.model)
-  if (ordinary && r.mode === 'code' && r.depth <= 1 && small && enough) return { main }
-  if (r.mode === 'wait') return { main, handoff: { kind: 'lane', gear: { model: 'haiku', effort: 'low' } } }
-  if (r.mode === 'commit') return { main, handoff: { kind: 'lane', gear: choreGear(r.depth) } }
-  return { main, handoff: { kind: want.model === 'fable' ? 'deep' : 'lane', gear: want } }
+  if (fan.length) return hand({ kind: 'fan', gear: fan[0]!.gear, parts: fan })
+  const enough = pinned ? want.model === main.model || mechanical(r) : LADDER.indexOf(want.model) <= LADDER.indexOf(main.model)
+  if (ordinary && r.mode === 'code' && r.depth <= 1 && small && enough) return keep()
+  if (r.mode === 'wait') return hand({ kind: 'lane', gear: { model: 'haiku', effort: 'low' } }, true)
+  if (r.mode === 'commit') return hand({ kind: 'lane', gear: choreGear(r.depth) }, true)
+  return hand({ kind: want.model === 'fable' ? 'deep' : 'lane', gear: want })
 }
 
 // A turn the orchestrator keeps still hands out its fetching, waiting and clicking: a sure reading of several steps,
@@ -193,6 +204,9 @@ export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, st
 export const keepsRoute = (r: Reading, p: Plan): boolean =>
   !p.handoff && r.sure && r.phases.length >= 2 && r.phases.some(ph => ph.mode === 'lookup' || ph.mode === 'wait' || ph.mode === 'drive')
 // The orchestrator does the route's other steps itself, at its own gear throughout: its effort does not follow the
-// steps, and no step of work it kept goes up to a stronger model.
-export const orchestratorRoute = (steps: Step[], main: Gear): Step[] =>
-  steps.map(s => (s.by === 'main' ? { ...s, gear: main, mainEffort: main.effort } : { ...s, mainEffort: main.effort }))
+// steps, and no step of work it kept goes up to a stronger model. `follow` (`auto`, no effort asked for): its effort
+// follows each step's, as in steer mode, xhigh at most.
+export const orchestratorRoute = (steps: Step[], main: Gear, follow = false): Step[] =>
+  follow
+    ? steps.map(s => ({ ...s, ...(s.by === 'main' ? { gear: { ...s.gear, effort: capXhigh(s.gear.effort) } } : {}), mainEffort: capXhigh(s.mainEffort) }))
+    : steps.map(s => (s.by === 'main' ? { ...s, gear: main, mainEffort: main.effort } : { ...s, mainEffort: main.effort }))
