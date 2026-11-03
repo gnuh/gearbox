@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Part, type Reading, BRIEFING_TOOLS, CODE_MODELS, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
+import { type FanPart, type Part, type Reading, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -234,18 +234,25 @@ test('a fixed coding model: code’s model is exactly it, whatever its reach or 
   expect(pins(reading({ ask: { model: 'sonnet' } }), 'opus')).toBe(false)
 })
 
-test('a fixed coding model on a steered session: code stays here on that very model, else goes to an agent on it, up or down, mechanical edits too', () => {
+test('a fixed coding model on a steered session: code stays here on that very model, else goes to an agent on it, up or down, past a mechanical edit', () => {
   const at = (model: 'sonnet' | 'opus' | 'fable', effort = 'xhigh' as const) => ({ model, effort })
   const small = reading({ reach: 'point', depth: 0 })
+  const feature = reading({ reach: 'point', depth: 1 })
   const wide = reading({ reach: 'system', depth: 2 })
   // The session is on it: here, even for work the rules would hand up to Opus.
   expect(plan(wide, at('sonnet'), 'sonnet', true, 'sonnet', 'sonnet', false, true)).toEqual({ main: at('sonnet') })
   expect(plan(small, at('opus'), 'opus', true, 'opus', 'sonnet', false, true)).toEqual({ main: at('opus') })
   // Another model: an agent on it, briefed here at high, whichever way it goes.
-  for (const [session, code] of [['opus', 'sonnet'], ['sonnet', 'opus'], ['fable', 'sonnet']] as const)
-    for (const r of [small, wide]) expect(plan(r, at(code), session, true, session, 'sonnet', false, true)).toEqual({ main: { model: session, effort: 'high' }, handoff: { kind: 'deep', gear: at(code) } })
-  // Fable: always in a subagent, unless the session itself runs on Fable.
-  expect(plan(small, at('fable'), 'opus', true, 'opus', 'sonnet', false, true)).toEqual({ main: { model: 'opus', effort: 'high' }, handoff: { kind: 'deep', gear: at('fable') } })
+  for (const [session, code] of [['opus', 'sonnet'], ['sonnet', 'opus'], ['fable', 'sonnet']] as const) {
+    for (const r of [feature, wide]) expect(plan(r, at(code), session, true, session, 'sonnet', false, true)).toEqual({ main: { model: session, effort: 'high' }, handoff: { kind: 'deep', gear: at(code) } })
+    // A mechanical edit at one spot stays here, at the code's effort: a hand-off costs more than the edit.
+    expect(plan(small, at(code), session, true, session, 'sonnet', false, true)).toEqual({ main: { model: session, effort: 'xhigh' } })
+    // Not when a mistake there would be costly.
+    expect(plan({ ...small, care: 'costly' }, at(code), session, true, session, 'sonnet', false, true).handoff).toEqual({ kind: 'deep', gear: at(code) })
+  }
+  // Fable: always in a subagent, unless the session itself runs on Fable; a mechanical edit stays here all the same.
+  expect(plan(feature, at('fable'), 'opus', true, 'opus', 'sonnet', false, true)).toEqual({ main: { model: 'opus', effort: 'high' }, handoff: { kind: 'deep', gear: at('fable') } })
+  expect(plan(small, at('fable'), 'opus', true, 'opus', 'sonnet', false, true)).toEqual({ main: at('opus') })
   expect(plan(small, at('fable'), 'fable', true, 'fable', 'sonnet', false, true)).toEqual({ main: at('fable') })
   // A guess hands nothing off, as ever: the session's model at the guess's effort.
   expect(plan({ ...wide, sure: false }, at('sonnet'), 'opus', true, 'opus', 'sonnet', false, true)).toEqual({ main: at('opus') })
@@ -275,10 +282,13 @@ test('a fixed coding model in a route: code steps run on it, here when the main 
   const by = (steps: ReturnType<typeof route>) => steps.map(s => `${s.what} → ${s.by} ${label(s.gear)}`)
   // A Sonnet session that fixed Sonnet: code stays here, though the request calls for Opus; the plan still goes up.
   expect(by(route([...phases], 'sonnet', 'xhigh', false, 'sonnet', false, 'opus', 'sonnet'))).toEqual(['read the ticket → agent haiku·low', 'plan it → agent opus·high', 'rename it → main sonnet·xhigh', 'build it → main sonnet·xhigh'])
-  // An Opus session that fixed Sonnet: code goes down to Sonnet agents, mechanical too; the plan stays here.
-  expect(by(route([...phases], 'opus', 'xhigh', false, 'sonnet', false, 'opus', 'sonnet'))).toEqual(['read the ticket → agent haiku·low', 'plan it → main opus·high', 'rename it → agent sonnet·xhigh', 'build it → agent sonnet·xhigh'])
+  // An Opus session that fixed Sonnet: code goes down to Sonnet agents past a mechanical edit, which stays here, as
+  // does the plan.
+  expect(by(route([...phases], 'opus', 'xhigh', false, 'sonnet', false, 'opus', 'sonnet'))).toEqual(['read the ticket → agent haiku·low', 'plan it → main opus·high', 'rename it → main opus·xhigh', 'build it → agent sonnet·xhigh'])
+  // A costly request's mechanical step goes to the agent all the same.
+  expect(by(route([...phases], 'opus', 'xhigh', true, 'sonnet', false, 'opus', 'sonnet'))[2]).toBe('rename it → agent sonnet·xhigh')
   const fable = route([...phases], 'opus', 'xhigh', false, 'sonnet', false, 'opus', 'fable')
-  expect(by(fable).slice(2)).toEqual(['rename it → agent fable·xhigh', 'build it → agent fable·xhigh'])
+  expect(by(fable).slice(2)).toEqual(['rename it → main opus·xhigh', 'build it → agent fable·xhigh'])
   expect(routeNote(fable)).toContain('4. build it: start a plain Agent (no subagent_type) with model "fable" and effort "xhigh"')
 })
 
@@ -610,9 +620,115 @@ test('the fan-out note starts every part in one message, says what each hands ba
   expect(handoffLabel({ kind: 'fan', gear: sonnet, parts: [{ ...parts[0]!, resume: 'lane-s' }, parts[2]!] })).toBe('fan × 2 → sonnet·high (same agent), opus·xhigh')
 })
 
+test('where Claude Code cannot make a worktree, the fan-out note and the fan tool’s reply ask for no isolation and have each editing part make its own', () => {
+  const sonnet = { model: 'sonnet', effort: 'high' } as const
+  const parts: FanPart[] = [
+    { what: 'orders: add paging', gear: sonnet, edits: true },
+    { what: 'billing: fix rounding', gear: sonnet, edits: true },
+    { what: 'review the retry change', gear: { model: 'opus', effort: 'xhigh' }, edits: false },
+  ]
+  const own = 'git -C <repo> worktree add <path> -b <branch>'
+  for (const text of [handoffNote({ kind: 'fan', gear: sonnet, parts }, false, false), fanReply(parts, false, false)]) {
+    expect(text).toContain(own)
+    expect(text).toContain('Do not pass isolation "worktree"')
+    expect(text).not.toContain('model "sonnet", isolation "worktree"')
+    expect(text).not.toContain('and isolation "worktree"')
+    expect(text).not.toContain('starts with isolation "worktree"')
+    expect(text).toContain('the repository each was made in')
+  }
+  // Nothing to say about worktrees when one part edits, whichever way they are made.
+  for (const isolate of [true, false]) expect(handoffNote({ kind: 'fan', gear: sonnet, parts: [parts[0]!, parts[2]!] }, false, isolate)).not.toContain('worktree')
+  // The default is Claude Code's isolation, as before.
+  expect(handoffNote({ kind: 'fan', gear: sonnet, parts })).toBe(handoffNote({ kind: 'fan', gear: sonnet, parts }, false, true))
+  expect(fanReply(parts)).not.toContain(own)
+})
+
 test('a part’s brief carries the person’s words too, marked as context: the part is the agent’s alone', () => {
   const added = ownBrief(['add paging to orders and fix the rounding in billing'], true)
   expect(added).toContain('> add paging to orders and fix the rounding in billing')
   expect(added).toContain("this agent's part alone")
   expect(ownBrief(['x'])).not.toContain("this agent's part alone")
+})
+
+test('the coding effort auto: a choice for the main conversation, floored at medium for the rules', () => {
+  expect(CODE_EFFORTS).toEqual(['medium', 'high', 'xhigh', 'auto'])
+  expect(standingOf('auto')).toBe(MAIN_FLOOR)
+  expect(MAIN_FLOOR).toBe('medium')
+  expect(standingOf('xhigh')).toBe('xhigh')
+  // What the main conversation names for a code agent, from the floor up to xhigh; anything else is no choice.
+  expect(chosenEffort('high')).toBe('high')
+  expect(chosenEffort('max')).toBe('xhigh')
+  expect(chosenEffort('low')).toBe('medium')
+  expect(chosenEffort('ludicrous')).toBeUndefined()
+  expect(chosenEffort(undefined)).toBeUndefined()
+  // xhigh is the top of what the main conversation is offered.
+  expect(CHOOSE).not.toContain('max')
+})
+
+test('a follow-up names its effort on its first line, which gearbox takes off', () => {
+  expect(effortLine('effort: high\nalso handle the empty page')).toEqual({ effort: 'high', message: 'also handle the empty page' })
+  expect(effortLine('  Effort: XHIGH  \r\nfix it')).toEqual({ effort: 'xhigh', message: 'fix it' })
+  expect(effortLine('effort: low\nrename it')).toEqual({ effort: 'medium', message: 'rename it' })
+  expect(effortLine('effort: max')).toEqual({ effort: 'xhigh', message: '' })
+  // Only a first line that is the effort alone counts.
+  for (const text of ['go on\neffort: high', 'effort: high, and fix it', 'the effort: high part', 'effort: ludicrous\nfix it']) expect(effortLine(text)).toEqual({ message: text })
+})
+
+test('a code hand-off asks for its diff to be reviewed; with the coding effort auto, the main model names the effort', () => {
+  const gear = { model: 'sonnet', effort: 'xhigh' } as const
+  const deep = handoffNote({ kind: 'deep', gear, code: true })
+  expect(deep).toContain(DIFF_REVIEW)
+  expect(deep).toContain('effort "xhigh"')
+  expect(deep).not.toContain(CHOOSE)
+  const chosen = handoffNote({ kind: 'deep', gear, code: true }, true)
+  expect(chosen).toContain('with model "sonnet" and the effort you choose')
+  expect(chosen).not.toContain('effort "xhigh"')
+  expect(chosen).toContain(DIFF_REVIEW)
+  expect(chosen).toContain(CHOOSE)
+  // Work that writes no code: no diff to read, and gearbox keeps its effort.
+  expect(handoffNote({ kind: 'deep', gear }, true)).toBe(handoffNote({ kind: 'deep', gear }))
+  expect(handoffNote({ kind: 'deep', gear })).not.toContain(DIFF_REVIEW)
+  // A lane's code job, fresh or resumed: the main model's effort instead of gearbox's.
+  for (const resume of [undefined, 'lane-s']) {
+    const lane = handoffNote({ kind: 'lane', gear, code: true, resume }, true)
+    expect(lane).toContain(CHOOSE)
+    expect(lane).not.toContain('gearbox sets the effort of each job')
+    expect(lane).toContain(DIFF_REVIEW)
+    expect(handoffNote({ kind: 'lane', gear, resume }, true)).toContain('gearbox sets the effort of each job')
+  }
+  // A side task that writes code.
+  const aside = handoffNote({ kind: 'aside', gear, code: true }, true)
+  expect(aside).toContain('the effort you choose')
+  expect(aside).toContain(DIFF_REVIEW)
+})
+
+test('with the coding effort auto, a route’s code agents and a fan-out’s editing parts take the main model’s effort; other steps keep gearbox’s', () => {
+  const steps = route([{ what: 'plan it', mode: 'answer', depth: 2 }, { what: 'build it', mode: 'code', depth: 2 }], 'opus', 'medium', false, 'sonnet', false, 'opus', 'sonnet')
+  const note = routeNote(steps, true)
+  expect(note).toContain('2. build it: start a plain Agent (no subagent_type) with model "sonnet" and the effort you choose')
+  expect(note).toContain('its diff included')
+  expect(note).toContain(CHOOSE)
+  expect(routeNote(steps)).toContain('2. build it: start a plain Agent (no subagent_type) with model "sonnet" and effort "high"')
+  expect(routeNote(steps)).not.toContain(CHOOSE)
+  const parts: FanPart[] = [
+    { what: 'orders: add paging', gear: { model: 'sonnet', effort: 'high' }, edits: true },
+    { what: 'review the retry change', gear: { model: 'opus', effort: 'medium' }, edits: false },
+  ]
+  const reply = fanReply(parts, true)
+  expect(reply).toContain('part 1: orders: add paging: model "sonnet", at the effort you choose (gearbox\'s pick: high)')
+  expect(reply).toContain('part 2: review the retry change: model "opus", gearbox runs it at medium')
+  expect(reply).toContain('the diff of each part that edits included')
+  expect(fanReply(parts)).toContain('part 1: orders: add paging: model "sonnet", gearbox runs it at high')
+  const fan = handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts }, true)
+  expect(fan).toContain('The effort of each part that edits is yours to choose')
+  expect(fan).toContain('the diff of each part that edits included')
+  expect(handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts })).toContain("gearbox sets each agent's effort")
+})
+
+test('a mechanical edit is one spot, depth 0, nothing costly at stake', () => {
+  expect(mechanical(reading({ reach: 'point', depth: 0 }))).toBe(true)
+  expect(mechanical(reading({ reach: 'point', depth: 1 }))).toBe(false)
+  expect(mechanical(reading({ reach: 'area', depth: 0 }))).toBe(false)
+  expect(mechanical(reading({ reach: 'point', depth: 0, care: 'costly' }))).toBe(false)
+  expect(mechanical(reading({ reach: 'point', depth: 0, mode: 'answer' }))).toBe(false)
 })

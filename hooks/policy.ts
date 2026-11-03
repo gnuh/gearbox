@@ -23,6 +23,27 @@ export type CodeModel = 'auto' | 'sonnet' | 'opus' | 'fable'
 export const CODE_MODELS: readonly CodeModel[] = ['auto', 'sonnet', 'opus', 'fable']
 // The model code is fixed to, if any.
 export const pinnedModel = (c: CodeModel | undefined): Model | undefined => (c && c !== 'auto' ? c : undefined)
+
+// The coding effort: a level every code turn runs at least at, or `auto`: the main conversation, which has read the
+// work by the time it starts an agent for it, chooses each code agent's effort. The rules then floor code at
+// MAIN_FLOOR: code written in the main conversation, whose own effort must be set before it reads anything, and an
+// agent it named no effort for.
+export type CodeEffort = ModelEffort | 'auto'
+export const CODE_EFFORTS: readonly CodeEffort[] = ['medium', 'high', 'xhigh', 'auto']
+export const MAIN_FLOOR: ModelEffort = 'medium'
+export const standingOf = (e: CodeEffort): ModelEffort => (e === 'auto' ? MAIN_FLOOR : e)
+// xhigh is the top of every effort gearbox picks (the main conversation's choice for code, the orchestrator's `auto`):
+// max is only for a person's own ask.
+export const capXhigh = (e: ModelEffort): ModelEffort => (e === 'max' ? 'xhigh' : e)
+// The effort the main conversation chose for a code agent, from the floor up to xhigh; undefined when it named none.
+export const chosenEffort = (asked: unknown): ModelEffort | undefined =>
+  EFFORTS.includes(asked as ModelEffort) ? capXhigh(upTo(EFFORTS, asked as ModelEffort, MAIN_FLOOR)) : undefined
+// A follow-up by SendMessage has no effort field: its first line "effort: <level>" carries the choice, and gearbox
+// takes the line off before the message goes.
+export const effortLine = (message: string): { effort?: ModelEffort; message: string } => {
+  const m = /^\s*effort:\s*(low|medium|high|xhigh|max)[ \t]*(?:\r?\n|$)/i.exec(message)
+  return m ? { effort: chosenEffort(m[1]!.toLowerCase()), message: message.slice(m[0].length) } : { message }
+}
 // What the main conversation runs at while a stronger model's subagent takes its work: writing a brief from a long
 // conversation, and later reviewing the result, is where a hand-off is won or lost.
 export const BRIEFING: ModelEffort = 'high'
@@ -156,8 +177,9 @@ const toReading = (o: any): Reading | undefined => {
 const REACH_MODEL: Record<Reading['reach'], Model> = { point: 'haiku', area: 'sonnet', system: 'opus', frontier: 'fable' }
 const DEPTH_EFFORT: readonly ModelEffort[] = ['low', 'medium', 'high', 'xhigh'] // max only when asked for
 
-// A max coding effort is for the big jobs: subtle or hard code (depth 2 and up). Everything else that follows the
-// coding effort (small code, nods, failed reads, a turn that starts editing, code-writing subagents) stops at xhigh.
+// A max standing effort (the setting no longer offers it) is for the big jobs: subtle or hard code (depth 2 and up).
+// Everything else that follows the coding effort (small code, nods, failed reads, a turn that starts editing,
+// code-writing subagents) stops at xhigh.
 export const everyday = (standing: ModelEffort): ModelEffort => (standing === 'max' ? 'xhigh' : standing)
 const codeFloor = (depth: number, standing: ModelEffort): ModelEffort => (depth >= 2 ? standing : everyday(standing))
 
@@ -167,6 +189,9 @@ export const reviewGear = (g: Gear): Gear => ({ model: upTo(MODELS, g.model, 'op
 
 // Whether a reading's model is the coding model the person fixed: code they named no model for.
 export const pins = (r: Reading, code: Model | undefined): code is Model => !!code && r.mode === 'code' && !r.ask.model
+// A mechanical edit at one spot, with nothing costly at stake: a hand-off's brief, start and relay cost more than the
+// edit, so it stays in the main conversation whatever model code is fixed to.
+export const mechanical = (r: Reading) => r.mode === 'code' && r.reach === 'point' && r.depth === 0 && r.care !== 'costly'
 
 // The gear a reading calls for. `standing` is the person's effort for ordinary coding (the code_effort setting):
 // code never runs below it, at any depth, since "a small edit" is a guess made before anyone read the code;
@@ -244,13 +269,13 @@ export type Step = { what: string; mode: Phase['mode'] | 'analyze'; by: 'main' |
 // judging a browser check) go to a subagent on it, at the step's effort, while the main model briefs it and judges.
 // The same rule as a single request's: code goes up past a mechanical edit, since the request's reach already says it
 // is hard; answers and judgments only when subtle or costly. `code`: the coding model the person fixed: a code step
-// runs on exactly it, here when the main model is it, else in a subagent on it, at any depth.
+// runs on exactly it, here when the main model is it, else in a subagent on it, past a mechanical edit.
 export const route = (phases: Phase[], main: Model, standing: ModelEffort, costly: boolean, navigator: Model = 'sonnet', long = false, up: Model = main, code?: Model): Step[] =>
   phases.flatMap(({ what, mode, depth, ask }): Step[] => {
     const floor = (e: ModelEffort) => (costly ? upTo(EFFORTS, e, 'medium') : e)
     const doer = (what: string, mode: Step['mode'], effort: ModelEffort): Step =>
       mode === 'code' && code
-        ? code === main
+        ? code === main || (depth === 0 && !costly)
           ? { what, mode, by: 'main', gear: { model: main, effort }, mainEffort: effort }
           : { what, mode, by: 'agent', gear: { model: code, effort }, mainEffort: BRIEFING }
         : below(main, up) && mayGoUp(mode, depth) && (mode === 'code' || depth >= 2 || costly)
@@ -304,6 +329,12 @@ export const hookBrief = (context: readonly string[]): string => {
 // notification, or under its call when it ran in the foreground. So the main model adds its review, not a copy.
 export const RELAY = 'Its report shows to the person under its notification or its call as it comes back, so review it before acting on it, and reply with your review only: what you checked, anything you disagree with or found missing, and the next step. Do not repeat the report.'
 
+// Code that comes back is reviewed as code: its diff, not the agent's account of it.
+export const DIFF_REVIEW = 'Review the change itself, not only the report: read its diff (git diff on the files it reports; the files themselves when untracked) against the brief, and send anything to fix back to the same agent with SendMessage.'
+
+// With the coding effort on `auto`: the main conversation picks each code agent's effort from what it has read.
+export const CHOOSE = 'The effort is yours to choose from what you have read of the work: medium for a routine change, high for one with edge cases or several files to keep consistent, xhigh for subtle or cross-cutting logic. Pass it as effort on the Agent call; for a follow-up by SendMessage, make the message\'s first line "effort: <level>" (gearbox takes it off). With none, gearbox picks.'
+
 // What an agent the main conversation starts may start itself: agents that read for it, one level deep. Reading in
 // another agent keeps its own context small; code stays with it, where a second hand-off would cost more than it saves.
 export const NESTING = '\n\n---\nAdded by gearbox: you may start Explore agents to do reading for you (gearbox runs them on Sonnet at low effort; pass model "haiku" for a lookup of one fact: where a file or symbol is, a log line). Make code changes yourself: an agent you start may only read, and cannot start agents of its own.'
@@ -313,23 +344,27 @@ const STEP_TASK: Record<Step['mode'], string> = {
   drive: 'with a checklist you write here first (where to go and what to do); it must not edit files or judge pass or fail, only report per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests',
   wait: 'that runs only the exact command you settle here, waits until it ends, and answers with passed or failed, the lines that explain a failure, and any link or id it printed',
   commit: 'with a brief that stands on its own: the repository path and branch, the commits, the pull request and any text to write, in full; it runs only that, changes nothing else, and reports what it did with any link, hash or id',
-  code: `with ${BRIEF}; it makes the change, checks it, and reports the files it changed and anything left open; review that here`,
+  code: `with ${BRIEF}; it makes the change, checks it, and reports the files it changed and anything left open; review that here, its diff included (git diff on the files it reports)`,
   answer: `with ${BRIEF}; it works it out and reports its findings in full, which the person sees as they come back: add your review here, not a copy`,
-  analyze: 'with the navigator\'s report word for word and what the change should do; it judges what is broken, fixes it, and reports what it found and changed; review that here',
+  analyze: 'with the navigator\'s report word for word and what the change should do; it judges what is broken, fixes it, and reports what it found and changed; review that here, the diff of any fix included',
 }
 
-// The route the main model reads beside the prompt. It calls the phase tool as each step starts.
-export const routeNote = (steps: Step[]): string =>
-  [
+// The route the main model reads beside the prompt. It calls the phase tool as each step starts. `chooses`: the
+// coding effort is `auto`, so the main model picks the effort of each code step's agent.
+export const routeNote = (steps: Step[], chooses = false): string => {
+  const picks = (s: Step) => chooses && s.by === 'agent' && s.mode === 'code'
+  return [
     `gearbox route for this request. As you start each step, call the tool mcp__gearbox__phase with its number: gearbox then sets your effort for it. Subagent steps keep their output out of this conversation. Skip a step that turns out unnecessary; judge results and fix problems here.`,
     ...steps.map((s, i) =>
       s.by === 'agent'
-        ? `${i + 1}. ${s.what}: start ${escalated(s) ? PLAIN : 'an Agent'} with model "${s.gear.model}" and effort "${s.gear.effort}" ${STEP_TASK[s.mode]}.`
+        ? `${i + 1}. ${s.what}: start ${escalated(s) ? PLAIN : 'an Agent'} with model "${s.gear.model}" and ${picks(s) ? 'the effort you choose' : `effort "${s.gear.effort}"`} ${STEP_TASK[s.mode]}.`
         : s.mode === 'analyze'
           ? `${i + 1}. ${s.what}: judge the evidence yourself against what the change should do (effort ${s.gear.effort}); decide what is broken and fix it here.`
           : `${i + 1}. ${s.what}: do it yourself (effort ${s.gear.effort}).`,
     ),
+    ...(steps.some(picks) ? [CHOOSE] : []),
   ].join('\n')
+}
 
 // The effort of a route's own work: its highest main-conversation step, or the briefing of work handed up. A turn
 // starts there, so a model that never calls the phase tool works at the work's effort, not at a briefing step's low.
@@ -415,7 +450,8 @@ export const BRIEF_READS = 3
 // going back to); the gear's effort is the job's, which gearbox sets on each message.
 // `fan`: the orchestrator's hand-off of independent parts, one agent each, all started at once; `gear` is the part
 // a nod goes back to.
-export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep' | 'lane' | 'fan'; gear: Gear; judge?: Gear; resume?: string; parts?: FanPart[] }
+// `code`: the work handed off writes code (a deep, lane or side hand-off; a fan-out's parts say it each, by `edits`).
+export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep' | 'lane' | 'fan'; gear: Gear; judge?: Gear; resume?: string; parts?: FanPart[]; code?: boolean }
 // One part of a fan-out: what it does, its gear, and whether it edits files. `resume`: the lane that takes it, by
 // its id; `lane`: the agent started for it becomes its model's lane. Neither: a fresh agent for this turn only.
 export type FanPart = { what: string; gear: Gear; edits: boolean; resume?: string; lane?: boolean }
@@ -432,11 +468,12 @@ export const handoffLabel = (h: Handoff) =>
 // mistake, subtle reasoning) that calls for a stronger model goes to a subagent on it instead.
 // `pinned`: code on the coding model the person fixed (`want.model`), which runs on exactly that model: where the
 // main conversation runs another (the session's model, or a shift floor above it), a subagent on it takes the code,
-// up or down, mechanical edits too; Fable, as always, only in a subagent.
+// up or down, past a mechanical edit (which a steered session makes itself); Fable, as always, only in a subagent.
 // A guess hands nothing off and only sets the effort, a review excepted: that is handed off sure or not, on `want`.
 export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlier: boolean, fixed?: Model, navigator: Model = 'sonnet', long = false, pinned = false): Plan => {
   // A pinned Fable never runs the main conversation on a guess: its stand-in is Opus, as a hand-off's is.
   if (!r.sure && r.mode !== 'review') return { main: fixed ? { model: fixed, effort: want.effort } : pinned ? { model: upFor(want), effort: want.effort } : want }
+  if (pinned && fixed && mechanical(r)) return { main: { model: fixed, effort: want.effort } }
   const base = fixed ?? floor ?? 'sonnet'
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
   const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
@@ -572,8 +609,15 @@ export const goAhead = (work: Reading | undefined, own: Reading | undefined, flo
 // Work a lane holds that turns out to be independent pieces goes to the fan tool, not the one lane.
 const SPLIT = 'Send it all to that one agent unless the new work splits into independent pieces: then call mcp__gearbox__fan first.'
 
-export const handoffNote = ({ kind, gear, judge, resume, parts }: Handoff): string => {
-  const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' || kind === 'chore' ? ` and effort "${gear.effort}"` : ''}`
+// `chooses`: the coding effort is `auto`, so the main model picks the effort of the agent that writes code.
+// `isolate`: Claude Code can make a part's worktree (see OWN_WORKTREE); a fan-out's note says which way they are made.
+export const handoffNote = ({ kind, gear, judge, resume, parts, code }: Handoff, chooses = false, isolate = true): string => {
+  const picks = chooses && !!code
+  const effort = picks ? 'the effort you choose' : `effort "${gear.effort}"`
+  const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' || kind === 'chore' ? ` and ${effort}` : ''}`
+  // What a code hand-off adds to its note: review the diff, and, when it is the main model's to choose, the effort.
+  const coded = `${code ? ` ${DIFF_REVIEW}` : ''}${picks ? ` ${CHOOSE}` : ''}`
+  const jobs = picks ? CHOOSE : 'gearbox sets the effort of each job.'
   switch (kind) {
     case 'drive':
       return `gearbox handoff, browser check: a fast model navigates, and ${judge ? 'a stronger one' : 'you, a different model,'} judge${judge ? 's' : ''} what it found.
@@ -591,32 +635,44 @@ ${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.eff
 2. Start ${agent} with that brief. It runs only that, changes nothing else, and reports what it did with any link, hash or id.
 3. Tell the person the outcome.`
     case 'aside':
-      return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.`
+      return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.${coded}`
     case 'lane':
       return resume
-        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} gearbox sets the effort of each job. ${RELAY}`
-        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. gearbox sets the effort of each job. Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first. Until it starts, edits, commands and more reads are refused here. ${RELAY}`
+        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} ${jobs} ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
+        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. ${jobs} Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first. Until it starts, edits, commands and more reads are refused here. ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
     case 'fan':
-      return fanNote(parts ?? [])
+      return fanNote(parts ?? [], chooses, isolate)
     case 'deep':
       return resume
-        ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}. ${RELAY}`
-        : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and effort "${gear.effort}" and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage. ${RELAY}`
+        ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${effort} and ${BRIEF}. ${RELAY}${coded}`
+        : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and ${effort} and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage. ${RELAY}${coded}`
   }
 }
 
+// How a fan-out's code parts get their effort: gearbox's pick, or with the coding effort on `auto`, the main model's.
+const PARTS_CHOOSE = 'The effort of each part that edits is yours to choose from what you have read of it (medium for a routine change, high for edge cases or several files to keep consistent, xhigh for subtle or cross-cutting logic): pass it as effort on its Agent call, or as the first line "effort: <level>" of its SendMessage. gearbox sets the others\'.'
+
+// Claude Code makes an agent's worktree (isolation "worktree") only when the session's folder is a git repository. Where
+// gearbox cannot tell it is one, nothing asks for the isolation and each part that edits makes its own worktree, in
+// the repository that holds its files; the branch comes back to the main conversation to merge, as with the other.
+const OWN_WORKTREE = 'make your own git worktree in the repository that holds your files (git -C <repo> worktree add <path> -b <branch>), work and commit there, and hand back the branch and the path'
+const NO_ISOLATION = `Do not pass isolation "worktree": Claude Code makes it only in a git repository, and gearbox found none for this session's folder. Instead add this to the brief of each part that edits files, so the agents cannot collide: "${OWN_WORKTREE}".`
+// What an Agent call that asked for a worktree and failed to get one is told, once gearbox stops asking for it.
+export const WORKTREE_FAILED = `gearbox: Claude Code could not make this worktree, so gearbox no longer asks for one this session. Start the part again with the same brief and no isolation, adding to the brief: "${OWN_WORKTREE}".`
+
 // The fan tool's answer: each part's agent, and how to start them all at once.
-export const fanReply = (parts: readonly FanPart[]): string => {
+export const fanReply = (parts: readonly FanPart[], chooses = false, isolate = true): string => {
   const apart = apartEdits(parts)
   const lanes = parts.some(p => p.resume)
+  const edits = parts.some(p => p.edits)
   return [
     `gearbox fan-out: ${parts.length} independent parts, one agent each, running at the same time.`,
     ...parts.map(
       (p, i) =>
-        `part ${i + 1}: ${p.what}: ${p.resume ? `SendMessage to "${p.resume}", the ${p.gear.model} lane that holds earlier work` : `model "${p.gear.model}"`}, gearbox runs it at ${p.gear.effort}; ${p.edits ? `edits files${apart ? ', isolation "worktree"' : ', in the working tree'}` : 'only reads'}.`,
+        `part ${i + 1}: ${p.what}: ${p.resume ? `SendMessage to "${p.resume}", the ${p.gear.model} lane that holds earlier work` : `model "${p.gear.model}"`}, ${chooses && p.edits ? `at the effort you choose (gearbox's pick: ${p.gear.effort})` : `gearbox runs it at ${p.gear.effort}`}; ${p.edits ? `edits files${apart ? (isolate ? ', isolation "worktree"' : ', in a worktree of its own') : ', in the working tree'}` : 'only reads'}.`,
     ),
-    `Start all ${parts.length} in ONE message, now: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, the model above${apart ? ' and isolation "worktree"' : ''}, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back.${lanes ? ' A part a lane takes goes to it by SendMessage, in that same message.' : ''} Do not start one and wait for it before the next.`,
-    `Until all ${parts.length} have started, edits, commands and more reads are refused here. Then wait for every result, review and reconcile them${apart ? ', merge the worktree branches into the working tree (git merge or cherry-pick)' : ''}, and run the combined check (tests, build) here, or through a Haiku agent when it is a long command.`,
+    `Start all ${parts.length} in ONE message, now: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, the model above${apart && isolate ? ' and isolation "worktree"' : ''}, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back.${lanes ? ' A part a lane takes goes to it by SendMessage, in that same message.' : ''}${apart && !isolate ? ` ${NO_ISOLATION}` : ''} Do not start one and wait for it before the next.${chooses && edits ? ` ${PARTS_CHOOSE}` : ''}`,
+    `Until all ${parts.length} have started, edits, commands and more reads are refused here. Then wait for every result, review and reconcile them${edits ? ', the diff of each part that edits included' : ''}${apart ? `, merge the worktree branches into ${isolate ? 'the working tree' : 'the repository each was made in'} (git merge or cherry-pick)` : ''}, and run the combined check (tests, build) here, or through a Haiku agent when it is a long command.`,
   ].join('\n')
 }
 
@@ -624,20 +680,21 @@ export const fanReply = (parts: readonly FanPart[]): string => {
 export const apartEdits = (parts: readonly FanPart[]) => parts.filter(p => p.edits).length >= 2
 
 // The fan-out: every part's agent starts in one message, so they run at the same time; gearbox sets each one's effort.
-const fanNote = (parts: readonly FanPart[]): string => {
+const fanNote = (parts: readonly FanPart[], chooses = false, isolate = true): string => {
   const apart = apartEdits(parts)
+  const edits = parts.some(p => p.edits)
   const back = (p: FanPart) =>
     p.edits
-      ? `it makes the change, checks it, and hands back the files it changed${apart ? ', its worktree branch' : ''}, how it checked them and anything left open`
+      ? `it makes the change, checks it, and hands back the files it changed${apart ? (isolate ? ', its worktree branch' : ', its worktree branch and path') : ''}, how it checked them and anything left open`
       : 'it hands back its findings in full'
   return [
     `gearbox handoff, fan-out: this request splits into ${parts.length} independent parts, which run at the same time, one agent each.`,
-    `1. Start every part in ONE message, all at once: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, its model, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back. Do not start one and wait for it before the next.${apart ? ' Each part that edits files starts with isolation "worktree", in a git worktree of its own, so the agents cannot collide.' : ''}`,
+    `1. Start every part in ONE message, all at once: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, its model, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back. Do not start one and wait for it before the next.${apart ? (isolate ? ' Each part that edits files starts with isolation "worktree", in a git worktree of its own, so the agents cannot collide.' : ` ${NO_ISOLATION}`) : ''}`,
     ...parts.map(
       (p, i) =>
-        `   ${i + 1}. ${p.what}: ${p.resume ? `send it with SendMessage to "${p.resume}", the ${p.gear.model} lane that already holds earlier work, in that same message (load SendMessage with ToolSearch first if it is not loaded)` : `model "${p.gear.model}"${p.edits && apart ? ', isolation "worktree"' : ''}`}; ${back(p)}.`,
+        `   ${i + 1}. ${p.what}: ${p.resume ? `send it with SendMessage to "${p.resume}", the ${p.gear.model} lane that already holds earlier work, in that same message (load SendMessage with ToolSearch first if it is not loaded)` : `model "${p.gear.model}"${p.edits && apart ? (isolate ? ', isolation "worktree"' : ', its own git worktree') : ''}`}; ${back(p)}.`,
     ),
-    `2. gearbox sets each agent's effort. Until all ${parts.length} have started, edits, commands and more reads are refused here.`,
-    `3. Wait for every result before going on. Then review each, and reconcile them: overlaps, contradictions, anything one part found that changes another.${apart ? ' Merge the worktree branches into the working tree (git merge or cherry-pick); a conflict that needs editing goes back to an agent.' : ''} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Each part's report shows to the person under its call: reply with the reconciled outcome and your review, not a copy of the reports.`,
+    `2. ${chooses && edits ? PARTS_CHOOSE : "gearbox sets each agent's effort."} Until all ${parts.length} have started, edits, commands and more reads are refused here.`,
+    `3. Wait for every result before going on. Then review each${edits ? ', the diff of each part that edits included (git diff on the files it reports), not only its report' : ''}, and reconcile them: overlaps, contradictions, anything one part found that changes another.${apart ? ` Merge the worktree branches into ${isolate ? 'the working tree' : 'the repository each was made in'} (git merge or cherry-pick); a conflict that needs editing goes back to an agent.` : ''} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Each part's report shows to the person under its call: reply with the reconciled outcome and your review, not a copy of the reports.`,
   ].join('\n')
 }

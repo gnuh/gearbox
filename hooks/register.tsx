@@ -2,8 +2,14 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentStatus, ClassicHookInputs, ElementTable, EngineInterface, RenderElement, ModelEffort, PluginOptions, PromptOrigin, Register, TurnUsage } from 'claude-code'
 import type { GearboxLoop, GearboxReply, GearboxReports } from '../types'
 import {
+  type CodeEffort,
   type CodeModel,
   type DeepAgent,
+  CODE_EFFORTS,
+  capXhigh,
+  chosenEffort,
+  effortLine,
+  standingOf,
   type FanPart,
   type Gear,
   type Handoff,
@@ -57,12 +63,13 @@ import {
   readParts,
   readReading,
   fanReply,
+  WORKTREE_FAILED,
   stepDown,
   trimRequest,
   verifyAsk,
 } from './policy'
 import { runHooks } from './classic'
-import { NEUTRAL, ORCHESTRATOR, type Lane, type Lanes, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
+import { NEUTRAL, ORCHESTRATOR_EFFORTS, type Lane, type Lanes, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
 
 // US$ per million tokens.
 // shortcut: copied from the claude-api skill's table (cached 2026-10-06); update when prices move.
@@ -273,13 +280,14 @@ const survey = async ($: EngineInterface, { request, earlier, previous, reply = 
 
 // A subagent's effort by its job, read as a prompt is: browsing and long commands run low, code at the coding
 // effort, questions and searches by depth. Code also takes the coding model the person fixed (`code`), if any; any
-// other job keeps the model its call named. Undefined when the read fails: the call goes as it was.
-const jobGear = async ($: EngineInterface, brief: string, standing: ModelEffort, code?: Model): Promise<{ model?: Model; effort: ModelEffort } | undefined> => {
+// other job keeps the model its call named. `writes`: the job is code. Undefined when the read fails: the call goes as
+// it was.
+const jobGear = async ($: EngineInterface, brief: string, standing: ModelEffort, code?: Model): Promise<{ model?: Model; effort: ModelEffort; writes: boolean } | undefined> => {
   const { reading: r } = await survey($, { request: brief, earlier: [] }, 'haiku')
   if (!r) return undefined
-  if (r.mode === 'drive' || r.mode === 'wait') return { effort: 'low' }
+  if (r.mode === 'drive' || r.mode === 'wait') return { effort: 'low', writes: false }
   const g = gearFor({ ...r, ask: {} }, standing, code)
-  return { ...(pins({ ...r, ask: {} }, code) ? { model: g.model } : {}), effort: g.effort }
+  return { ...(pins({ ...r, ask: {} }, code) ? { model: g.model } : {}), effort: g.effort, writes: r.mode === 'code' }
 }
 
 // The debug log: one JSON line per event in ~/.claude/gearbox/logs/<session>.jsonl. The mod file API replaces a
@@ -306,6 +314,20 @@ const sessionFacts = async ($: EngineInterface, options: PluginOptions) => {
   } catch {}
   return { ev: 'session', gearbox, claude: (await $.session.version()).version, model: await $.session.model(), fromGearbox: (await storedSettings($)).kept, fromPlugin: withoutRemoved(options) }
 }
+
+// Whether the session's folder is in a git repository, which Claude Code needs to make an agent's worktree: it or a
+// folder above it holds a `.git` (a folder, or a file in a linked worktree or a submodule). A folder gearbox cannot
+// read is not one. (A WorktreeCreate hook can make worktrees elsewhere; gearbox does not look for one.)
+const inGitRepo = async ($: EngineInterface): Promise<boolean> => {
+  try {
+    const dirs = (await $.session.cwd()).split(/[\\/]+/).filter((d, i) => d || i === 0)
+    for (let n = dirs.length; n > 0; n--) if (await $.fs.exists(`${dirs.slice(0, n).join('/')}/.git`)) return true
+  } catch {}
+  return false
+}
+
+// A tool call that came back refused or in error.
+const failed = (r: { deny?: unknown; isError?: unknown }): boolean => r.deny !== undefined || !!r.isError
 
 // The person's own hooks for agents (classic.ts): what the main conversation's last prompt gave its hooks to run on,
 // what its UserPromptSubmit hooks said (which stands in when none can be run here), and the agents a Stop hook sent
@@ -438,18 +460,24 @@ const agentRows = ({ Box, Text }: Pick<ElementTable, 'Box' | 'Text'>, loops: Rec
 // A fan-out's parts as the turn hands them out: a costly part's gear goes to the person as a route step's does; then
 // each model's lane, where it is idle and worth going back to, takes the first part of its model. `fresh`: unrelated
 // work, which goes back to no lane. `code`: the coding model the person fixed, which a part that writes code is
-// never put to them for.
-const seatFan = async ($: EngineInterface, fan: readonly FanPart[], o: { asks: boolean; ask: Partial<Gear>; previous?: Gear; standing: ModelEffort; lanes: Lanes; fresh: boolean; code?: Model }): Promise<Handoff> => {
+// never put to them for. `chooses`: the coding effort is `auto`, so a part that writes code is never put to them for
+// its effort either: the main conversation picks it.
+const seatFan = async ($: EngineInterface, fan: readonly FanPart[], o: { asks: boolean; ask: Partial<Gear>; previous?: Gear; standing: ModelEffort; lanes: Lanes; fresh: boolean; code?: Model; chooses?: boolean }): Promise<Handoff> => {
   const parts: FanPart[] = []
   for (const pt of fan) {
     const fixedModel = !!o.code && pt.edits && pt.gear.model === o.code
     const ask = fixedModel ? { ...o.ask, model: pt.gear.model } : o.ask
-    parts.push(o.asks && needsConsent(pt.gear, ask, o.previous, o.standing) ? { ...pt, gear: await consent($, pt.gear, fixedModel) } : pt)
+    parts.push(o.asks && needsConsent(pt.gear, ask, o.previous, o.chooses && pt.edits ? 'xhigh' : o.standing) ? { ...pt, gear: await consent($, pt.gear, fixedModel) } : pt)
   }
   const loops = await read($, LOOPS)
   const seated = seatParts(parts, o.lanes, Date.now(), id => live(loops[id]), o.fresh)
-  return { kind: 'fan', gear: (seated.find(pt => pt.resume || pt.lane) ?? seated[0]!).gear, parts: seated }
+  return { kind: 'fan', gear: nodPart(seated)!.gear, parts: seated }
 }
+
+// The part of a fan-out a nod goes back to: the first a lane takes, else the first.
+const nodPart = (parts: readonly FanPart[]): FanPart | undefined => parts.find(pt => pt.resume || pt.lane) ?? parts[0]
+// Whether the work a nod after a fan-out goes on with writes code.
+const nodPartEdits = (h: Handoff): boolean => !!nodPart(h.parts ?? [])?.edits
 
 type Ledger = Record<string, { calls: number; fresh: number; written: number; cached: number; out: number }>
 
@@ -485,12 +513,11 @@ export const usageReport = (ledger: Ledger) => {
   return [...lines, `total ≈ $${total.toFixed(2)} at API list prices, subagents included`].join('\n')
 }
 
-const CODE_EFFORTS: readonly ModelEffort[] = ['medium', 'high', 'xhigh', 'max']
 // Typed agents that only search or plan: work handed up never takes them over.
 const SEARCHERS = /^(Explore|Plan|claude-code-guide|statusline-setup)$/
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_model: CodeModel; code_effort: ModelEffort; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; agent_hooks: boolean } & OrchestratorSettings
+export type Settings = { code_model: CodeModel; code_effort: CodeEffort; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; agent_hooks: boolean } & OrchestratorSettings
 
 // Settings gearbox once had and now always applies as they were when on: steering a session not on Haiku, handing
 // work up to a stronger model, the band and the list under the last reply, and a models panel that lists every loop.
@@ -505,7 +532,9 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
   const o: Record<string, unknown> = { ...options, ...(stored && typeof stored === 'object' ? stored : {}) }
   return {
     code_model: CODE_MODELS.includes(o.code_model as CodeModel) ? (o.code_model as CodeModel) : 'auto',
-    code_effort: CODE_EFFORTS.includes(o.code_effort as ModelEffort) ? (o.code_effort as ModelEffort) : 'xhigh',
+    // A stored or plugin `max` is no longer offered: it falls back to the default, xhigh.
+    // `main` is what `auto` was called before 0.20.0.
+    code_effort: o.code_effort === 'main' ? 'auto' : CODE_EFFORTS.includes(o.code_effort as CodeEffort) ? (o.code_effort as CodeEffort) : 'xhigh',
     navigator: o.navigator === 'haiku' ? 'haiku' : 'sonnet',
     strict: o.strict !== false,
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
@@ -517,7 +546,7 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
 // One `/gearbox <setting> <value>`; undefined when the value is not one the setting takes.
 export const settingPatch = (word: string, value: string | undefined): Partial<Settings> | undefined => {
   if (word === 'model' && CODE_MODELS.includes(value as CodeModel)) return { code_model: value as CodeModel }
-  if (word === 'effort' && CODE_EFFORTS.includes(value as ModelEffort)) return { code_effort: value as ModelEffort }
+  if (word === 'effort' && CODE_EFFORTS.includes(value as CodeEffort)) return { code_effort: value as CodeEffort }
   if (word === 'navigator' && (value === 'haiku' || value === 'sonnet')) return { navigator: value }
   if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
@@ -525,7 +554,7 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   return orchestratorPatch(word, value)
 }
 
-const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or max', navigator: 'sonnet or haiku', strict: 'on or off', log: 'on, off or full', hooks: 'on or off', orchestrator: 'on or off', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'low, medium, high, xhigh or max', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
+const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or auto (the main conversation picks each code agent’s effort)', navigator: 'sonnet or haiku', strict: 'on or off', log: 'on, off or full', hooks: 'on or off', orchestrator: 'on or off', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'auto, low, medium, high or xhigh (auto: the effort follows the prompt)', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
 // What `/gearbox <word>` of a removed setting answers.
 const REMOVED_WORDS: Record<string, string> = {
   steer: 'steer is no longer a setting: gearbox always steers a session not on Haiku. To leave sessions alone, turn gearbox off (/gearbox off) or disable the plugin.',
@@ -561,7 +590,7 @@ export const settingsSections = (s: Settings): { id: string; title: string; rows
       ...(s.orchestrator
         ? ([
             ['Model', 'orchestrator-model', ['sonnet', 'opus', 'haiku'], s.orchestrator_model],
-            ['Effort', 'orchestrator-effort', ['low', 'medium', 'high', 'xhigh', 'max'], s.orchestrator_effort],
+            ['Effort', 'orchestrator-effort', ORCHESTRATOR_EFFORTS, s.orchestrator_effort],
             ['Parallel agents', 'orchestrator-agents', ['1', '2', '3', '4', '5', '6'], String(s.orchestrator_agents)],
           ] satisfies SettingRow[])
         : []),
@@ -610,8 +639,18 @@ const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
 
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): the model and effort for code, and the rest of /gearbox settings.
-  let { code_model: codeModel, code_effort: standing, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
-  const current = (): Settings => ({ code_model: codeModel, code_effort: standing, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
+  let { code_model: codeModel, code_effort: codeEffort, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
+  // The rules' coding effort; with `auto` (`chooses`), their floor, and each code agent's effort is the main
+  // conversation's to choose.
+  let standing = standingOf(codeEffort)
+  const chooses = () => codeEffort === 'auto'
+  // The effort up to which a gear is not put to the person: their coding effort, and for code with `auto`, any, since
+  // they left code's effort to the main conversation.
+  const askFloor = (writes: boolean): ModelEffort => (chooses() && writes ? 'xhigh' : standing)
+  const current = (): Settings => ({ code_model: codeModel, code_effort: codeEffort, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
+  // What the main conversation runs on while the orchestrator hands off: its model, at its effort, or with `auto` at
+  // BRIEFING, since briefing and reviewing the agent is the work (orchestratorPlan sets the rest per turn).
+  const orchMain = (): Gear => ({ model: orchModel, effort: orchEffort === 'auto' ? BRIEFING : orchEffort })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
@@ -619,7 +658,8 @@ export const register: Register = (on, options) => {
   }
   const apply = (s: Settings) => {
     codeModel = s.code_model
-    standing = s.code_effort
+    codeEffort = s.code_effort
+    standing = standingOf(codeEffort)
     navigator = s.navigator
     strict = s.strict
     logMode = s.log
@@ -647,6 +687,8 @@ export const register: Register = (on, options) => {
   // carries it on while its model is enough for the work approved), `deepAgent` the agent that took it, which
   // follow-ups go back to while worth it.
   let lastDeep: Gear | undefined
+  let lastDeepCode = false // whether that work writes code, for a nod no reading says it of
+  let heldDeep: { gear: Gear; code: boolean } | undefined // the deep work a planned hand-off replaced, back if its agent never starts
   let deepAgent: DeepAgent | undefined
   // The Agent call of a deep or handed-up step, by its tool_use_id: the agent it starts becomes `deepAgent`.
   let spawningDeep: { useId?: string; gear: Gear } | undefined
@@ -666,12 +708,28 @@ export const register: Register = (on, options) => {
   // id waits under a key of its own, and the first spawn no id claims takes it.
   const spawningLanes = new Map<string, { gear: Gear; lane: boolean; part?: number }>()
   let unnamed = 0
-  const expectSpawn = (useId: string | undefined, job: { gear: Gear; lane: boolean; part?: number }) => spawningLanes.set(useId ?? `\u0000${unnamed++}`, job)
+  const expectSpawn = (useId: string | undefined, job: { gear: Gear; lane: boolean; part?: number }) => {
+    const key = useId ?? `\u0000${unnamed++}`
+    spawningLanes.set(key, job)
+    return key
+  }
   const claimSpawn = (useId: string | undefined) => {
     const key = useId !== undefined && spawningLanes.has(useId) ? useId : [...spawningLanes.keys()].find(k => k.startsWith('\u0000'))
     const job = key === undefined ? undefined : spawningLanes.get(key)
     if (key !== undefined) spawningLanes.delete(key)
     return job
+  }
+  // Agent calls whose agent has started, by tool_use_id, until the call comes back: a call that fails with its agent
+  // started (it ran, then ended in error) was a start; one that fails before is not.
+  const begun = new Set<string>()
+  // Whether this turn's fan-out starts its parts that edit with isolation "worktree": the session's folder is a git
+  // repository (checked when the note is made, so the note and the calls agree), and no worktree has failed to be made.
+  let turnIsolate = false
+  let noWorktree = false
+  // An Agent call that came back failed with no agent started, so it counted for nothing.
+  const unstarted = (sent: { deny?: unknown; isError?: unknown }, useId: string | undefined): boolean => {
+    const began = useId !== undefined && begun.delete(useId)
+    return failed(sent) && !began
   }
   let mainMayEdit = false // the orchestrator's turn is a one-spot change it makes itself
   // Forked skills: a skill that forks runs in a loop of its own on the session's model and effort, which no
@@ -718,6 +776,10 @@ export const register: Register = (on, options) => {
     }
     return slot === -1 && turnHandoff?.kind === 'deep' ? { keeps: true } : slot === -2 ? { keeps: false } : undefined
   }
+  // Whether a hand-off slot's work writes code: a fan-out's part that edits, a route's code step, or the turn's own
+  // hand-off of code.
+  const codeSlot = (slot: number): boolean =>
+    turnHandoff?.kind === 'fan' ? !!turnHandoff.parts?.[slot]?.edits : turnRoute ? turnRoute[slot]?.mode === 'code' : slot === -1 && !!turnHandoff?.code
   // The gear of the hand-off step under way, for the refusal that points the model at it.
   const handoffGear = (): Gear | undefined =>
     turnRoute ? (turnStep ? turnRoute[turnStep - 1]?.gear : undefined) : turnHandoff?.gear
@@ -747,7 +809,11 @@ export const register: Register = (on, options) => {
   const forget = () => {
     floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = undefined
     lastDeep = deepAgent = spawningDeep = undefined
+    lastDeepCode = false
+    heldDeep = undefined
     spawningLanes.clear()
+    begun.clear()
+    noWorktree = false
     mainMayEdit = false
     lanes = {}
     laneEffort.clear()
@@ -947,6 +1013,8 @@ export const register: Register = (on, options) => {
     }
     // A notification (say, a route's subagent finishing) keeps the turn's gear and route.
     if (!enabled || e.command || e.isMeta || !typedByPerson(e.origin)) {
+      // With the orchestrator on `auto`, a notification (an agent's report coming back) is read and reviewed here: BRIEFING.
+      if (enabled && orchestrator && orchEffort === 'auto' && turnGear && !e.command && !typedByPerson(e.origin)) turnGear = { ...turnGear, effort: BRIEFING }
       if (enabled && !e.command) logEvent({ ev: 'prompt', kind: e.origin?.kind ?? 'meta', keeps: turnGear ? label(turnGear) : 'no gear' })
       return next(e)
     }
@@ -954,10 +1022,18 @@ export const register: Register = (on, options) => {
     if (turnHandoff?.kind === 'deep' && !handedOff.has(-1)) logEvent({ ev: 'skipped', handoff: handoffLabel(turnHandoff) })
     // A fan-out some of whose agents the last turn's model never started.
     if (turnHandoff?.kind === 'fan' && fanOwed()) logEvent({ ev: 'skipped', handoff: handoffLabel(turnHandoff), owed: fanOwed() })
+    // A hand-off planned but never started is not deep work under way (the main model may have answered itself):
+    // the work it replaced, if any, is still the work under way.
+    if ((turnHandoff?.kind === 'deep' || turnHandoff?.kind === 'lane' || turnHandoff?.kind === 'fan') && !handedOff.size) {
+      lastDeep = heldDeep?.gear
+      lastDeepCode = !!heldDeep?.code
+    }
+    heldDeep = undefined
     turnGear = turnHandoff = turnRoute = turnStep = turnWant = turnReading = undefined
     handedOff = new Set()
     laneTaken = new Set()
     spawningLanes.clear()
+    begun.clear()
     skillCalls = []
     turnText = e.text
     hookState.context = []
@@ -993,12 +1069,15 @@ export const register: Register = (on, options) => {
     // Deep work goes on in the agent that holds it while that is worth it (its cache warm, its context not
     // yet past a fresh brief's), else in a fresh one on the same gear: never quietly back on this model.
     // With the orchestrator on, the agent is the model's lane; Fable's work is never a lane, always a fresh agent.
-    const orchGear: Gear = { model: orchModel, effort: orchEffort }
+    const orchGear = orchMain()
     const sameAgent = (g: Gear) =>
       orchestrator && g.model !== 'fable'
         ? laneResumable(lanes[g.model], Date.now()) ? { resume: lanes[g.model]!.id } : {}
         : resumable(deepAgent, Date.now()) && deepAgent.gear.model === g.model ? { resume: deepAgent.id } : {}
     const goesOn = lastDeep
+    // Deep work goes on in its agent for code, a question or a review; a commit, a long command or a browser check
+    // has rules of its own.
+    const goesOnIn = (mode: Reading['mode']) => mode === 'code' || mode === 'answer' || mode === 'review'
     // The model code is fixed to, if the person picked one: code runs on exactly it (see plan).
     const code = pinnedModel(codeModel)
     const goOn = (g: Gear): Plan => ({
@@ -1032,7 +1111,7 @@ export const register: Register = (on, options) => {
         turnRoute = route(phases, lead, standing, r.care === 'costly', navigator, long, upFor(gearFor(checked, standing)), stepCode)
         for (const s of turnRoute) {
           const fixedModel = s.mode === 'code' && !!stepCode
-          if ((s.by === 'main' || escalated(s)) && asks && needsConsent(s.gear, consentAsk(s.gear, fixedModel), previous, standing)) {
+          if ((s.by === 'main' || escalated(s)) && asks && needsConsent(s.gear, consentAsk(s.gear, fixedModel), previous, askFloor(s.mode === 'code'))) {
             s.gear = await consent($, s.gear, fixedModel)
             if (s.by === 'main') s.mainEffort = s.gear.effort
           }
@@ -1041,14 +1120,14 @@ export const register: Register = (on, options) => {
         why += `; route of ${turnRoute.length} steps, starting at its work effort`
         brief = [`route · ${turnRoute.length} steps`, `starts at ${workEffort(turnRoute)}`]
       } else {
-        if (asks && needsConsent(want, consentAsk(want, pinned), previous, standing)) {
+        if (asks && needsConsent(want, consentAsk(want, pinned), previous, askFloor(checked.mode === 'code'))) {
           const proposed = label(want)
           want = await consent($, want, pinned)
           why += `; you chose ${label(want)} over ${proposed}`
         }
         if (pinned) why += `; code on your coding model, ${want.model}`
         // Unsure: its best guess for the effort, but nothing handed off on a guess; a review is handed off all the same.
-        p = orchestrator ? orchestratorPlan(checked, want, orchGear, orchAgents, standing, code) : plan(checked, want, base, earlier.length > 0, fixed, navigator, long, pinned)
+        p = orchestrator ? orchestratorPlan(checked, want, orchGear, orchAgents, standing, code, orchEffort === 'auto') : plan(checked, want, base, earlier.length > 0, fixed, navigator, long, pinned)
         // More of the same work: back to the agent that holds it. Unrelated work starts clean.
         if ((p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane') && !r.aside) p = { ...p, handoff: { ...p.handoff, ...sameAgent(p.handoff.gear) } }
         if (orchestrator && r.parts.length) {
@@ -1058,14 +1137,18 @@ export const register: Register = (on, options) => {
         // A fan-out: a costly part's gear goes to the person as a route step's does; then each model's lane, where it
         // is idle and worth going back to, takes the first part of its model. A nod goes back to the first part a
         // lane takes.
-        if (p.handoff?.kind === 'fan') p = { ...p, handoff: await seatFan($, p.handoff.parts ?? [], { asks, ask, previous, standing, lanes, fresh: r.aside, code: stepCode }) }
+        if (p.handoff?.kind === 'fan') p = { ...p, handoff: await seatFan($, p.handoff.parts ?? [], { asks, ask, previous, standing, lanes, fresh: r.aside, code: stepCode, chooses: chooses() }) }
         // A turn the orchestrator keeps still hands out its lookups, long commands and browser checks: a route
         // whose other steps it does itself, at its own gear.
         if (orchestrator && keepsRoute(checked, p)) {
-          const own: Gear = { model: ask.model ?? orchModel, effort: ask.effort ?? orchEffort }
-          turnRoute = orchestratorRoute(route(phases, own.model, standing, r.care === 'costly', navigator, long, own.model, stepCode), own)
-          why += `; route of ${turnRoute.length} steps, the rest here at ${label(own)}`
-          brief = [`route · ${turnRoute.length} steps`, `the rest at ${label(own)}`]
+          // With `auto` and no effort asked for, its effort follows the steps' through the phase tool, as in steer mode.
+          const follow = orchEffort === 'auto' && !ask.effort
+          const own: Gear = { model: ask.model ?? orchModel, effort: ask.effort ?? (orchEffort === 'auto' ? p.main.effort : orchEffort) }
+          turnRoute = orchestratorRoute(route(phases, own.model, standing, r.care === 'costly', navigator, long, own.model, stepCode), own, follow)
+          if (follow) p = { ...p, main: { ...p.main, effort: capXhigh(workEffort(turnRoute)) } }
+          const rest = follow ? `${own.model}, its effort following the steps` : label(own)
+          why += `; route of ${turnRoute.length} steps, the rest here at ${rest}`
+          brief = [`route · ${turnRoute.length} steps`, `the rest at ${rest}`]
         }
         if (ask.model || ask.effort) why += `; you asked for ${[ask.model, ask.effort].filter(Boolean).join(' ')}`
       }
@@ -1106,13 +1189,13 @@ export const register: Register = (on, options) => {
       // Code on a fixed coding model goes on only in an agent on that very model.
       const pinned = pins(checked, code)
       const enough = (held: Gear) => (pinned ? want.model === held.model : MODELS.indexOf(want.model) <= MODELS.indexOf(held.model))
-      if (goesOn && !splits && !checked.ask.model && enough(goesOn)) {
+      if (goesOn && !splits && !checked.ask.model && goesOnIn(checked.mode) && enough(goesOn)) {
         // Deep work under way, and its agent's model is enough for what comes next: it goes on there, never below the
         // work's effort (an effort the person names wins). Work that needs a stronger model, or a model the person
         // names, goes by the rules.
         let g: Gear = { model: goesOn.model, effort: checked.ask.effort ?? upTo(EFFORTS, goesOn.effort, want.effort) }
         why = `go-ahead after deep work, the work it approves: ${describe(work)}; it goes on in the subagent`
-        if ((await $.store.get('consent')) !== false && needsConsent(g, pinned ? { ...checked.ask, model: g.model } : checked.ask, goesOn, standing)) {
+        if ((await $.store.get('consent')) !== false && needsConsent(g, pinned ? { ...checked.ask, model: g.model } : checked.ask, goesOn, askFloor(checked.mode === 'code'))) {
           const proposed = label(g)
           g = await consent($, g, pinned)
           why += `; you chose ${label(g)} over ${proposed}`
@@ -1130,7 +1213,7 @@ export const register: Register = (on, options) => {
       p = { main: { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } }
       why = `nod${proposal ? ', the work it approves unreadable' : ''}: the last work gear, at least your coding effort`
       brief = ['nod', 'last gear, at least your coding effort']
-    } else if ((!msg || msg.cont) && goesOn && !splits) {
+    } else if ((!msg || (msg.cont && goesOnIn(msg.mode))) && goesOn && !splits) {
       // Carrying on deep work, or unreadable right after it (a failed read errs up): the same hand-off.
       p = goOn(goesOn)
       why = `${msg ? 'continuation' : 'survey unreadable'} after deep work: it goes on in the subagent`
@@ -1140,7 +1223,7 @@ export const register: Register = (on, options) => {
       p = { main: previous ? { ...previous, effort: upTo(EFFORTS, previous.effort, everyday(standing)) } : { model: fixed ?? STARTER.model, effort: everyday(standing) } }
       why = `survey unreadable: ${previous ? 'previous gear, at least your coding effort' : 'your coding effort'}`
       brief = ['unreadable', previous ? 'last gear, at least your coding effort' : 'your coding effort']
-    } else if (msg.cont && previous && !splits) {
+    } else if (msg.cont && previous && !splits && !(goesOn && !goesOnIn(msg.mode))) {
       // A continuation with no work to read it by.
       p = { main: previous }
       why = 'continuation: previous gear'
@@ -1148,16 +1231,24 @@ export const register: Register = (on, options) => {
     } else p = await byRules(msg, false)
     // The orchestrator's main conversation runs on its own model, whatever the session or the floor.
     // A person's ask moves the turn only when it stays here; with a lane doing the work the orchestrator is the same.
+    // With `auto`, its effort is the plan's (a nod, a continuation or an unreadable prompt reuse the last effort), xhigh at most.
+    const orchEffortNow = orchEffort === 'auto' ? capXhigh(p.main.effort) : orchEffort
     turnGear = orchestrator
-      ? p.handoff ? orchGear : { model: ask.model ?? orchModel, effort: ask.effort ?? orchEffort }
+      ? p.handoff ? { model: orchModel, effort: orchEffortNow } : { model: ask.model ?? orchModel, effort: ask.effort ?? orchEffortNow }
       : { model: mainModel(p, ask, base), effort: p.main.effort }
     // The orchestrator edits files itself only for a one-spot change the plan kept here.
     mainMayEdit = orchestrator && !p.handoff && lastMode === 'code'
     // What a nod, a notification or an unreadable prompt reuses: the gear of the work itself, never the low
     // effort of a turn that only briefs a subagent.
     if (!p.handoff || !previous) previous = turnGear
+    // Whether the work handed off writes code: what the turn's reading says, or, for a nod no reading says it of, what
+    // the work it goes on with did. A fan-out's parts say it each.
+    if (p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane' || p.handoff?.kind === 'aside')
+      p = { ...p, handoff: { ...p.handoff, code: turnReading ? turnReading.mode === 'code' : lastDeepCode } }
     turnHandoff = p.handoff
+    heldDeep = lastDeep && (p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane' || p.handoff?.kind === 'fan') ? { gear: lastDeep, code: lastDeepCode } : undefined
     lastDeep = p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane' || p.handoff?.kind === 'fan' ? p.handoff.gear : undefined
+    lastDeepCode = !!lastDeep && (p.handoff?.kind === 'fan' ? nodPartEdits(p.handoff) : !!p.handoff?.code)
     // byRules sets the route in a closure, which the type checker does not follow from the reset above.
     const steps = turnRoute as Step[] | undefined
     logEvent({
@@ -1170,7 +1261,8 @@ export const register: Register = (on, options) => {
     })
     if (p.handoff) brief = [brief[0], `${brief[1]} · ${handoffLabel(p.handoff)}`]
     await setWhy($, ownEffort ? ['ultrathink', 'Claude Code sets the effort'] : brief)
-    const note = turnRoute ? routeNote(turnRoute) : p.handoff ? handoffNote(p.handoff) : undefined
+    turnIsolate = p.handoff?.kind === 'fan' && apartEdits(p.handoff.parts ?? []) && !noWorktree && (await inGitRepo($))
+    const note = turnRoute ? routeNote(turnRoute, chooses()) : p.handoff ? handoffNote(p.handoff, chooses(), turnIsolate) : undefined
     return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
   })
 
@@ -1180,13 +1272,14 @@ export const register: Register = (on, options) => {
     const n = Number((e as any).input?.step ?? (e as any).step)
     const s = turnRoute?.[n - 1]
     if (!s || !turnGear) return { result: 'gearbox: no route step with that number in this turn', isError: true as const }
-    if (!orchestrator) turnGear = { ...turnGear, effort: s.mainEffort }
+    if (!orchestrator || orchEffort === 'auto') turnGear = { ...turnGear, effort: s.mainEffort }
     turnStep = n
     logEvent({ ev: 'phase', step: n, what: s.what, by: s.by, effort: s.mainEffort })
     await setWhy($, [`route ${n}/${turnRoute!.length}`, `${s.what} · ${s.by === 'agent' ? label(s.gear) : s.mainEffort}`])
     await showStatus($, undefined, stepLabel())
     // A tool's result is a string (or content blocks), never an object.
-    return { result: s.by === 'agent' ? `step ${n}: hand it to a ${s.gear.model} subagent at ${s.gear.effort}` : `step ${n}: you now run at effort ${s.mainEffort}` }
+    const picks = chooses() && s.mode === 'code'
+    return { result: s.by === 'agent' ? `step ${n}: hand it to a ${s.gear.model} subagent at ${picks ? 'the effort you choose' : s.gear.effort}` : `step ${n}: you now run at effort ${s.mainEffort}` }
   })
 
   // The fan tool: the main conversation names the independent pieces it found, once the work is known, and gearbox
@@ -1210,18 +1303,20 @@ export const register: Register = (on, options) => {
       logEvent({ ev: 'fan', via: 'tool', parts, cap: orchAgents, kept: 0, merged, why })
       return say(`gearbox: not worth splitting: ${why}. Go on with it as one piece of work${turnHandoff ? ', as the hand-off note says' : ''}.`)
     }
-    const handoff = await seatFan($, fan, { asks: (await $.store.get('consent')) !== false, ask: r.ask, previous, standing, lanes, fresh: r.aside, code })
+    const handoff = await seatFan($, fan, { asks: (await $.store.get('consent')) !== false, ask: r.ask, previous, standing, lanes, fresh: r.aside, code, chooses: chooses() })
     // The turn's hand-off is now the fan-out, as if the survey had listed these parts.
     turnHandoff = handoff
+    turnIsolate = apartEdits(handoff.parts ?? []) && !noWorktree && (await inGitRepo($))
     handedOff = new Set()
     deepReads = 0
     mainMayEdit = false
-    turnGear = { model: orchModel, effort: orchEffort }
+    turnGear = orchMain()
     lastDeep = handoff.gear
+    lastDeepCode = nodPartEdits(handoff)
     logEvent({ ev: 'fan', via: 'tool', parts, cap: orchAgents, kept: fan.length, merged, handoff: handoffLabel(handoff) })
     await setWhy($, ['fan-out', handoffLabel(handoff)])
     await showStatus($, handoff, stepLabel())
-    return say(fanReply(handoff.parts ?? []))
+    return say(fanReply(handoff.parts ?? [], chooses(), turnIsolate))
   })
 
   // Claude Code runs the person's UserPromptSubmit and Stop hooks for the main conversation only. An agent gets them
@@ -1254,6 +1349,7 @@ export const register: Register = (on, options) => {
     const brief = `${hooked?.brief ?? ''}${nests ? NESTING : ''}`
     const started = await next(brief ? { ...routed, prompt: `${routed.prompt}${brief}` } : routed)
     if (enabled && !started.deny && started.agentId) {
+      if (e.tool_use_id) begun.add(e.tool_use_id)
       if (nests && e.tool_use_id) {
         const id = started.agentId
         await update($, REPORTS, all => Object.fromEntries([...Object.entries(all).filter(([k]) => k !== id), [id, { texts: all[id]?.texts ?? [], useId: e.tool_use_id }]].slice(-KEEP_REPORTS)))
@@ -1336,24 +1432,56 @@ export const register: Register = (on, options) => {
     const up = h && upSlot(h.slot)
     if (e.tool === 'Agent' && h && (plain || (up && !SEARCHERS.test(String(e.subagent_type))))) {
       const asked = `${e.model ?? 'default'}·${e.effort ?? 'default'}`
+      // The hand-off counts as started at once, so Agent calls made in one message each take a part of their own; a
+      // call that fails before its agent starts undoes all of it below, and leaves the part open for a retry.
       handedOff.add(h.slot)
-      if (up?.keeps) spawningDeep = { useId: e.tool_use_id, gear: h.gear }
+      // With the coding effort on `auto`, an agent that writes code runs at the effort the main conversation named on
+      // the call, never below the floor; with none named, at the step's.
+      const picks = chooses() && codeSlot(h.slot)
+      const picked = picks ? chosenEffort(e.effort) : undefined
+      const gear: Gear = picked ? { ...h.gear, effort: picked } : h.gear
+      const deep = up?.keeps ? { useId: e.tool_use_id, gear } : undefined
+      if (deep) spawningDeep = deep
       // A lane starts at the top effort and every message lowers it to the job's. So does a fan-out's part, which
-      // runs in the foreground beside the others, in a worktree of its own when two or more parts edit.
+      // runs in the foreground beside the others, in a worktree of its own when two or more parts edit (Claude Code's
+      // when the session's folder is a git repository, else the part's own), and a code agent whose effort is the
+      // main conversation's, so a follow-up that asks for more takes hold in full.
       const lane = orchestrator && !turnRoute && turnHandoff?.kind === 'lane'
       const part = orchestrator && !turnRoute && turnHandoff?.kind === 'fan' ? turnHandoff.parts?.[h.slot] : undefined
       const apart = !!part?.edits && apartEdits(turnHandoff?.parts ?? [])
-      const start = lane || part ? laneStart(h.gear.effort, standing) : h.gear.effort
-      if (lane || part?.lane || part?.resume) laneTaken.add(h.gear.model)
-      if (lane || part) expectSpawn(e.tool_use_id, { gear: h.gear, lane: lane || !!part?.lane || !!part?.resume, ...(part ? { part: h.slot + 1 } : {}) })
-      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: label(h.gear), ...(lane || part ? { lane: start } : {}), ...(part ? { part: h.slot + 1, ...(apart ? { isolation: 'worktree' } : {}) } : {}), ...(up ? (turnGear && MODELS.indexOf(h.gear.model) < MODELS.indexOf(turnGear.model) ? { down: true } : { up: true }) : {}) })
-      return next({
+      const isolated = apart && turnIsolate
+      const topped = lane || !!part || picks
+      const start = topped ? laneStart(gear.effort) : gear.effort
+      const takesLane = lane || !!part?.lane || !!part?.resume
+      const laneWas = laneTaken.has(gear.model)
+      if (takesLane) laneTaken.add(gear.model)
+      const expected = topped ? expectSpawn(e.tool_use_id, { gear, lane: takesLane, ...(part ? { part: h.slot + 1 } : {}) }) : undefined
+      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: label(gear), ...(picks ? { chosen: picked ? 'main' : 'rules' } : {}), ...(topped ? { lane: start } : {}), ...(part ? { part: h.slot + 1, ...(apart ? { isolation: isolated ? 'worktree' : 'own' } : {}) } : {}), ...(up ? (turnGear && MODELS.indexOf(gear.model) < MODELS.indexOf(turnGear.model) ? { down: true } : { up: true }) : {}) })
+      const call = {
         ...e,
-        model: h.gear.model,
+        model: gear.model,
         effort: start,
-        ...(part ? { run_in_background: false, ...(apart ? { isolation: 'worktree' as const } : {}) } : {}),
+        ...(part ? { run_in_background: false, ...(isolated ? { isolation: 'worktree' as const } : {}) } : {}),
         ...(up || lane || part ? { prompt: `${e.prompt ?? ''}${ownBrief(await personSaid($, turnText), !!part)}` } : {}),
-      })
+      }
+      // A worktree that was seen to fail is not asked for again, by gearbox or by the call itself.
+      if (noWorktree && call.isolation === 'worktree') delete (call as { isolation?: unknown }).isolation
+      const sent = await next(call)
+      if (!unstarted(sent, e.tool_use_id)) return sent
+      handedOff.delete(h.slot)
+      if (expected !== undefined) spawningLanes.delete(expected)
+      if (takesLane && !laneWas) laneTaken.delete(gear.model)
+      if (deep && spawningDeep === deep) spawningDeep = undefined
+      const why = String(sent.deny ?? sent.text ?? (typeof sent.result === 'string' ? sent.result : ''))
+      logEvent({ ev: 'failed', tool: 'Agent', ...(part ? { part: h.slot + 1 } : {}), why: why.slice(0, 200) })
+      // A worktree Claude Code could not make, though gearbox found a repository (an unborn branch, say): stop asking,
+      // so a retry is not refused the same way. The agent never started, so this answer stands in for the error.
+      if (call.isolation === 'worktree' && /worktree/i.test(why)) {
+        noWorktree = true
+        turnIsolate = false
+        return { deny: `${why}\n${WORKTREE_FAILED}` }
+      }
+      return sent
     }
     // The orchestrator's turn without a hand-off (a nod whose work could not be read, an unreadable prompt): a plain agent is still that model's
     // lane, the first of its model this turn only; another beside it is a fresh agent for the turn. Past a fan-out's
@@ -1364,42 +1492,62 @@ export const register: Register = (on, options) => {
         const job: Gear = { model, effort: everyday(standing) }
         const first = !laneTaken.has(model)
         laneTaken.add(model)
-        expectSpawn(e.tool_use_id, { gear: job, lane: first })
-        logEvent({ ev: 'agent', type: 'general-purpose', asked: `${e.model ?? 'default'}·${e.effort ?? 'default'}`, set: label(job), lane: laneStart(job.effort, standing), why: first ? 'a lane without a hand-off' : `beside the ${model} lane, for this turn only` })
-        return next({ ...e, model, effort: laneStart(job.effort, standing) })
+        const key = expectSpawn(e.tool_use_id, { gear: job, lane: first })
+        logEvent({ ev: 'agent', type: 'general-purpose', asked: `${e.model ?? 'default'}·${e.effort ?? 'default'}`, set: label(job), lane: laneStart(job.effort), why: first ? 'a lane without a hand-off' : `beside the ${model} lane, for this turn only` })
+        const sent = await next({ ...e, model, effort: laneStart(job.effort) })
+        // Failed before its agent started: the model's lane is still free, and a retry is its first.
+        if (unstarted(sent, e.tool_use_id)) {
+          spawningLanes.delete(key)
+          if (first) laneTaken.delete(model)
+        }
+        return sent
       }
     }
     if (e.tool === 'Agent' && plain) {
       const asked = `${e.model ?? 'default'}·${e.effort ?? 'default'}`
       const job = await jobGear($, String(e.prompt ?? e.description ?? ''), standing, pinnedModel(codeModel))
-      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: job ? `${job.model ?? e.model ?? 'default'}·${job.effort}` : 'unchanged', why: job?.model ? 'its job: code, on your coding model' : 'its job' })
-      return next(job ? { ...e, ...(job.model ? { model: job.model } : {}), effort: job.effort } : e)
+      // Code with the coding effort on `auto`: the effort the call named, never below the floor.
+      const picked = chooses() && job?.writes ? chosenEffort(e.effort) : undefined
+      const effort = picked ?? job?.effort
+      logEvent({ ev: 'agent', type: e.subagent_type ?? 'general-purpose', asked, set: job ? `${job.model ?? e.model ?? 'default'}·${effort}` : 'unchanged', why: job?.model ? 'its job: code, on your coding model' : 'its job', ...(picked ? { chosen: 'main' } : {}) })
+      return next(job ? { ...e, ...(job.model ? { model: job.model } : {}), effort } : e)
     }
     // Going back to the agent that holds deep work counts as this turn's hand-off.
     const sendTo = e.tool === 'SendMessage' ? String((e as any).to ?? '') : ''
+    // With the coding effort on `auto`, a follow-up's first line "effort: <level>" is the main conversation's choice
+    // for code; gearbox takes the line off, whoever the message goes to.
+    const line = sendTo && chooses() ? effortLine(String((e as any).message ?? '')) : undefined
+    if (line?.effort) e = { ...e, message: line.message } as typeof e
     const lane = sendTo ? laneOf(sendTo) : undefined
     if (lane) {
       // A message to a lane is a job: set its effort before the lane's requests go out. In a fan-out the job is the
       // part the lane was given, else a part of its model not started yet.
       const parts = turnHandoff?.kind === 'fan' ? (turnHandoff.parts ?? []) : []
       const k = [parts.findIndex((p, i) => !handedOff.has(i) && p.resume === lane.id), parts.findIndex((p, i) => !handedOff.has(i) && p.gear.model === lane.model)].find(i => i >= 0)
-      const job = k !== undefined ? parts[k]!.gear.effort : (handoffGear()?.effort ?? everyday(standing))
+      const writes = k !== undefined ? parts[k]!.edits : !!turnHandoff?.code
+      const picked = writes ? line?.effort : undefined
+      const job = picked ?? (k !== undefined ? parts[k]!.gear.effort : (handoffGear()?.effort ?? everyday(standing)))
       const sent = await next(e)
-      if (!('isError' in sent && sent.isError)) {
+      if (!failed(sent)) {
         handedOff.add(k ?? -1)
         laneTaken.add(lane.model)
         laneEffort.set(lane.id, job)
         lanes = { ...lanes, [lane.model]: { id: lane.id, at: Date.now(), tokens: lane.tokens } }
-        logEvent({ ev: 'resume', agent: lane.id, lane: true, effort: job, ...(k !== undefined ? { part: k + 1 } : {}) })
+        logEvent({ ev: 'resume', agent: lane.id, lane: true, effort: job, ...(picked ? { chosen: 'main' } : {}), ...(k !== undefined ? { part: k + 1 } : {}) })
       }
       return sent
     }
     if (e.tool === 'SendMessage' && deepAgent && sendTo === deepAgent.id) {
+      // An agent whose effort is the main conversation's (it started at the top) runs a code follow-up at the effort
+      // its first line names, else, as a lane's job, at gearbox's pick for the work.
+      const picked = turnHandoff?.code ? line?.effort : undefined
+      const job = picked ?? (chooses() && turnHandoff?.code && laneEffort.has(deepAgent.id) ? handoffGear()?.effort : undefined)
       const sent = await next(e)
-      if (!('isError' in sent && sent.isError)) {
+      if (!failed(sent)) {
         handedOff.add(-1)
         deepAgent = { ...deepAgent, at: Date.now() }
-        logEvent({ ev: 'resume', agent: deepAgent.id })
+        if (job) laneEffort.set(deepAgent.id, job)
+        logEvent({ ev: 'resume', agent: deepAgent.id, ...(job ? { effort: job, chosen: picked ? 'main' : 'rules' } : {}) })
       }
       return sent
     }
@@ -1409,7 +1557,7 @@ export const register: Register = (on, options) => {
       logEvent({ ev: 'strict', tool, mode: 'orchestrator', refused: true })
       const held = laneResumable(lanes.sonnet, Date.now()) ? lanes.sonnet : undefined
       return {
-        deny: `gearbox orchestrator: the main conversation does not write code. Start an Agent with no subagent_type and model "sonnet" with a brief that stands on its own${held ? ` (or SendMessage to "${held.id}", the sonnet lane that already holds this work)` : ''}; it makes the change and you review what it returns. (The person can allow doing it here with /gearbox strict off, or turn the orchestrator off with /gearbox orchestrator off.)`,
+        deny: `gearbox orchestrator: the main conversation does not write code. Start an Agent with no subagent_type and model "sonnet"${chooses() ? ', the effort you judge the work needs,' : ''} with a brief that stands on its own${held ? ` (or SendMessage to "${held.id}", the sonnet lane that already holds this work)` : ''}; it makes the change and you review what it returns. (The person can allow doing it here with /gearbox strict off, or turn the orchestrator off with /gearbox orchestrator off.)`,
       }
     }
     // Strict: deep work is the stronger model's. Until its agent starts, the main model may read a little to write
@@ -1423,8 +1571,10 @@ export const register: Register = (on, options) => {
           return {
             deny: `gearbox: this request is split between ${turnHandoff?.parts?.length ?? owed} agents that run at the same time, and ${owed} of them ${owed === 1 ? 'has' : 'have'} not started yet. Start ${owed === 1 ? 'it' : 'them'} as the hand-off note says, all in one message: plain Agents (no subagent_type), each on its part's model with a brief for that part alone; they do the work, and you review what they return. Until then edits, commands and more reads are refused here. (The person can allow doing it here with /gearbox strict off.)`,
           }
+        // Code whose effort is the main conversation's to choose: the refusal says so rather than name one.
+        const picks = chooses() && (turnRoute ? !!turnStep && turnRoute[turnStep - 1]?.mode === 'code' : !!turnHandoff?.code)
         return {
-          deny: `gearbox: this work is owed to an ${g?.model ?? 'opus'} agent. Start an Agent with no subagent_type, model "${g?.model ?? 'opus'}" and effort "${g?.effort ?? 'high'}", with a brief that stands on its own${turnHandoff?.resume ? ` (or SendMessage to "${turnHandoff.resume}", the agent that already holds it)` : ''}; it does the work, and you review what it returns. Until then edits, commands and more reads are refused here. (The person can allow doing it here with /gearbox strict off.)`,
+          deny: `gearbox: this work is owed to an ${g?.model ?? 'opus'} agent. Start an Agent with no subagent_type, model "${g?.model ?? 'opus'}" and ${picks ? 'the effort you judge the work needs' : `effort "${g?.effort ?? 'high'}"`}, with a brief that stands on its own${turnHandoff?.resume ? ` (or SendMessage to "${turnHandoff.resume}", the agent that already holds it)` : ''}; it does the work, and you review what it returns. Until then edits, commands and more reads are refused here. (The person can allow doing it here with /gearbox strict off.)`,
         }
       }
     }

@@ -1,18 +1,22 @@
 import { expect, test } from 'claude-code/testing'
-import { NEUTRAL, ORCHESTRATOR, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
-import { RESUME_MS, RESUME_TOKENS, type FanPart, type Part, type Phase, type Reading, gearFor, handoffNote, label, route, routeNote } from './policy'
+import { NEUTRAL, ORCHESTRATOR, ORCHESTRATOR_EFFORTS, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
+import { RESUME_MS, RESUME_TOKENS, type FanPart, type Gear, type Part, type Phase, type Reading, gearFor, handoffNote, label, route, routeNote } from './policy'
 
 const reading = (r: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...r })
-const MAIN = ORCHESTRATOR
+// A pinned orchestrator effort; `auto` is the default.
+const MAIN: Gear = { model: 'sonnet', effort: 'medium' }
 const part = (what: string, mode: Part['mode'], depth: Part['depth'], files: string[] = []): Part => ({ what, mode, depth, files })
 const whats = (groups: Part[][]) => groups.map(g => g.map(p => p.what))
 
-test('the orchestrator is off by default and, once on, is Sonnet at medium', () => {
-  expect(orchestratorFrom({})).toEqual({ orchestrator: false, orchestrator_model: 'sonnet', orchestrator_effort: 'medium', orchestrator_agents: 3 })
-  expect(MAIN).toEqual({ model: 'sonnet', effort: 'medium' })
+test('the orchestrator is off by default and, once on, is Sonnet at an effort of auto', () => {
+  expect(orchestratorFrom({})).toEqual({ orchestrator: false, orchestrator_model: 'sonnet', orchestrator_effort: 'auto', orchestrator_agents: 3 })
+  expect(ORCHESTRATOR).toEqual({ model: 'sonnet', effort: 'auto' })
+  expect(ORCHESTRATOR_EFFORTS).toEqual(['auto', 'low', 'medium', 'high', 'xhigh'])
   expect(orchestratorFrom({ orchestrator: true, orchestrator_model: 'opus', orchestrator_effort: 'high' })).toEqual({ orchestrator: true, orchestrator_model: 'opus', orchestrator_effort: 'high', orchestrator_agents: 3 })
   // Values it does not take fall back to the defaults.
-  expect(orchestratorFrom({ orchestrator: 'yes', orchestrator_model: 'fable', orchestrator_effort: 'huge' })).toEqual({ orchestrator: false, orchestrator_model: 'sonnet', orchestrator_effort: 'medium', orchestrator_agents: 3 })
+  expect(orchestratorFrom({ orchestrator: 'yes', orchestrator_model: 'fable', orchestrator_effort: 'huge' })).toEqual({ orchestrator: false, orchestrator_model: 'sonnet', orchestrator_effort: 'auto', orchestrator_agents: 3 })
+  // max is no longer offered: a stored or plugin max is xhigh.
+  expect(orchestratorFrom({ orchestrator_effort: 'max' }).orchestrator_effort).toBe('xhigh')
 })
 
 test('the orchestrator starts up to 3 agents at once unless the person picks 1 to 6; 1 turns fan-out off', () => {
@@ -133,6 +137,8 @@ test('/gearbox orchestrator, -model and -effort each take only their own values'
   expect(orchestratorPatch('orchestrator', 'off')).toEqual({ orchestrator: false })
   expect(orchestratorPatch('orchestrator-model', 'opus')).toEqual({ orchestrator_model: 'opus' })
   expect(orchestratorPatch('orchestrator-effort', 'high')).toEqual({ orchestrator_effort: 'high' })
+  expect(orchestratorPatch('orchestrator-effort', 'auto')).toEqual({ orchestrator_effort: 'auto' })
+  expect(orchestratorPatch('orchestrator-effort', 'max')).toBeUndefined()
   expect(orchestratorPatch('orchestrator-model', 'fable')).toBeUndefined()
   expect(orchestratorPatch('orchestrator-effort', 'huge')).toBeUndefined()
   expect(orchestratorPatch('orchestrator', 'maybe')).toBeUndefined()
@@ -140,11 +146,10 @@ test('/gearbox orchestrator, -model and -effort each take only their own values'
 })
 
 test('a lane starts at the top effort it will need; the job lowers it per message', () => {
-  expect(laneStart('low', 'xhigh')).toBe('xhigh')
-  expect(laneStart('high', 'medium')).toBe('xhigh')
-  // A max coding effort, or a job that asks for max, starts the lane at max: raising it later only half takes hold.
-  expect(laneStart('low', 'max')).toBe('max')
-  expect(laneStart('max', 'xhigh')).toBe('max')
+  expect(laneStart('low')).toBe('xhigh')
+  expect(laneStart('high')).toBe('xhigh')
+  // A job that asks for max (the person's own words) starts the lane at max: raising it later only half takes hold.
+  expect(laneStart('max')).toBe('max')
 })
 
 test('small answers and small code stay on the orchestrator', () => {
@@ -214,6 +219,11 @@ test('a turn the orchestrator keeps hands out its lookups, long commands and bro
   const steps = orchestratorRoute(route(phases, 'sonnet', 'xhigh', false, 'sonnet', false, 'sonnet'), MAIN)
   expect(steps.map(s => `${s.by} ${label(s.gear)} ${s.mainEffort}`)).toEqual(['agent haiku·low medium', 'main sonnet·medium medium'])
   expect(routeNote(steps)).toContain('2. explain what was done: do it yourself (effort medium)')
+  // Under auto its effort follows each step's instead, xhigh at most.
+  const follows = orchestratorRoute(route(phases, 'sonnet', 'xhigh', false, 'sonnet', false, 'sonnet'), MAIN, true)
+  expect(follows.map(s => `${s.by} ${label(s.gear)} ${s.mainEffort}`)).toEqual(['agent haiku·low low', 'main sonnet·high high'])
+  const code: Phase[] = [{ what: 'fetch issue 1846', mode: 'lookup', depth: 0 }, { what: 'fix it', mode: 'code', depth: 3 }]
+  expect(orchestratorRoute(route(code, 'sonnet', 'max', false, 'sonnet', false, 'sonnet'), MAIN, true).map(s => `${s.by} ${label(s.gear)} ${s.mainEffort}`)).toEqual(['agent haiku·low low', 'main sonnet·xhigh xhigh'])
 })
 
 test('Fable work is not a lane: it is a fresh deep hand-off', () => {
@@ -345,6 +355,10 @@ test('a fixed coding model under the orchestrator: small code stays here only on
   const opusMain = { model: 'opus', effort: 'medium' } as const
   expect(orchestratorPlan(small, at('sonnet'), opusMain, 3, 'xhigh', 'sonnet')).toEqual({ main: opusMain, handoff: { kind: 'lane', gear: at('sonnet') } })
   expect(orchestratorPlan(small, at('fable'), MAIN, 3, 'xhigh', 'fable')).toEqual({ main: MAIN, handoff: { kind: 'deep', gear: at('fable') } })
+  // A mechanical edit at one spot stays on any orchestrator, whatever model code is fixed to; not a costly one.
+  const mechanical = reading({ mode: 'code', reach: 'point', depth: 0 })
+  for (const code of ['sonnet', 'opus', 'fable'] as const) expect(orchestratorPlan(mechanical, at(code), opusMain, 3, 'xhigh', code)).toEqual({ main: opusMain })
+  expect(orchestratorPlan({ ...mechanical, care: 'costly' }, at('sonnet'), opusMain, 3, 'xhigh', 'sonnet').handoff?.kind).toBe('lane')
   // Answers keep the rules, coding model or not.
   const question = reading({ mode: 'answer', reach: 'system', depth: 2 })
   const want = gearFor(question, 'xhigh', 'sonnet')
@@ -364,4 +378,25 @@ test('a fixed coding model in a fan-out: each code part runs on it, a Fable one 
   // Code merged with a review of the same files runs on the higher model: a review is never below Opus.
   const merged = [part('review the mapper', 'review', 1, ['src/quote/mapper.ts']), part('fix the mapper', 'code', 1, ['src/quote/mapper.ts']), part('explain auth', 'answer', 1, ['src/auth'])]
   expect(fanParts(reading({ mode: 'code', parts: merged }), 3, 'high', 'sonnet').map(p => label(p.gear))).toEqual(['opus·high', 'sonnet·medium'])
+})
+
+// `auto`: the plan's main effort follows the turn instead of being pinned.
+test('auto: what the orchestrator keeps runs at the rules’ effort, at most xhigh; a hand-off at high; a lane that only relays a command at low', () => {
+  const auto = (r: Reading, want: Gear) => orchestratorPlan(r, want, { model: 'sonnet', effort: 'high' }, 1, 'xhigh', undefined, true)
+  // Kept: the effort the reading's gear gives it.
+  expect(auto(reading({ mode: 'answer', reach: 'point', depth: 0 }), gearFor(reading({ mode: 'answer', reach: 'point', depth: 0 }))).main.effort).toBe('low')
+  expect(auto(reading({ mode: 'answer', reach: 'area', depth: 1 }), { model: 'sonnet', effort: 'medium' }).main.effort).toBe('medium')
+  expect(auto(reading({ mode: 'code', reach: 'point', depth: 0 }), { model: 'haiku', effort: 'xhigh' }).main.effort).toBe('xhigh')
+  // A guess is kept too, at its best guess, and never above xhigh (a person's max ask is theirs to make for the turn).
+  expect(auto(reading({ sure: false, mode: 'code', reach: 'system', depth: 3 }), { model: 'opus', effort: 'xhigh' })).toEqual({ main: { model: 'sonnet', effort: 'xhigh' } })
+  expect(auto(reading({ sure: false, mode: 'answer', depth: 3 }), { model: 'sonnet', effort: 'max' }).main.effort).toBe('xhigh')
+  // A hand-off: the brief and the review of the agent are the work.
+  expect(auto(reading({ mode: 'code', reach: 'area', depth: 2 }), { model: 'sonnet', effort: 'xhigh' })).toEqual({ main: { model: 'sonnet', effort: 'high' }, handoff: { kind: 'lane', gear: { model: 'sonnet', effort: 'xhigh' } } })
+  expect(auto(reading({ mode: 'answer', reach: 'frontier', depth: 2 }), { model: 'fable', effort: 'high' }).main.effort).toBe('high')
+  expect(auto(reading({ mode: 'review', depth: 0 }), { model: 'opus', effort: 'low' }).main.effort).toBe('high')
+  // A lane that only relays a command (a long command, a git chore) needs no more than low.
+  expect(auto(reading({ mode: 'wait' }), { model: 'sonnet', effort: 'medium' }).main.effort).toBe('low')
+  expect(auto(reading({ mode: 'commit', depth: 1 }), { model: 'sonnet', effort: 'medium' }).main.effort).toBe('low')
+  // Pinned (not auto), the plan's main is the orchestrator's own gear whatever the turn.
+  expect(orchestratorPlan(reading({ mode: 'wait' }), { model: 'sonnet', effort: 'medium' }, MAIN).main).toBe(MAIN)
 })
