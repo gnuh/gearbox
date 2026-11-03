@@ -2,15 +2,16 @@ import { expect, test } from 'claude-code/testing'
 
 // The test runtime has timers; the hooks' own environment, whose types these files use, does not.
 declare const setTimeout: (done: (value?: unknown) => void, ms: number) => unknown
-import { type Reading, handoffNote } from './policy'
+import { type Reading, ARTIFACT_MAX, handoffNote } from './policy'
 
 // The routing rules below are written for a medium coding effort; the default is xhigh.
 const MEDIUM = { options: { code_effort: 'medium' } }
 const ZERO = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 const ONE = { ...ZERO, input_tokens: 10, output_tokens: 2 }
 
-// `said`: the assistant's replies so far, which a test adds between turns: what a go-ahead approves.
-type Rig = { steps: string[]; surveys: any[]; readers: string[]; dialogs: string[]; notes: (readonly string[])[]; kv: Map<string, unknown>; said: string[] }
+// `said`: the assistant's replies so far, which a test adds between turns: what a go-ahead approves. `status`: each text
+// gearbox set on the status line.
+type Rig = { steps: string[]; surveys: any[]; readers: string[]; dialogs: string[]; notes: (readonly string[])[]; kv: Map<string, unknown>; said: string[]; status: (string | undefined)[] }
 
 type Reply = { answer?: string; toolUses?: { name: string; input: unknown }[] }
 
@@ -22,10 +23,11 @@ const disks = new WeakMap<object, Map<string, string>>()
 // The session's folder is /w/app/src, inside a git repository at /w/app unless `git: false` (no repository) or
 // `git: 'unknown'` (the engine cannot say what the folder is).
 const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choose?: (labels: string[]) => string; earlier?: string[]; context?: number; replies?: Reply[]; git?: boolean | 'unknown' } = {}): Rig => {
-  const r: Rig = { steps: [], surveys: [], readers: [], dialogs: [], notes: [], kv: new Map(), said: [] }
+  const r: Rig = { steps: [], surveys: [], readers: [], dialogs: [], notes: [], kv: new Map(), said: [], status: [] }
   const queue = [...readings]
   const replies = [...(o.replies ?? [])]
-  for (const quiet of ['ui.status', 'ui.log']) on(quiet, () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.status', (_: unknown, e: any) => (r.status.push(e.text), { value: undefined }))
   on('ui.panes', () => ({ value: [] }))
   on('session.cwd', () => (o.git === 'unknown' ? { deny: 'no folder' } : { value: '/w/app/src' }))
   on('fs.exists', (_: unknown, e: any) => ({ value: e.path.endsWith('/.git') ? o.git !== false && e.path === '/w/app/.git' : disks.get(on)?.has(e.path) ?? false }))
@@ -680,7 +682,7 @@ test('/gearbox model, effort and navigator change the settings, over the plugin 
   const r = rig(on, [{ reach: 'area', depth: 1 }, { reach: 'area', depth: 1 }, { reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
   await sayOn($, 'claude-opus-5-5', 'add pagination')
   expect((await $.command.run({ command: 'gearbox', args: 'effort medium' })).text).toContain('coding effort medium')
-  expect((await $.command.run({ command: 'gearbox', args: 'effort ludicrous' })).text).toBe('effort takes medium, high, xhigh or auto (the main conversation picks each code agent’s effort)')
+  expect((await $.command.run({ command: 'gearbox', args: 'effort ludicrous' })).text).toBe('effort takes medium, high, xhigh or auto (the main conversation decides each agent’s model and effort)')
   expect((await $.command.run({ command: 'gearbox', args: 'navigator haiku' })).text).toContain('navigator haiku')
   await sayOn($, 'claude-opus-5-5', 'add sorting')
   expect(r.steps).toEqual(['claude-opus-5-5·high', 'claude-opus-5-5·medium'])
@@ -1013,6 +1015,80 @@ test('orchestrator: the main conversation writes no code unless the plan kept a 
   expect(JSON.stringify(await $.tool.call(edit))).toContain('does not write code')
   await sayOn($, 'claude-sonnet-5-5', 'rename formatMoney to fmtMoney in money.ts')
   expect(JSON.stringify(await $.tool.call(edit))).not.toContain('gearbox')
+})
+
+test('orchestrator: the main conversation may write a mockup or a note for the person, never code', ORCH, async ($: any, on) => {
+  rig(on, [{ reach: 'point', depth: 0, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'what does formatMoney return?')
+  const refused = async (tool: string, file_path: string) => JSON.stringify(await $.tool.call({ tool, file_path, old_string: 'a', new_string: 'b', content: 'x' })).includes('does not write code')
+  // Anything in a claude-artifacts folder, and a document outside the repository (/w/app).
+  for (const tool of ['Write', 'Edit', 'MultiEdit']) expect(await refused(tool, '/Users/me/claude-artifacts/x.html')).toBe(false)
+  expect(await refused('Write', '/Users/me/claude-artifacts/x.ts')).toBe(false)
+  for (const path of ['/Users/me/notes/plan.md', '/tmp/flow.mmd', '/tmp/logo.svg', '/tmp/page.html']) expect(await refused('Write', path)).toBe(false)
+  // Code, a document inside the repository, and a path that only climbs out of the folder stay refused.
+  for (const path of ['src/a.ts', '/w/app/src/a.ts', '/tmp/a.ts', '/w/app/README.md', 'notes.md', '/Users/me/claude-artifacts/../app/a.ts']) expect(await refused('Write', path)).toBe(true)
+  expect(await refused('NotebookEdit', '/Users/me/claude-artifacts/x.ipynb')).toBe(true)
+})
+
+test('orchestrator: a mockup is still refused while a hand-off is owed', ORCH, async ($: any, on) => {
+  rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  await sayOn($, 'claude-opus-5-5', 'why is the quote mapper rounding twice?')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Write', file_path: '/Users/me/claude-artifacts/x.html', content: 'x' }))).toContain('owed to an sonnet agent')
+})
+
+// The brief the next agent the main conversation starts is given when the person's messages are these: the session holds
+// them as `earlier`, which the rig reads each time.
+const briefer = (on: any) => {
+  const earlier: string[] = []
+  rig(on, [], { session: 'claude-opus-5-5', earlier })
+  const prompts: string[] = []
+  on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt), { model: 'sonnet', agentId: `a${prompts.length}` }))
+  return async ($: any, ...messages: string[]) => {
+    earlier.splice(0, earlier.length, ...messages)
+    await $.agent.spawn(spawnCall(`t${prompts.length}`, { model: 'sonnet' }))
+    return prompts.at(-1)!
+  }
+}
+
+test('a plain agent’s brief says in which language to write its notes between steps: the one the person types in', async ($: any, on) => {
+  const brief = await briefer(on)($, 'vamos revisar o cache de cotação', 'não mexe no gateway, só no serviço de preço', 'pode seguir com isso, mas sem tocar nos testes')
+  expect(brief).toContain(' Write the brief notes you give between steps in Portuguese.')
+  // One line, explicit; the old, unspecific sentence is gone.
+  expect(brief.trimEnd().split('\n').at(-1)).toEndWith('cannot start agents of its own. Write the brief notes you give between steps in Portuguese.')
+  expect(brief).not.toContain('in the language of the person')
+})
+
+test('the language of the notes follows the person’s recent messages: Spanish, English, and none where it cannot be told', async ($: any, on) => {
+  const brief = briefer(on)
+  expect(await brief($, 'quiero que revises el servicio de precios y me digas qué falta')).toEndWith('Write the brief notes you give between steps in Spanish.')
+  expect(await brief($, 'please check why the quotes drift after a refund', 'and then add a test for it')).toEndWith('Write the brief notes you give between steps in English.')
+  // A short or mixed message says nothing, and no sentence about language is added.
+  for (const said of [[], ['ok'], ['ok', 'sim', '👍'], ['rm -rf node_modules && bun i'], ['`bun test` /w/app/src/quote.ts']]) {
+    const plain = await brief($, ...said)
+    expect(plain).not.toContain('Write the brief notes')
+    expect(plain).not.toContain('language')
+  }
+})
+
+test('the language is read again when the person’s messages change, and a prompt typed this turn counts', async ($: any, on) => {
+  const brief = briefer(on)
+  expect(await brief($, 'vamos revisar o cache de cotação')).toEndWith('between steps in Portuguese.')
+  expect(await brief($, 'vamos revisar o cache de cotação')).toEndWith('between steps in Portuguese.')
+  expect(await brief($, 'please review the quote cache and tell me what is missing')).toEndWith('between steps in English.')
+  // The prompt of this turn is not in the session's messages yet: it is read as the latest.
+  await sayOn($, 'claude-opus-5-5', 'agora revisa o preço de frete, por favor, não o cache')
+  expect(await brief($, 'please review the quote cache and tell me what is missing')).toEndWith('between steps in Portuguese.')
+})
+
+test('an agent an agent starts, or one resumed, is not given the note', async ($: any, on) => {
+  rig(on, [], { session: 'claude-opus-5-5', earlier: ['vamos revisar o cache de cotação'] })
+  const prompts: string[] = []
+  on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt), { model: 'sonnet', agentId: `a${prompts.length}` }))
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet', parentAgentId: 'a0' }))
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet', resume: { agentId: 'a1' } }))
+  expect(prompts).toEqual(['p', 'p'])
 })
 
 test('orchestrator: with strict off the main conversation may write code', { options: { orchestrator: true, strict: false } }, async ($: any, on) => {
@@ -1354,7 +1430,8 @@ test('orchestrator: a session folder gearbox cannot read is not taken for a git 
   expect(gearOf(calls[0])).toBe('sonnet·xhigh - false')
 })
 
-test('orchestrator: an Agent call for a part that fails before its agent starts leaves the part open: the retry gets the same part, model, effort and lane', { options: { code_effort: 'auto', orchestrator: true, orchestrator_effort: 'medium' } }, async ($: any, on) => {
+// With a fixed coding effort: strict's count of parts still owed, which tells an open part here, holds only then.
+test('orchestrator: an Agent call for a part that fails before its agent starts leaves the part open: the retry gets the same part, model, effort and lane', { options: { code_effort: 'high', orchestrator: true, orchestrator_effort: 'medium' } }, async ($: any, on) => {
   // One part edits (the first of its model, so its agent becomes the sonnet lane), one only reads.
   const parts = [EDIT_PARTS[0]!, { what: 'review the retry change', mode: 'review', depth: 1, files: ['services/gateway'] }]
   const r = rig(on, [{ reach: 'area', depth: 2, mode: 'code', parts } as any], { session: 'claude-sonnet-5-5' })
@@ -1386,7 +1463,7 @@ test('orchestrator: an Agent call for a part that fails before its agent starts 
   expect(await owed()).not.toContain('gearbox')
   await done($)
   const ev = events(files)
-  expect(ev.filter(e => e.ev === 'agent').map(e => `${e.part} ${e.set} ${e.chosen ?? '-'} ${e.lane}`)).toEqual(['1 sonnet·high main xhigh', '1 sonnet·high main xhigh', '1 sonnet·high main xhigh', '2 opus·medium - xhigh'])
+  expect(ev.filter(e => e.ev === 'agent').map(e => `${e.part} ${e.set} ${e.chosen ?? '-'} ${e.lane}`)).toEqual(['1 sonnet·high - xhigh', '1 sonnet·high - xhigh', '1 sonnet·high - xhigh', '2 opus·medium - xhigh'])
   expect(ev.filter(e => e.ev === 'failed').map(e => `${e.part} ${e.why}`)).toEqual(['1 Agent failed to start', '1 refused'])
   expect(ev.filter(e => e.ev === 'spawn').map(e => `${e.part} ${e.lane ?? false}`)).toEqual(['1 true', '2 true'])
   // A nod goes back to the part’s lane.
@@ -1895,7 +1972,7 @@ test('coding effort auto: a code agent runs at the effort the main conversation 
   let n = 0
   on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: e.resume?.agentId ?? `a-${++n}` }))
   await sayOn($, 'claude-opus-5-5', 'add pagination to the orders list')
-  expect(r.notes[0]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'sonnet', effort: 'medium' }, code: true }, true)])
+  expect(r.notes[0]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'sonnet', effort: 'medium' }, code: true }, true, true, 'code · area · depth 1')])
   // High, as named: the agent starts at the top so a later raise takes hold, and runs at high.
   await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'paginate', prompt: 'p', effort: 'high' })
   await $.agent.spawn(spawnCall('t1', { model: 'sonnet', parentModel: 'claude-opus-5-5' }))
@@ -1906,7 +1983,7 @@ test('coding effort auto: a code agent runs at the effort the main conversation 
   // Subtle code across the system: xhigh is not put to the person, and with no line gearbox's pick runs.
   await sayOn($, 'claude-opus-5-5', 'rework how quotes are cached across the services')
   expect(r.dialogs).toEqual([])
-  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'sonnet', effort: 'xhigh' }, resume: 'a-1', code: true }, true)])
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'deep', gear: { model: 'sonnet', effort: 'xhigh' }, resume: 'a-1', code: true }, true, true, 'code · system · depth 3')])
   await $.tool.call({ tool: 'SendMessage', to: 'a-1', message: 'rework the cache' })
   await stepOnce($, { agentId: 'a-1', model: 'claude-sonnet-5-5', effort: 'xhigh' })
   // Low is below the floor: medium.
@@ -1919,21 +1996,21 @@ test('coding effort auto: a code agent runs at the effort the main conversation 
   expect(r.steps.filter(s => s.startsWith('claude-sonnet'))).toEqual(['claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh', 'claude-sonnet-5-5·xhigh', 'claude-sonnet-5-5·medium'])
 })
 
-test('coding effort auto under the orchestrator: a lane runs each code job at the effort the main conversation names; a job that writes no code keeps gearbox’s', { options: { orchestrator: true, orchestrator_model: 'opus', code_effort: 'auto' } }, async ($: any, on) => {
-  const r = rig(on, [{ reach: 'area', depth: 2 }, { reach: 'area', depth: 2, mode: 'answer' }, { reach: 'area', depth: 2 }], { session: 'claude-opus-5-5' })
+test('coding effort auto under the orchestrator: a lane runs each job at the effort the main conversation names, code or not; with none named, at gearbox’s', { options: { orchestrator: true, orchestrator_model: 'opus', code_effort: 'auto' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 2 }, { reach: 'area', depth: 2, mode: 'answer' }, { reach: 'area', depth: 2 }, { reach: 'area', depth: 2 }], { session: 'claude-opus-5-5' })
   const calls: string[] = []
   const sent: string[] = []
   on('tool.call', (_: unknown, e: any) => (e.tool === 'SendMessage' ? sent.push(e.message) : calls.push(`${e.tool} ${e.model}·${e.effort}`), { result: '' }))
   on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: 'lane-s' }))
   const high = { model: 'sonnet', effort: 'high' } as const
   await sayOn($, 'claude-opus-5-5', 'add retries to the quote client')
-  expect(r.notes[0]).toEqual([handoffNote({ kind: 'lane', gear: high, code: true }, true)])
+  expect(r.notes[0]).toEqual([handoffNote({ kind: 'lane', gear: high, code: true }, true, true, 'code · area · depth 2')])
   await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'retries', prompt: 'p', effort: 'medium' })
   await $.agent.spawn(spawnCall('t1', { model: 'sonnet', parentModel: 'claude-opus-5-5' }))
   await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
-  // A question: gearbox's effort, whatever its first line says; the line is taken off all the same.
+  // A question: the effort its first line names too (max is xhigh, the top); the line is taken off.
   await sayOn($, 'claude-opus-5-5', 'why does the client retry twice?')
-  expect(r.notes[1]).toEqual([handoffNote({ kind: 'lane', gear: high, resume: 'lane-s' }, true)])
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'lane', gear: high, resume: 'lane-s' }, true, true, 'answer · area · depth 2')])
   await $.tool.call({ tool: 'SendMessage', to: 'lane-s', message: 'effort: max\nwhy twice?' })
   await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
   // More code: the effort its first line names.
@@ -1942,39 +2019,48 @@ test('coding effort auto under the orchestrator: a lane runs each code job at th
   await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
   expect(calls).toEqual(['Agent sonnet·xhigh'])
   expect(sent).toEqual(['why twice?', 'back off exponentially'])
-  expect(r.steps.filter(s => s.startsWith('claude-sonnet'))).toEqual(['claude-sonnet-5-5·medium', 'claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh'])
+  expect(r.steps.filter(s => s.startsWith('claude-sonnet'))).toEqual(['claude-sonnet-5-5·medium', 'claude-sonnet-5-5·xhigh', 'claude-sonnet-5-5·xhigh'])
+  // With none named, gearbox's pick for the job.
+  await sayOn($, 'claude-opus-5-5', 'make it back off exponentially')
+  await $.tool.call({ tool: 'SendMessage', to: 'lane-s', message: 'and cap the delay' })
+  await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  expect(r.steps.at(-1)).toBe('claude-sonnet-5-5·high')
 })
 
-test('coding effort auto in a fan-out: a part that edits runs at the effort its call names, else at gearbox’s pick; a part that only reads keeps gearbox’s', { options: { code_effort: 'auto', orchestrator: true, orchestrator_effort: 'medium' } }, async ($: any, on) => {
+test('coding effort auto in a fan-out: each part runs at the effort its call names, a part that only reads too, else at gearbox’s pick', { options: { code_effort: 'auto', orchestrator: true, orchestrator_effort: 'medium' } }, async ($: any, on) => {
   const r = rig(on, [{ reach: 'area', depth: 2, mode: 'code', parts: PARTS } as any], { session: 'claude-sonnet-5-5' })
   on('tool.call', () => ({ result: '' }))
   on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
   await sayOn($, 'claude-sonnet-5-5', ASKED)
   // Billing's xhigh is the main conversation's to change, not put to the person.
   expect(r.dialogs).toEqual([])
-  expect(r.notes[0]![0]).toContain('The effort of each part that edits is yours to choose')
+  expect(r.notes[0]![0]).toContain('gearbox suggests: splitting this request into 3 independent parts')
+  expect(r.notes[0]![0]).toContain('Name the model and effort on the Agent call')
   for (const [k, what, effort] of [[1, 'review', 'max'], [2, 'orders', 'high'], [3, 'billing', undefined]] as const) {
     await $.tool.call({ tool: 'Agent', tool_use_id: `t${k}`, description: `part ${k}: ${what}`, prompt: `do the ${what} part`, ...(effort ? { effort } : {}) })
     await $.agent.spawn(spawnCall(`t${k}`, { model: k === 1 ? 'opus' : 'sonnet' }))
   }
   for (const [k, model] of [[1, 'claude-opus-5-5'], [2, 'claude-sonnet-5-5'], [3, 'claude-sonnet-5-5']] as const) await stepOnce($, { agentId: `agent-t${k}`, model, effort: 'xhigh' })
-  expect(r.steps).toEqual(['sonnet·medium', 'claude-opus-5-5·medium', 'claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh'])
+  expect(r.steps).toEqual(['sonnet·medium', 'claude-opus-5-5·xhigh', 'claude-sonnet-5-5·high', 'claude-sonnet-5-5·xhigh'])
 })
 
-test('coding effort auto: set with /gearbox effort auto; code the main conversation writes runs at medium and up by its depth; a plain agent whose brief writes code runs at the effort its call names', async ($: any, on) => {
+test('coding effort auto: set with /gearbox effort auto; code the main conversation writes runs at medium and up by its depth; a plain agent runs at the effort its call names, else at its job’s, started at the top', async ($: any, on) => {
   const r = rig(on, [{ reach: 'area', depth: 1 }, { reach: 'area', depth: 2 }, { reach: 'area', depth: 1, mode: 'answer' }, { reach: 'area', depth: 1, mode: 'code' }, { reach: 'area', depth: 1, mode: 'answer' }], { session: 'claude-opus-5-5' })
   const agents = AGENT_LOG(on)
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
   expect((await $.command.run({ command: 'gearbox', args: 'effort auto' })).text).toContain('coding effort auto')
   expect(r.kv.get('settings')).toEqual({ code_effort: 'auto' })
   await sayOn($, 'claude-opus-5-5', 'add pagination')
   await sayOn($, 'claude-opus-5-5', 'make the pager remember its page across reloads')
   await sayOn($, 'claude-opus-5-5', 'where are the tokens kept?')
-  // Two plain agents' briefs, read by Haiku: one writes code, one searches.
-  await $.tool.call({ tool: 'Agent', description: 'fix', prompt: 'Fix the refresh in auth/refresh.ts', effort: 'xhigh' })
-  await $.tool.call({ tool: 'Agent', description: 'find', prompt: 'Find where tokens are stored', effort: 'xhigh' })
+  // Two plain agents' briefs, read by Haiku: one writes code and names its effort, one searches and names none.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'f1', description: 'fix', prompt: 'Fix the refresh in auth/refresh.ts', effort: 'xhigh' })
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'f2', description: 'find', prompt: 'Find where tokens are stored' })
+  for (const id of ['f1', 'f2']) await $.agent.spawn(spawnCall(id))
+  for (const id of ['f1', 'f2']) await stepOnce($, { agentId: `agent-${id}`, model: 'claude-opus-5-5', effort: 'xhigh' })
   expect(r.notes).toEqual([[], [], []])
-  expect(r.steps).toEqual(['claude-opus-5-5·medium', 'claude-opus-5-5·high', 'claude-opus-5-5·medium'])
-  expect(agents).toEqual(['-·xhigh', '-·medium'])
+  expect(r.steps).toEqual(['claude-opus-5-5·medium', 'claude-opus-5-5·high', 'claude-opus-5-5·medium', 'claude-opus-5-5·xhigh', 'claude-opus-5-5·medium'])
+  expect(agents).toEqual(['-·xhigh', '-·xhigh'])
 })
 
 test('a coding effort an older version stored as main reads as auto', async ($: any, on) => {
@@ -1983,4 +2069,435 @@ test('a coding effort an older version stored as main reads as auto', async ($: 
   await sayOn($, 'claude-opus-5-5', 'add pagination')
   expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('coding effort auto')
   expect(r.steps).toEqual(['claude-opus-5-5·medium'])
+})
+
+// What the readouts are told of each loop (see GearboxLoop), read from the shared record.
+// The loops record as the plugin last wrote it: a test calls this before its first call on `$`, and reads the loops with the function it
+// returns (the kit's own bottom still keeps the value for the plugin).
+const watchLoops = (on: any): (() => Record<string, any>) => {
+  let loops: Record<string, any> = {}
+  on('state.set', (_: unknown, e: any, next: any) => {
+    if (e.plugin === 'gearbox' && e.key === 'loops') loops = e.value.value
+    return next(e)
+  })
+  return () => loops
+}
+
+const READOUT = { options: { code_effort: 'auto', orchestrator: true, orchestrator_effort: 'auto' } }
+
+test('readout: each loop records who set its effort: the main conversation’s call, gearbox’s rules, or the orchestrator’s effort per prompt', READOUT, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  const parts = [EDIT_PARTS[0]!, { what: 'review the retry change', mode: 'review', depth: 1, files: ['services/gateway'] }, EDIT_PARTS[1]!]
+  rig(on, [{ reach: 'area', depth: 2, mode: 'code', parts } as any, { reach: 'area', depth: 1, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await sayOn($, 'claude-sonnet-5-5', ASKED)
+  // Part 1 edits and the call names its effort; the review's effort is gearbox's; part 3 edits and names none.
+  const calls: [string, string, string?][] = [['t1', 'part 1: orders paging', 'high'], ['t2', 'part 2: review', undefined], ['t3', 'part 3: billing', undefined]]
+  for (const [id, description, effort] of calls) {
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, description, prompt: 'p', ...(effort ? { effort } : {}) })
+    await $.agent.spawn(spawnCall(id, { model: 'sonnet' }))
+  }
+  // A reader an agent starts takes gearbox's rule; one it starts that changes code is refused, and shows as a ✗ row.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'e1', description: 'scout', prompt: 'p', subagent_type: 'Explore', agentId: 'agent-t1' })
+  await $.agent.spawn(spawnCall('e1', { model: 'sonnet', subagentType: 'Explore', parentAgentId: 'agent-t1' }))
+  const refused = await $.tool.call({ tool: 'Agent', tool_use_id: 'w1', description: 'rewrite it', prompt: 'p', subagent_type: 'general-purpose', agentId: 'agent-t1' })
+  expect(JSON.stringify(refused)).toContain('only agents that read')
+  const loops = loopsOf()
+  expect(loops.main).toMatchObject({ effortBy: 'auto' })
+  expect(loops['agent-t1']).toMatchObject({ effortBy: 'main', parent: 'main' })
+  expect(loops['agent-t2'].effortBy).toBe('rules')
+  expect(loops['agent-t3'].effortBy).toBe('rules')
+  expect(loops['agent-e1']).toMatchObject({ effortBy: 'rules', parent: 'agent-t1' })
+  expect(loops['refused:w1']).toMatchObject({ state: 'done', failed: 'refused', parent: 'agent-t1', label: 'rewrite it', asked: 'general-purpose' })
+  expect(loops['refused:w1'].result).toContain('only agents that read')
+  // The part that edits beside another that edits runs in a worktree of Claude Code's own; the review does not.
+  expect(loops['agent-t1'].worktree).toBe('worktree')
+  expect(loops['agent-t2'].worktree).toBeUndefined()
+})
+
+test('readout: without the orchestrator’s auto effort, the main conversation’s own effort is gearbox’s rules; a command that sets its own is no one’s', async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(on, [{ reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'add pagination')
+  expect(loopsOf().main.effortBy).toBe('rules')
+  await $.prompt.submit({ text: '/review', command: { name: 'review', args: '' } })
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  expect(loopsOf().main.effortBy).toBeUndefined()
+})
+
+test('readout: a loop records the files it reads, edits and creates, the worktree it makes, and what its requests used and cost', READOUT, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(on, [{ reach: 'area', depth: 1, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', (_: unknown, e: any) => (e.tool === 'Bash' && e.command.includes('boom') ? { result: 'no', isError: true as const } : { result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await sayOn($, 'claude-sonnet-5-5', 'tidy the orders service')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  const as = { agentId: 'agent-t1' }
+  for (const call of [
+    { tool: 'Read', file_path: '/w/app/src/orders.ts' },
+    { tool: 'Write', file_path: '/w/app/src/pager.ts', content: 'x' },
+    { tool: 'Edit', file_path: '/w/app/src/orders.ts', old_string: 'a', new_string: 'b' },
+    { tool: 'MultiEdit', file_path: '/w/app/src/pager.ts', edits: [] },
+    { tool: 'Grep', pattern: 'paginate' },
+    // A worktree made by a command that fails is none; one that works is.
+    { tool: 'Bash', command: 'git worktree add /tmp/never -b boom' },
+    { tool: 'Bash', command: 'git -C /w/app worktree add /tmp/gb-wt-orders -b part/orders' },
+  ])
+    await $.tool.call({ ...call, ...as })
+  // Two requests of the agent: each ONE usage (10 in, 2 out) at Sonnet's list price ($2 and $10 per million).
+  await stepOnce($, { agentId: 'agent-t1', model: 'claude-sonnet-5-5', effort: 'high' })
+  await stepOnce($, { agentId: 'agent-t1', model: 'claude-sonnet-5-5', effort: 'high' })
+  const loops = loopsOf()
+  const l = loops['agent-t1']
+  expect(l.files).toEqual([
+    { path: '/w/app/src/orders.ts', kind: 'edited' },
+    { path: '/w/app/src/pager.ts', kind: 'new' },
+  ])
+  expect(l).toMatchObject({ worktree: 'part/orders', worktreePath: '/tmp/gb-wt-orders', steps: 2 })
+  expect(l.usage.in).toBe(20)
+  expect(l.usage.out).toBe(4)
+  expect(Math.abs(l.usage.usd - (20 * 2 + 4 * 10) / 1e6) < 1e-9).toBe(true)
+  // The main conversation's own count and cost are this turn's.
+  expect(loops.main.usage.in).toBe(10)
+})
+
+test('readout: an agent that ends keeps the first line of its report, or how it failed; its next run clears them', READOUT, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(on, [], { session: 'claude-sonnet-5-5' })
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
+  await stepOnce($, { model: 'claude-sonnet-5-5' })
+  for (const id of ['t1', 't2', 't3']) await $.agent.spawn(spawnCall(id, { model: 'sonnet' }))
+  const end = (id: string, answer: string, extra: object = {}) => $.turn.complete({ turnId: 'x', answer, durationMs: 5, isAborted: false, agentId: `agent-${id}`, ...extra })
+  await end('t1', '## Added paging\n\nThe tests pass.')
+  await end('t2', 'I could not reach the database.', { reason: 'error' })
+  await end('t3', '', { isAborted: true, reason: 'aborted' })
+  const loops = loopsOf()
+  expect(loops['agent-t1']).toMatchObject({ state: 'done', result: 'Added paging' })
+  expect(loops['agent-t1'].failed).toBeUndefined()
+  expect(loops['agent-t1'].endedAt).toBeGreaterThan(0)
+  expect(loops['agent-t2']).toMatchObject({ state: 'done', failed: 'failed', result: 'I could not reach the database.' })
+  expect(loops['agent-t3']).toMatchObject({ state: 'done', failed: 'stopped' })
+  expect(loops['agent-t3'].result).toBeUndefined()
+  // Sent on with a new job, an agent works again with none of that.
+  await stepOnce($, { agentId: 'agent-t2', model: 'claude-sonnet-5-5', effort: 'high' })
+  const again = loopsOf()['agent-t2']
+  expect(again.state).toBe('working')
+  expect(again.failed).toBeUndefined()
+  expect(again.result).toBeUndefined()
+  expect(again.endedAt).toBeUndefined()
+})
+
+// Main decides: with the coding effort auto, gearbox sets only the main conversation's effort for the turn's first
+// request; whether to hand off, to which model and at which effort is the main conversation's, once it has read the work.
+const DECIDES = { options: { code_effort: 'auto', orchestrator: true } }
+// Case 1, seen live: after a long design artifact the person said "perfeito, vamos fazer"; the survey saw only the
+// reply's short summary and read small code, so the orchestrator kept the work; the main model, which had read the
+// seven-section spec, started a Sonnet agent at xhigh.
+const SPEC_REPLY = 'The design is in `/Users/me/claude-artifacts/gearbox-0.23/spec.html`, seven sections. Shall we build it?'
+const goAheadThenAgent = async ($: any, on: any, readings: Partial<Reading>[]) => {
+  const r = rig(on, [{ reach: 'area', depth: 1, mode: 'answer' }, { reach: 'area', depth: 1, mode: 'code', ahead: true }, { reach: 'area', depth: 1, mode: 'code' }, ...readings], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  const calls: any[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push(e), { result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'como seria o desenho do modo em que o modelo decide?')
+  r.said.push(SPEC_REPLY)
+  await sayOn($, 'claude-opus-5-5', 'perfeito, vamos fazer')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'implement the spec', prompt: 'Implement the seven sections of the spec.', model: 'sonnet', effort: 'xhigh' })
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  await stepOnce($, { agentId: 'agent-t1', model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  await done($)
+  return { r, calls, ev: events(files) }
+}
+
+test('main decides, case 1: after a go-ahead read as small code, the Agent the main conversation starts at sonnet·xhigh runs at xhigh, started at the top; the log says it is the main conversation’s and what gearbox advised', DECIDES, async ($: any, on) => {
+  // The fourth reading is the agent's brief, read for gearbox's advice.
+  const { r, calls, ev } = await goAheadThenAgent($, on, [{ reach: 'area', depth: 2, mode: 'code' }])
+  expect(r.notes[1]).toEqual([]) // kept here, so no hand-off note
+  expect(gearOf(calls.find(c => c.tool === 'Agent'))).toBe('sonnet·xhigh - -')
+  expect(r.steps.at(-1)).toBe('claude-sonnet-5-5·xhigh')
+  expect(ev.find(e => e.ev === 'agent')).toMatchObject({ asked: 'sonnet·xhigh', set: 'sonnet·xhigh', chosen: 'main', advised: 'sonnet·high', agrees: false, lane: 'xhigh', why: 'a lane without a hand-off' })
+  expect(ev.find(e => e.ev === 'spawn')).toMatchObject({ agent: 'agent-t1', lane: true })
+})
+
+test('with a fixed coding effort, the same Agent call after the same go-ahead is held to gearbox’s pick, as before', { options: { code_effort: 'medium', orchestrator: true } }, async ($: any, on) => {
+  const { r, calls, ev } = await goAheadThenAgent($, on, [])
+  expect(gearOf(calls.find(c => c.tool === 'Agent'))).toBe('sonnet·xhigh - -')
+  expect(r.steps.at(-1)).toBe('claude-sonnet-5-5·medium')
+  expect(r.surveys).toHaveLength(3) // the brief is not read
+  const agent = ev.find(e => e.ev === 'agent')
+  expect(agent).toMatchObject({ asked: 'sonnet·xhigh', set: 'sonnet·medium', why: 'a lane without a hand-off' })
+  expect(agent.chosen).toBeUndefined()
+  expect(agent.advised).toBeUndefined()
+})
+
+test('main decides: the model the call names wins over the one advised, and the agent becomes that model’s lane; a nod goes on there', DECIDES, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  const calls: any[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push(e), { result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'rework how quotes are cached across the services')
+  expect(r.notes[0]![0]).toStartWith('gearbox suggests: the opus lane at high (code · system · depth 2). Decide after reading')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'cache', prompt: 'p', model: 'sonnet' })
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  await stepOnce($, { agentId: 'agent-t1', model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  expect(gearOf(calls[0])).toBe('sonnet·xhigh - -')
+  expect(r.steps.at(-1)).toBe('claude-sonnet-5-5·high') // the advice's effort fills what the call left out
+  await done($)
+  // A nod goes on in the Sonnet lane the work went to, not in an Opus lane that was never started.
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  expect(r.notes[1]![0]).toStartWith('gearbox suggests: the sonnet lane agent-t1, which already holds this work')
+  await done($)
+  const ev = events(files)
+  expect(ev.find(e => e.ev === 'agent')).toMatchObject({ set: 'sonnet·high', chosen: 'main', advised: 'opus·high', agrees: false, lane: 'xhigh' })
+  expect(ev.find(e => e.ev === 'spawn')).toMatchObject({ agent: 'agent-t1', model: 'sonnet', lane: true })
+})
+
+test('main decides, within bounds: a review never runs below Opus (by its slot or by its brief), low is medium, max is xhigh, and Fable is still put to the person', DECIDES, async ($: any, on) => {
+  const r = rig(
+    on,
+    [
+      { reach: 'area', depth: 1, mode: 'review' },
+      { reach: 'system', depth: 2 },
+      { reach: 'system', depth: 2 },
+      { reach: 'system', depth: 2 },
+      { reach: 'point', depth: 0, mode: 'answer' },
+      // The brief of a plain agent the turn did not hand off: a review.
+      { reach: 'area', depth: 1, mode: 'review' },
+    ],
+    { session: 'claude-opus-5-5' },
+  )
+  const files = disk(on)
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  const turn = async (text: string, id: string, call: object) => {
+    await sayOn($, 'claude-opus-5-5', text)
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, description: id, prompt: 'p', ...call })
+    await $.agent.spawn(spawnCall(id, { model: 'opus' }))
+    await done($)
+  }
+  await turn('review the retry change', 'r1', { model: 'sonnet' })
+  await turn('rework the quote cache', 'r2', { effort: 'low' })
+  await turn('and the price cache', 'r3', { effort: 'max' })
+  await turn('and the tax cache', 'r4', { model: 'fable' })
+  await turn('what does fmtMoney return?', 'r5', { model: 'sonnet', prompt: 'Review the diff of src/quote.ts for bugs.' })
+  expect(r.dialogs).toEqual(['gearbox would run this at fable·high in a Fable subagent. Which gear?'])
+  const ev = events(files)
+  expect(ev.filter(e => e.ev === 'agent').map(e => `${e.set} ${e.chosen}`)).toEqual(['opus·medium main', 'opus·medium main', 'opus·xhigh main', 'fable·high main', 'opus·medium main'])
+  // Fable's work is never a lane; a plain agent the turn did not hand off still becomes its model's lane, Opus's here.
+  expect(ev.filter(e => e.ev === 'spawn').map(e => `${e.agent} ${e.lane ?? false}`)).toEqual(['agent-r1 true', 'agent-r2 true', 'agent-r3 true', 'agent-r4 false', 'agent-r5 true'])
+})
+
+test('main decides: strict no longer holds a deep hand-off; the browser check and the long command still go to agents', { options: { code_effort: 'auto' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'system', depth: 2 }, { reach: 'area', depth: 1, mode: 'drive' }, { reach: 'area', depth: 1, mode: 'wait' }], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  await sayOn($, 'claude-sonnet-5-5', 'quotes differ between the gateway and the price service; find the cause and fix it')
+  expect(r.notes[0]![0]).toStartWith('gearbox suggests: an opus agent at high (code · system · depth 2)')
+  for (const call of [{ tool: 'Edit', file_path: 'quote.ts', old_string: 'a', new_string: 'b' }, { tool: 'Bash', command: 'bun test' }, ...['a', 'b', 'c', 'd'].map(f => ({ tool: 'Read', file_path: `${f}.ts` }))])
+    expect(JSON.stringify(await $.tool.call(call))).not.toContain('gearbox')
+  await sayOn($, 'claude-sonnet-5-5', 'check the quote page in the browser')
+  expect(JSON.stringify(await $.tool.call({ tool: 'mcp__claude-in-chrome__navigate', url: 'http://localhost' }))).toContain('this step is a hand-off')
+  await sayOn($, 'claude-sonnet-5-5', 'run the e2e suite')
+  expect(JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'bun test' }))).toContain('this step is a hand-off')
+})
+
+test('main decides under the orchestrator: no lane or fan-out is owed and nothing it writes is refused as code; with a fixed coding effort, both hold as before', { options: { code_effort: 'auto', orchestrator: true, orchestrator_effort: 'medium' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }, { reach: 'point', depth: 0, mode: 'answer' }, { reach: 'area', depth: 2, mode: 'code', parts: PARTS }, { reach: 'point', depth: 0, mode: 'answer' }] as any, { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  const edit = { tool: 'Edit', file_path: 'money.ts', old_string: 'a', new_string: 'b' }
+  const free = async (call: object) => expect(JSON.stringify(await $.tool.call(call))).not.toContain('gearbox')
+  await sayOn($, 'claude-sonnet-5-5', 'why is the quote mapper rounding twice?')
+  await free(edit)
+  await sayOn($, 'claude-sonnet-5-5', 'what does formatMoney return?')
+  await free(edit)
+  await sayOn($, 'claude-sonnet-5-5', ASKED)
+  expect(r.notes[2]![0]).toStartWith('gearbox suggests: splitting this request into 3 independent parts')
+  await free({ tool: 'Bash', command: 'bun test' })
+  await free(edit)
+  await $.command.run({ command: 'gearbox', args: 'effort high' })
+  await sayOn($, 'claude-sonnet-5-5', 'what does parseMoney return?')
+  expect(JSON.stringify(await $.tool.call(edit))).toContain('does not write code')
+})
+
+test('the effort tool is registered at session start, never deferred, and says when to call it', async ($: any, on) => {
+  rig(on, [])
+  const tools: any[] = []
+  on('tool.register', (_: unknown, e: any) => (tools.push(e), { value: { tool: `mcp__gearbox__${e.name}` } }))
+  on('command.register', () => ({ value: { command: 'gearbox' } }))
+  on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+  const tool = tools.find(t => t.name === 'effort')
+  expect(tool).toMatchObject({ isDeferred: false })
+  expect(tool.description).toContain('what you have read shows the turn needs more thought than it was given')
+  expect(tool.inputSchema.properties.effort.enum).toEqual(['low', 'medium', 'high', 'xhigh'])
+  expect(tool.inputSchema.required).toEqual(['effort', 'why'])
+})
+
+test('main decides: the effort tool sets the main conversation’s effort for the rest of the turn, up to xhigh; the readout says main set it, and a nod reuses it', { options: { code_effort: 'auto' } }, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  const r = rig(on, [{ reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  on('tool.call', () => ({ result: '' }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'add pagination to the orders list')
+  const set = async (effort: string) => String((await $.tool.call({ tool: 'mcp__gearbox__effort', effort, why: 'the pager shares state with the filters' })).result)
+  expect(await set('high')).toContain('your effort is now high for the rest of this turn')
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  expect(loopsOf().main.effortBy).toBe('main')
+  expect(await set('max')).toContain('now xhigh for the rest of this turn (xhigh is the top)')
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  expect(await $.tool.call({ tool: 'mcp__gearbox__effort', effort: 'ludicrous', why: 'x' })).toMatchObject({ isError: true })
+  // An edit after the main conversation chose its effort does not override it.
+  await $.tool.call({ tool: 'mcp__gearbox__effort', effort: 'low', why: 'it is a rename after all' })
+  await $.tool.call({ tool: 'Edit', file_path: 'orders.ts', old_string: 'a', new_string: 'b' })
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  // The turn's last choice is the work's gear, which a nod reuses.
+  await set('high')
+  await done($)
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  expect(r.steps).toEqual(['claude-opus-5-5·medium', 'claude-opus-5-5·high', 'claude-opus-5-5·xhigh', 'claude-opus-5-5·low', 'claude-opus-5-5·high'])
+  expect(events(files).filter(e => e.ev === 'effort').map(e => `${e.from}→${e.to}${e.asked ? ` (${e.asked})` : ''}`)).toEqual(['medium→high', 'high→xhigh (max)', 'xhigh→low', 'low→high'])
+})
+
+test('with a fixed coding effort, the effort tool changes nothing and says the settings fix it; so does a pinned orchestrator effort', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1 }, { reach: 'area', depth: 1, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  await sayOn($, 'claude-opus-5-5', 'add pagination to the orders list')
+  expect(String((await $.tool.call({ tool: 'mcp__gearbox__effort', effort: 'low', why: 'x' })).result)).toContain('fixed by the settings (coding effort xhigh)')
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  await $.command.run({ command: 'gearbox', args: 'effort auto' })
+  await $.command.run({ command: 'gearbox', args: 'orchestrator on' })
+  await $.command.run({ command: 'gearbox', args: 'orchestrator-effort medium' })
+  await sayOn($, 'claude-opus-5-5', 'why does the list re-render twice?')
+  expect(String((await $.tool.call({ tool: 'mcp__gearbox__effort', effort: 'high', why: 'x' })).result)).toContain('fixed by the settings (orchestrator effort medium)')
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  expect(r.steps).toEqual(['claude-opus-5-5·xhigh', 'claude-opus-5-5·xhigh', 'sonnet·medium', 'sonnet·medium'])
+})
+
+test('main decides: a go-ahead’s survey reads the files the proposal points to, an HTML page as text, 6,000 characters at most; with a fixed coding effort it does not', { options: { code_effort: 'auto' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1, mode: 'code', ahead: true }, { reach: 'system', depth: 2, mode: 'code' }, { reach: 'area', depth: 1, mode: 'code', ahead: true }, { reach: 'area', depth: 1, mode: 'code' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  files.set('/Users/me/claude-artifacts/gearbox-0.23/spec.html', '<html><head><style>h1{color:red}</style></head><body><h1>Main decides</h1><p>Delegation &amp; effort are the main model&#39;s.</p><script>track()</script></body></html>')
+  files.set('/w/app/docs/plan.md', `# Plan\n${'x'.repeat(9000)}`)
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  r.said.push('The design is in `/Users/me/claude-artifacts/gearbox-0.23/spec.html`, the steps in docs/plan.md and the notes in missing.md. Shall we build it?')
+  await sayOn($, 'claude-opus-5-5', 'vamos fazer')
+  const work = r.surveys[1].request as string
+  expect(work).toStartWith('The design is in')
+  expect(work).toContain('The files this proposal points to, as text:')
+  expect(work).toContain("Main decides\nDelegation & effort are the main model's.")
+  expect(work).toContain('[docs/plan.md]\n# Plan\nxxx')
+  for (const gone of ['<h1>', 'track()', 'color:red', '[missing.md]']) expect(work).not.toContain(gone)
+  expect(work.length).toBeLessThan(r.said[0]!.length + 6000 + 200)
+  await done($)
+  // The log says which files the survey read and how many characters of each went in; the second took the room that was left.
+  const page = "Main decides\nDelegation & effort are the main model's.".length
+  const room = ARTIFACT_MAX - ('\n\n[/Users/me/claude-artifacts/gearbox-0.23/spec.html]\n'.length + page)
+  expect(events(files).find(e => e.ev === 'survey' && e.of === 'work').files).toEqual([{ path: '/Users/me/claude-artifacts/gearbox-0.23/spec.html', chars: page }, { path: 'docs/plan.md', chars: room }])
+  await $.command.run({ command: 'gearbox', args: 'effort xhigh' })
+  await sayOn($, 'claude-opus-5-5', 'vamos fazer')
+  expect(r.surveys[3].request).toBe(r.said[0])
+  // With a fixed coding effort no file is read, and the event says so.
+  await done($)
+  expect(events(files).filter(e => e.ev === 'survey' && e.of === 'work').map(e => e.files)).toHaveLength(2)
+  expect(events(files).filter(e => e.ev === 'survey' && e.of === 'work').at(-1).files).toEqual([])
+})
+
+test('main decides: the same work, asked in different words, gets the agent the main conversation names: "vamos fazer" after a proposal, "ok", and a detailed request', DECIDES, async ($: any, on) => {
+  const r = rig(
+    on,
+    [
+      // "vamos fazer" after a proposal: read as small code, kept here; then the agent's brief.
+      { reach: 'area', depth: 1, mode: 'code', ahead: true },
+      { reach: 'area', depth: 1, mode: 'code' },
+      { reach: 'area', depth: 2, mode: 'code' },
+      // "ok": the work it approves, read as a feature's.
+      { reach: 'area', depth: 2, mode: 'code' },
+      // A detailed request: read as code across the system.
+      { reach: 'system', depth: 2, mode: 'code' },
+    ],
+    { session: 'claude-opus-5-5' },
+  )
+  const files = disk(on)
+  const calls: any[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push(e), { result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  const start = async (id: string) => {
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, description: 'main decides', prompt: 'Implement main-decides mode as the spec says.', model: 'sonnet', effort: 'high' })
+    await $.agent.spawn(spawnCall(id, { model: 'sonnet' }))
+    await stepOnce($, { agentId: `agent-${id}`, model: 'claude-sonnet-5-5', effort: 'xhigh' })
+    await done($)
+  }
+  r.said.push(SPEC_REPLY)
+  await sayOn($, 'claude-opus-5-5', 'vamos fazer')
+  await start('a1')
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  await start('a2')
+  await sayOn($, 'claude-opus-5-5', 'Implement the main-decides mode: honor the model and effort each Agent call names within bounds, make the hand-off notes advice, add an effort tool, and have a go-ahead read the artifact it approves.')
+  await start('a3')
+  // Three readings, three different pieces of advice...
+  expect(r.notes.map(n => (n[0] ?? 'kept here').split(' (')[0])).toEqual(['kept here', 'gearbox suggests: the sonnet lane agent-a1, which already holds this work and what it found, at high', 'gearbox suggests: the opus lane at high'])
+  // ...and the same agent each time: the one the main conversation named.
+  const agents = events(files).filter(e => e.ev === 'agent')
+  expect(agents.map(e => `${e.set} ${e.chosen}`)).toEqual(Array(3).fill('sonnet·high main'))
+  expect(calls.filter(c => c.tool === 'Agent').map(gearOf)).toEqual(Array(3).fill('sonnet·xhigh - -'))
+  expect(r.steps.filter(s => s.startsWith('claude-sonnet'))).toEqual(Array(3).fill('claude-sonnet-5-5·high'))
+})
+
+test('main decides: an answer that needs no deep look gets no hand-off note, nor does an instruction for later or a guess; deeper work is still advised', DECIDES, async ($: any, on) => {
+  const r = rig(
+    on,
+    [
+      { reach: 'system', depth: 2 },
+      // "depois que terminar, traga a sugestão": a continuation read as a question.
+      { reach: 'area', depth: 1, mode: 'answer', cont: true },
+      // "por que …?" about the system: with a fixed coding effort, the Opus lane's.
+      { reach: 'system', depth: 1, mode: 'answer' },
+      { reach: 'area', depth: 1, mode: 'review', sure: false },
+      { reach: 'system', depth: 2, mode: 'answer' },
+    ],
+    { session: 'claude-sonnet-5-5' },
+  )
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await sayOn($, 'claude-sonnet-5-5', 'rework how quotes are cached across the services')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'cache', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t1', { model: 'opus' }))
+  await sayOn($, 'claude-sonnet-5-5', 'depois que terminar, traga a sugestão')
+  await sayOn($, 'claude-sonnet-5-5', 'por que o cache de cotação é por serviço?')
+  await sayOn($, 'claude-sonnet-5-5', 'dá uma olhada nesse PR')
+  await sayOn($, 'claude-sonnet-5-5', 'why do the quotes drift after a refund across services?')
+  expect(r.notes.slice(1, 4)).toEqual([[], [], []])
+  expect(r.notes[4]![0]).toStartWith('gearbox suggests: the opus lane')
+})
+
+test('main decides: the status line shows the effort an agent’s requests run at, not the top one it started at, and follows a follow-up that changes it', DECIDES, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 1, mode: 'code' }, { reach: 'area', depth: 1, mode: 'code' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  // Its first request lands while it starts, before anything tells that it is lowered: it goes at the top effort.
+  on('agent.spawn', async (_: unknown, e: any) => {
+    await stepOnce($, { agentId: `agent-${e.tool_use_id}`, model: 'claude-sonnet-5-5', effort: 'xhigh' })
+    return { model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }
+  })
+  const agent = () => r.status.at(-1)?.split(' ⇢ ')[1]
+  await sayOn($, 'claude-opus-5-5', 'add paging to the orders list')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'a1', description: 'paging', prompt: 'Add paging to the orders list.', model: 'sonnet', effort: 'high' })
+  await $.agent.spawn(spawnCall('a1', { model: 'sonnet' }))
+  expect(r.steps.at(-1)).toBe('claude-sonnet-5-5·xhigh')
+  // Once its job is known the line shows the effort the requests that follow run at.
+  expect(agent()).toBe('1 agent: sonnet·high')
+  await stepOnce($, { agentId: 'agent-a1', model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  expect(r.steps.at(-1)).toBe('claude-sonnet-5-5·high')
+  expect(agent()).toBe('1 agent: sonnet·high')
+  // A follow-up that names another effort: the line changes with the agent's next request, not before.
+  await $.tool.call({ tool: 'SendMessage', to: 'agent-a1', message: 'effort: medium\nnow the tests' })
+  await stepOnce($, { agentId: 'agent-a1', model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  expect(r.steps.at(-1)).toBe('claude-sonnet-5-5·medium')
+  expect(agent()).toBe('1 agent: sonnet·medium')
 })

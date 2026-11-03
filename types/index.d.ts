@@ -1,3 +1,9 @@
+// One thing a loop said before calling a tool: when, the first line of it, and the tool it then called.
+export type GearboxNote = { at: number; text: string; tool?: string }
+
+// A file a loop touched: read, edited, or created (written where it had not read one).
+export type GearboxFile = { path: string; kind: 'read' | 'edited' | 'new' }
+
 // One row per model loop: 'main', or a subagent by its agent id.
 export type GearboxLoop = {
   label: string // "main", or the Agent call's description
@@ -5,15 +11,21 @@ export type GearboxLoop = {
   asked: string // the model the current or last step requested
   answered?: string // the model that answered the last step
   effort?: string
+  effortBy?: 'main' | 'rules' | 'auto' // who set the effort: the main conversation's call, gearbox's rules, or the orchestrator's effort per prompt
   state: 'working' | 'waiting' | 'idle' | 'done' // waiting: between turns, on background work it started
-  doing?: string // the tool it is running
-  steps: number
-  since?: number // when a subagent started (ms), for the band's run time
+  doing?: string // the last tool it called, kept beside the notes after it until a new call replaces it
+  said?: string // the first line of the latest text it wrote, before calling a tool
+  notes?: GearboxNote[] // the last few things it said, oldest first
+  files?: GearboxFile[] // the files it touched, the latest last
+  worktree?: string // the branch (else the folder's name) of the git worktree it works in; "worktree" when only the isolation is known
+  worktreePath?: string // where that worktree is
+  usage?: { in: number; out: number; usd: number } // tokens and list-price dollars its requests used (main: this turn)
+  result?: string // the first line of the report it handed back, or why it was refused
+  failed?: 'failed' | 'refused' | 'stopped' // how it ended, when not well
+  steps: number // requests sent (main: this turn)
+  since?: number // when a subagent started (ms), or the turn the main conversation is in, for the band's run time
+  endedAt?: number // when it finished (ms)
 }
-
-// The main conversation's last reply, which the agents still at work are drawn under: its text's end, and the
-// agents alive when it ended.
-export type GearboxReply = { tail?: string; ids?: string[] }
 
 // The reports agents the main conversation started handed back, by agent id: the latest few, and the call that
 // started it (for one run in the foreground, whose report shows under that call).
@@ -24,11 +36,12 @@ export type GearboxReports = Record<string, { texts: string[]; useId?: string }>
 export type GearboxSettings = { code_model?: string; code_effort?: string; navigator?: string; strict?: boolean; log?: string; agent_hooks?: boolean; orchestrator?: boolean; orchestrator_model?: string; orchestrator_effort?: string; orchestrator_agents?: number }
 
 // This turn, from the person's last prompt: requests per model, the session cost when it began, the costs of the
-// turns before it, and why its gear (a headline and a detail) for the band.
-export type GearboxTurn = { requests: Record<string, number>; costAtStart?: number; costs: number[]; why?: [string, string] }
+// turns before it, why its gear (a headline and a detail) for the band, and when it began (the agents finished
+// before that are no longer drawn).
+export type GearboxTurn = { requests: Record<string, number>; costAtStart?: number; costs: number[]; why?: [string, string]; at?: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    gearbox: { loops: Shaped<Record<string, GearboxLoop>>; settings: Shaped<GearboxSettings>; turn: Shaped<GearboxTurn>; reply: Shaped<GearboxReply>; reports: Shaped<GearboxReports> }
+    gearbox: { loops: Shaped<Record<string, GearboxLoop>>; settings: Shaped<GearboxSettings>; turn: Shaped<GearboxTurn>; reports: Shaped<GearboxReports> }
   }
 }

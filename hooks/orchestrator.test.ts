@@ -75,7 +75,7 @@ test('a request of independent parts fans out when sure: one agent per part, on 
       kind: 'fan',
       gear: opus,
       parts: [
-        { what: 'review the retry change', gear: opus, edits: false },
+        { what: 'review the retry change', gear: opus, edits: false, review: true },
         { what: 'orders: add paging', gear: { model: 'sonnet', effort: 'high' }, edits: true },
         { what: 'billing: fix rounding', gear: { model: 'sonnet', effort: 'xhigh' }, edits: true },
       ],
@@ -399,4 +399,19 @@ test('auto: what the orchestrator keeps runs at the rules’ effort, at most xhi
   expect(auto(reading({ mode: 'commit', depth: 1 }), { model: 'sonnet', effort: 'medium' }).main.effort).toBe('low')
   // Pinned (not auto), the plan's main is the orchestrator's own gear whatever the turn.
   expect(orchestratorPlan(reading({ mode: 'wait' }), { model: 'sonnet', effort: 'medium' }, MAIN).main).toBe(MAIN)
+})
+
+test('with the coding effort auto, the orchestrator advises no hand-off for an answer that needs no deep look, or for a guess, a review’s included', () => {
+  const advise = (r: Reading) => orchestratorPlan(r, gearFor(r, 'medium'), MAIN, 3, 'medium', undefined, false, true)
+  // An answer at depth 0 or 1 stays whatever its reach or care: with a fixed coding effort a system-wide or costly one
+  // goes to a lane, and so does an unsure review.
+  for (const r of [reading({ mode: 'answer', reach: 'system', depth: 1 }), reading({ mode: 'answer', care: 'costly', depth: 1 }), reading({ mode: 'review', sure: false })]) {
+    expect(orchestratorPlan(r, gearFor(r, 'medium'), MAIN, 3, 'medium').handoff?.kind).toBe('lane')
+    expect(advise(r)).toEqual({ main: MAIN })
+  }
+  // Deeper answers, code past what it keeps and sure reviews are still advised to a lane.
+  for (const r of [reading({ mode: 'answer', reach: 'system', depth: 2 }), reading({ mode: 'review' }), reading({ mode: 'code', reach: 'system', depth: 2 })]) expect(advise(r).handoff?.kind).toBe('lane')
+  // A part that reviews says so, merged or not: it never runs below Opus.
+  const parts = [part('fix the handler', 'code', 1, ['src/a']), part('review the diff', 'review', 1, ['src/b'])]
+  expect(fanParts(reading({ mode: 'code', parts }), 3, 'medium').map(p => p.review ?? false)).toEqual([false, true])
 })

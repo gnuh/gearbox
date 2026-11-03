@@ -2,7 +2,7 @@
 // long-lived subagent per model. A lane starts at the top effort it will need and each message lowers it (bench/lanes:
 // a mod's effort on a resumed agent reaches the API and keeps the cache; lowering takes hold fully, raising only half).
 import type { ModelEffort } from 'claude-code'
-import { BRIEFING, EFFORTS, type FanPart, type Gear, type Handoff, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, capXhigh, choreGear, filesReach as scope, gearFor, mechanical, normPath as norm, pathFolder as folder, pins, upFor, upTo } from './policy'
+import { BRIEFING, EFFORTS, type FanPart, type Gear, type Handoff, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, capXhigh, choreGear, filesReach as scope, gearFor, mechanical, normPath as norm, pathFolder as folder, pins, staysPut, upFor, upTo } from './policy'
 
 // The orchestrator's effort: a level, or `auto`, which sets the main conversation's effort per prompt (see orchestratorPlan).
 export type OrchestratorEffort = ModelEffort | 'auto'
@@ -162,9 +162,10 @@ const groupGear = (r: Reading, g: Part[], standing: ModelEffort, code?: Model): 
   return g.map(p => partGear(r, p, reach, standing, code)).reduce((a, b) => ({ model: upTo(LADDER, a.model, b.model), effort: upTo(EFFORTS, a.effort, b.effort) }))
 }
 
-// The fan-out of a sure reading: each group as one part, on its gear.
+// The fan-out of a sure reading: each group as one part, on its gear. A group with a review says so: whatever model its
+// call names, it never runs below Opus.
 export const fanParts = (r: Reading, cap: number, standing: ModelEffort, code?: Model): FanPart[] =>
-  fanOut(r.parts, cap).map(g => ({ what: g.map(p => p.what).join('; '), gear: groupGear(r, g, standing, code), edits: edits(g) }))
+  fanOut(r.parts, cap).map(g => ({ what: g.map(p => p.what).join('; '), gear: groupGear(r, g, standing, code), edits: edits(g), ...(g.some(p => p.mode === 'review') ? { review: true } : {}) }))
 
 // What the orchestrator keeps for itself: answers that need no deep look (one spot or one feature, ordinary care)
 // and small code (one spot or one feature, mechanical or ordinary depth) the work calls for no stronger model than
@@ -178,11 +179,12 @@ export const fanParts = (r: Reading, cap: number, standing: ModelEffort, code?: 
 // fan-out runs on it. `auto`: the orchestrator's effort is set per turn, not pinned (the plan's `main` carries it): what
 // it keeps runs at the rules' effort for the reading (`want`), xhigh at most; a hand-off at BRIEFING, since briefing
 // and later choosing the agent's effort is where it is won or lost, save a lane that only relays a command (a long
-// command, a git chore), which runs low.
-export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, standing: ModelEffort = 'xhigh', code?: Model, auto = false): Plan => {
+// command, a git chore), which runs low. `advice`: the coding effort is `auto`, so the hand-off is advice, and none is
+// given for what stays put (staysPut): an answer at depth 0 or 1 of any reach or care, and any guess, a review's included.
+export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, standing: ModelEffort = 'xhigh', code?: Model, auto = false, advice = false): Plan => {
   const keep = (): Plan => ({ main: auto ? { ...main, effort: capXhigh(want.effort) } : main })
   const hand = (handoff: Handoff, relay = false): Plan => ({ main: auto ? { ...main, effort: relay ? 'low' : BRIEFING } : main, handoff })
-  if (!r.sure && r.mode !== 'review') return keep()
+  if ((!r.sure && r.mode !== 'review') || (advice && staysPut(r))) return keep()
   const small = r.reach === 'point' || r.reach === 'area'
   const ordinary = r.care !== 'costly'
   const pinned = pins(r, code)

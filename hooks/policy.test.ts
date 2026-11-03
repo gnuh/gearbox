@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Part, type Reading, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
+import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, EFFORT_TOOL, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -674,35 +674,45 @@ test('a follow-up names its effort on its first line, which gearbox takes off', 
   for (const text of ['go on\neffort: high', 'effort: high, and fix it', 'the effort: high part', 'effort: ludicrous\nfix it']) expect(effortLine(text)).toEqual({ message: text })
 })
 
-test('a code hand-off asks for its diff to be reviewed; with the coding effort auto, the main model names the effort', () => {
+test('a code hand-off asks for its diff to be reviewed; with the coding effort auto, the deep and lane notes are advice: what gearbox suggests and why', () => {
   const gear = { model: 'sonnet', effort: 'xhigh' } as const
   const deep = handoffNote({ kind: 'deep', gear, code: true })
   expect(deep).toContain(DIFF_REVIEW)
   expect(deep).toContain('effort "xhigh"')
-  expect(deep).not.toContain(CHOOSE)
-  const chosen = handoffNote({ kind: 'deep', gear, code: true }, true)
-  expect(chosen).toContain('with model "sonnet" and the effort you choose')
-  expect(chosen).not.toContain('effort "xhigh"')
-  expect(chosen).toContain(DIFF_REVIEW)
-  expect(chosen).toContain(CHOOSE)
-  // Work that writes no code: no diff to read, and gearbox keeps its effort.
-  expect(handoffNote({ kind: 'deep', gear }, true)).toBe(handoffNote({ kind: 'deep', gear }))
+  expect(deep).not.toContain('gearbox suggests')
+  const advice = handoffNote({ kind: 'deep', gear, code: true }, true, true, 'code · area · depth 2')
+  expect(advice).toStartWith('gearbox suggests: a sonnet agent at xhigh (code · area · depth 2). Decide after reading')
+  expect(advice).toContain('Name the model and effort on the Agent call')
+  expect(advice).toContain('effort from medium to xhigh; a review on Opus at least')
+  expect(advice).toContain('"effort: <level>"')
+  expect(advice).not.toContain('effort "xhigh"')
+  expect(advice).toContain(DIFF_REVIEW)
+  expect(advice).toContain(EFFORT_TOOL)
+  // Work that writes no code is advice too, with no diff to read.
+  const answer = handoffNote({ kind: 'deep', gear }, true, true, 'answer · system · depth 2')
+  expect(answer).toStartWith('gearbox suggests: a sonnet agent at xhigh (answer · system · depth 2).')
+  expect(answer).not.toContain(DIFF_REVIEW)
   expect(handoffNote({ kind: 'deep', gear })).not.toContain(DIFF_REVIEW)
-  // A lane's code job, fresh or resumed: the main model's effort instead of gearbox's.
+  expect(handoffNote({ kind: 'deep', gear, resume: 'a-1' }, true, true, 'x')).toContain('going on in the sonnet agent a-1, which already holds this work')
+  // A lane's job, fresh or resumed: advice, and the lane is the one of the model the main conversation names.
   for (const resume of [undefined, 'lane-s']) {
-    const lane = handoffNote({ kind: 'lane', gear, code: true, resume }, true)
-    expect(lane).toContain(CHOOSE)
+    const lane = handoffNote({ kind: 'lane', gear, code: true, resume }, true, true, 'code · area · depth 2')
+    expect(lane).toStartWith(`gearbox suggests: the sonnet lane ${resume ? `${resume}, which already holds this work and what it found, ` : ''}at xhigh (code · area · depth 2).`)
+    expect(lane).toContain('the lane of the model you name')
     expect(lane).not.toContain('gearbox sets the effort of each job')
+    expect(lane).not.toContain('refused')
     expect(lane).toContain(DIFF_REVIEW)
-    expect(handoffNote({ kind: 'lane', gear, resume }, true)).toContain('gearbox sets the effort of each job')
+    expect(handoffNote({ kind: 'lane', gear, resume })).toContain('gearbox sets the effort of each job')
   }
-  // A side task that writes code.
+  // A side task that writes code keeps its note, the effort the main conversation's.
   const aside = handoffNote({ kind: 'aside', gear, code: true }, true)
   expect(aside).toContain('the effort you choose')
   expect(aside).toContain(DIFF_REVIEW)
+  // Browser checks, long commands and git chores stay hand-offs.
+  for (const kind of ['drive', 'wait', 'chore'] as const) expect(handoffNote({ kind, gear: { model: 'haiku', effort: 'low' } }, true)).toStartWith('gearbox handoff')
 })
 
-test('with the coding effort auto, a route’s code agents and a fan-out’s editing parts take the main model’s effort; other steps keep gearbox’s', () => {
+test('with the coding effort auto, a route’s code agents take the main model’s effort, and a fan-out is advice: each part’s gear is a suggestion, and nothing is refused until they start', () => {
   const steps = route([{ what: 'plan it', mode: 'answer', depth: 2 }, { what: 'build it', mode: 'code', depth: 2 }], 'opus', 'medium', false, 'sonnet', false, 'opus', 'sonnet')
   const note = routeNote(steps, true)
   expect(note).toContain('2. build it: start a plain Agent (no subagent_type) with model "sonnet" and the effort you choose')
@@ -712,17 +722,56 @@ test('with the coding effort auto, a route’s code agents and a fan-out’s edi
   expect(routeNote(steps)).not.toContain(CHOOSE)
   const parts: FanPart[] = [
     { what: 'orders: add paging', gear: { model: 'sonnet', effort: 'high' }, edits: true },
-    { what: 'review the retry change', gear: { model: 'opus', effort: 'medium' }, edits: false },
+    { what: 'review the retry change', gear: { model: 'opus', effort: 'medium' }, edits: false, review: true },
   ]
   const reply = fanReply(parts, true)
-  expect(reply).toContain('part 1: orders: add paging: model "sonnet", at the effort you choose (gearbox\'s pick: high)')
-  expect(reply).toContain('part 2: review the retry change: model "opus", gearbox runs it at medium')
+  expect(reply).toContain('part 1: orders: add paging: gearbox suggests model "sonnet" at high; edits files')
+  expect(reply).toContain('part 2: review the retry change: gearbox suggests model "opus" at medium (a review: Opus at least); only reads')
+  expect(reply).toContain('the model you choose for it')
+  expect(reply).toContain('Name the model and effort on the Agent call')
   expect(reply).toContain('the diff of each part that edits included')
+  expect(reply).not.toContain('refused')
   expect(fanReply(parts)).toContain('part 1: orders: add paging: model "sonnet", gearbox runs it at high')
-  const fan = handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts }, true)
-  expect(fan).toContain('The effort of each part that edits is yours to choose')
+  expect(fanReply(parts)).toContain('Until all 2 have started, edits, commands and more reads are refused here.')
+  const fan = handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts }, true, true, 'code · area · depth 2')
+  expect(fan).toStartWith('gearbox suggests: splitting this request into 2 independent parts, which run at the same time, one agent each (code · area · depth 2). Decide after reading')
+  expect(fan).toContain('1. If you split, start every part in ONE message')
+  expect(fan).toContain('2. review the retry change: model "opus", at medium (a review: Opus at least)')
+  expect(fan).toContain('Name the model and effort on the Agent call')
   expect(fan).toContain('the diff of each part that edits included')
-  expect(handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts })).toContain("gearbox sets each agent's effort")
+  expect(fan).toContain(EFFORT_TOOL)
+  expect(fan).not.toContain('refused')
+  expect(handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts })).toContain("gearbox sets each agent's effort. Until all 2 have started")
+})
+
+test('with the coding effort auto, an answer that needs no deep look, and any guess, a review’s included, gets no hand-off; with a fixed one, as before', () => {
+  const opus = { model: 'opus', effort: 'medium' } as const
+  for (const r of [reading({ mode: 'answer', depth: 1, reach: 'system' }), reading({ mode: 'answer', depth: 0, care: 'costly' }), reading({ mode: 'review', sure: false }), reading({ mode: 'code', sure: false, reach: 'system', depth: 2 })]) {
+    expect(staysPut(r)).toBe(true)
+    expect(plan(r, opus, 'sonnet', true, 'sonnet', 'sonnet', false, false, true).handoff).toBeUndefined()
+  }
+  // As before with a fixed coding effort: a costly answer and an unsure review on Sonnet go to Opus.
+  expect(plan(reading({ mode: 'answer', depth: 1, care: 'costly' }), opus, 'sonnet', true, 'sonnet').handoff?.kind).toBe('deep')
+  expect(plan(reading({ mode: 'review', sure: false }), opus, 'sonnet', true, 'sonnet').handoff?.kind).toBe('deep')
+  // Deeper answers, code and reviews are still advised to a stronger model.
+  for (const r of [reading({ mode: 'answer', depth: 2, reach: 'system' }), reading({ mode: 'review' }), reading({ mode: 'code', reach: 'system' })]) {
+    expect(staysPut(r)).toBe(false)
+    expect(plan(r, opus, 'sonnet', true, 'sonnet', 'sonnet', false, false, true).handoff?.kind).toBe('deep')
+  }
+  expect(readingWhy(reading({ mode: 'code', reach: 'area', depth: 2 }))).toBe('code · area · depth 2')
+  expect(readingWhy(reading({ mode: 'answer', reach: 'system', depth: 1, care: 'costly' }))).toBe('answer · system · depth 1 · costly')
+})
+
+test('the files a go-ahead’s proposal points to: an artifact first, then .md, .html and .mmd paths; HTML read as its text', () => {
+  const reply = 'The spec is in [the artifact](/Users/me/claude-artifacts/gearbox-0.23/spec.html), the flow in `docs/flow.mmd:12` and the plan in ./PLAN.md. See https://example.com/x.html and Node.js, README.md#setup.'
+  expect(referencedFiles(reply)).toEqual(['/Users/me/claude-artifacts/gearbox-0.23/spec.html', 'docs/flow.mmd', './PLAN.md', 'README.md'])
+  expect(referencedFiles('nothing to read, a claude-artifacts/ folder alone')).toEqual([])
+  const page = '<html><head><title>Spec</title><style>h1{color:red}</style><script>track()</script></head><body><h1>Main decides</h1><p>Delegation &amp; effort are the <b>main</b> model&#39;s.</p><!-- draft --></body></html>'
+  const text = htmlText(page)
+  expect(text).toContain('Main decides')
+  expect(text).toContain("Delegation & effort are the main model's.")
+  for (const gone of ['<', 'track()', 'color:red', 'draft']) expect(text).not.toContain(gone)
+  expect(ARTIFACT_MAX).toBe(6000)
 })
 
 test('a mechanical edit is one spot, depth 0, nothing costly at stake', () => {
@@ -731,4 +780,41 @@ test('a mechanical edit is one spot, depth 0, nothing costly at stake', () => {
   expect(mechanical(reading({ reach: 'area', depth: 0 }))).toBe(false)
   expect(mechanical(reading({ reach: 'point', depth: 0, care: 'costly' }))).toBe(false)
   expect(mechanical(reading({ reach: 'point', depth: 0, mode: 'answer' }))).toBe(false)
+})
+
+test('the language the person types in is read from their last messages by common words and letters, and is none where it is unclear', () => {
+  // The prompts that were seen live, and others.
+  expect(typedLanguage(['vamos fazer'])).toBe('Portuguese')
+  expect(typedLanguage(['dá uma olhada nesse PR'])).toBe('Portuguese')
+  expect(typedLanguage(['por que o cache de cotação é por serviço?'])).toBe('Portuguese')
+  expect(typedLanguage(['depois que terminar, traga a sugestão'])).toBe('Portuguese')
+  expect(typedLanguage(['quiero que revises el servicio de precios y me digas qué falta'])).toBe('Spanish')
+  expect(typedLanguage(['mañana lo vemos, ¿vale?'])).toBe('Spanish')
+  expect(typedLanguage(['why do the quotes drift after a refund across services?'])).toBe('English')
+  expect(typedLanguage(['add a test for the quote mapper'])).toBe('English')
+  // Words two languages share do not tell them apart: Portuguese and Spanish "vamos", "para", "que".
+  expect(typedLanguage(['para que'])).toBeUndefined()
+  // A short or empty message says nothing.
+  for (const none of [[], [''], ['ok'], ['👍'], ['bun test'], ['x'], ['   ']]) expect(typedLanguage(none)).toBeUndefined()
+  // Code, paths and links are not read as the person's words.
+  expect(typedLanguage(['```\nconst the = and(is, are, was, were)\n```', '`the and is are was` /src/the/and/is/are.ts https://the.and/is/are'])).toBeUndefined()
+  // A notification that came as a message is not the person's.
+  expect(typedLanguage(['vamos revisar o cache de cotação', '<task-notification>Agent "deploy" finished: the build is done and the tests are green with the report for you</task-notification>'])).toBe('Portuguese')
+  // The last three count, the latest triple: a switch of language is followed.
+  const pt = 'vamos revisar o cache de cotação'
+  const en = 'please review the quote cache and tell me what is missing'
+  expect(typedLanguage([en, pt, pt, pt])).toBe('Portuguese')
+  expect(typedLanguage([pt, pt, en])).toBe('English')
+  expect(typedLanguage([pt, pt, 'ok'])).toBe('Portuguese') // an acknowledgement does not turn it
+  // Only the first 400 characters of a message are read: what is pasted after them does not outvote the ask.
+  expect(typedLanguage([`${`${pt}. `.repeat(13)}\n${'the quote is not the same as it was in the cache and we have to fix that. '.repeat(30)}`])).toBe('Portuguese')
+})
+
+test('what gearbox adds to an agent names the language of its notes on one line, and says nothing where it is unknown', () => {
+  expect(notesIn('Portuguese')).toBe(' Write the brief notes you give between steps in Portuguese.')
+  expect(notesIn()).toBe('')
+  expect(notesIn(undefined)).toBe('')
+  expect(NESTING).not.toContain('Write the brief notes')
+  expect(NESTING).not.toContain('language')
+  expect(`${NESTING}${notesIn('English')}`.split('\n').at(-1)).toEndWith('between steps in English.')
 })
