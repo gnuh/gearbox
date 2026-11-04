@@ -82,7 +82,7 @@ import {
 import { runHooks } from './classic'
 import { NARROW, type Queued, type Summary, desktopBand, panelBody, terminalBand } from './agents'
 import { NOTE_EVERY_MS, ended, family, gearText, grown, kilo, live, noteOf, revived, toolName, withFile, withNote, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
-import { NEUTRAL, ORCHESTRATOR_EFFORTS, type Lane, type Lanes, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
+import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lanes, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
 
 // US$ per million tokens.
 // shortcut: copied from the claude-api skill's table (cached 2026-10-06); update when prices move.
@@ -575,29 +575,29 @@ export const usageReport = (ledger: Ledger) => {
 const SEARCHERS = /^(Explore|Plan|claude-code-guide|statusline-setup)$/
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_model: CodeModel; code_effort: CodeEffort; navigator: 'haiku' | 'sonnet'; strict: boolean; log: LogMode; agent_hooks: boolean } & OrchestratorSettings
+export type Settings = { code_model: CodeModel; code_effort: CodeEffort; navigator: 'haiku' | 'sonnet'; log: LogMode } & OrchestratorSettings
 
 // Settings gearbox once had and now always applies as they were when on: steering a session not on Haiku, handing
-// work up to a stronger model, the band above the prompt, and a models panel that lists every loop.
+// work up to a stronger model, the band above the prompt, a models panel that lists every loop, strict hand-offs and
+// the person's hooks for subagents.
 // What an older version stored or a plugin option still says for them is ignored, and dropped from the store.
-export const REMOVED_SETTINGS = ['steer', 'escalate', 'band', 'pane'] as const
+export const REMOVED_SETTINGS = ['steer', 'escalate', 'band', 'pane', 'strict', 'agent_hooks'] as const
 const removedKey = (k: string) => (REMOVED_SETTINGS as readonly string[]).includes(k)
 const withoutRemoved = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !removedKey(k)))
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit. Only known keys are read: a removed setting's value has no say.
 export const settingsFrom = (options: PluginOptions, stored: unknown): Settings => {
-  const o: Record<string, unknown> = { ...options, ...(stored && typeof stored === 'object' ? stored : {}) }
+  const kept: Record<string, unknown> = stored && typeof stored === 'object' ? (stored as Record<string, unknown>) : {}
+  const o: Record<string, unknown> = { ...options, ...kept }
   return {
     code_model: CODE_MODELS.includes(o.code_model as CodeModel) ? (o.code_model as CodeModel) : 'auto',
     // A stored or plugin `max` is no longer offered: it falls back to the default, xhigh.
     // `main` is what `auto` was called before 0.20.0.
     code_effort: o.code_effort === 'main' ? 'auto' : CODE_EFFORTS.includes(o.code_effort as CodeEffort) ? (o.code_effort as CodeEffort) : 'xhigh',
     navigator: o.navigator === 'haiku' ? 'haiku' : 'sonnet',
-    strict: o.strict !== false,
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
-    agent_hooks: o.agent_hooks !== false,
-    ...orchestratorFrom(o),
+    ...orchestratorFrom(options, kept),
   }
 }
 
@@ -606,21 +606,21 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'model' && CODE_MODELS.includes(value as CodeModel)) return { code_model: value as CodeModel }
   if (word === 'effort' && CODE_EFFORTS.includes(value as CodeEffort)) return { code_effort: value as CodeEffort }
   if (word === 'navigator' && (value === 'haiku' || value === 'sonnet')) return { navigator: value }
-  if (word === 'strict' && (value === 'on' || value === 'off')) return { strict: value === 'on' }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
-  if (word === 'hooks' && (value === 'on' || value === 'off')) return { agent_hooks: value === 'on' }
   return orchestratorPatch(word, value)
 }
 
-const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or auto (the main conversation decides each agent’s model and effort)', navigator: 'sonnet or haiku', strict: 'on or off', log: 'on, off or full', hooks: 'on or off', orchestrator: 'on or off', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'auto, low, medium, high or xhigh (auto: the effort follows the prompt)', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
+const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or auto (the main conversation decides each agent’s model and effort)', navigator: 'sonnet or haiku', log: 'on, off or full', orchestrator: 'auto, on or off (auto: on, except in a session on Haiku, which shifts models)', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'auto, low, medium, high or xhigh (auto: the effort follows the prompt)', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
 // What `/gearbox <word>` of a removed setting answers.
 const REMOVED_WORDS: Record<string, string> = {
   steer: 'steer is no longer a setting: gearbox always steers a session not on Haiku. To leave sessions alone, turn gearbox off (/gearbox off) or disable the plugin.',
   escalate: 'escalate is no longer a setting: work a session is below is always handed up (code, reviews, costly work, subtle questions). To fix the model code runs on, use /gearbox model.',
   band: 'band is no longer a setting: the band above the prompt is always shown.',
+  strict: 'strict is no longer a setting: hand-offs are always strict.',
+  hooks: 'hooks is no longer a setting: your UserPromptSubmit and Stop hooks always run for the subagents gearbox sends work to.',
 }
 // The settings panel's blocks, each under its heading: a row per setting, as [label, /gearbox word, values, the value
-// in use]. The orchestrator's model, effort and parallel agents only matter, and only show, while it is on.
+// in use]. The orchestrator's model, effort and parallel agents only matter, and only show, while it is not off.
 export type SettingRow = [string, string, readonly string[], string]
 export const settingsSections = (s: Settings): { id: string; title: string; rows: SettingRow[] }[] => [
   {
@@ -636,16 +636,14 @@ export const settingsSections = (s: Settings): { id: string; title: string; rows
     title: 'Hand-offs',
     rows: [
       ['Browser navigator', 'navigator', ['sonnet', 'haiku'], s.navigator],
-      ['Strict', 'strict', ['on', 'off'], s.strict ? 'on' : 'off'],
-      ['Hooks for agents', 'hooks', ['on', 'off'], s.agent_hooks ? 'on' : 'off'],
     ],
   },
   {
     id: 'orchestrator',
     title: 'Orchestrator',
     rows: [
-      ['Orchestrator', 'orchestrator', ['on', 'off'], s.orchestrator ? 'on' : 'off'],
-      ...(s.orchestrator
+      ['Orchestrator', 'orchestrator', ORCHESTRATOR_MODES, s.orchestrator],
+      ...(s.orchestrator !== 'off'
         ? ([
             ['Model', 'orchestrator-model', ['sonnet', 'opus', 'haiku'], s.orchestrator_model],
             ['Effort', 'orchestrator-effort', ORCHESTRATOR_EFFORTS, s.orchestrator_effort],
@@ -657,8 +655,15 @@ export const settingsSections = (s: Settings): { id: string; title: string; rows
   { id: 'debug', title: 'Debug', rows: [['Log', 'log', ['off', 'on', 'full'], s.log]] },
 ]
 
-const settingsText = (s: Settings) =>
-  `coding model ${s.code_model} · coding effort ${s.code_effort} · navigator ${s.navigator} · strict hand-offs ${s.strict ? 'on' : 'off'} · hooks for agents ${s.agent_hooks ? 'on' : 'off'} · orchestrator ${s.orchestrator ? `on (${s.orchestrator_model}·${s.orchestrator_effort}, up to ${s.orchestrator_agents} agent${s.orchestrator_agents === 1 ? '' : 's'} at once)` : 'off'} · log ${s.log}`
+// The orchestrator as it is in effect, not only as set: `auto` is on except in a session on Haiku (`haiku`).
+const orchestratorText = (s: Settings, haiku: boolean) => {
+  const runs = `${s.orchestrator_model}·${s.orchestrator_effort}, up to ${s.orchestrator_agents} agent${s.orchestrator_agents === 1 ? '' : 's'} at once`
+  if (s.orchestrator === 'off') return 'off'
+  if (s.orchestrator === 'on') return `on (${runs})`
+  return haiku ? `auto, off in this Haiku session, which shifts models; /gearbox orchestrator on uses it here (${runs})` : `auto, on (${runs}); a Haiku session shifts models instead`
+}
+const settingsText = (s: Settings, haiku: boolean) =>
+  `coding model ${s.code_model} · coding effort ${s.code_effort} · navigator ${s.navigator} · orchestrator ${orchestratorText(s, haiku)} · log ${s.log}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -697,7 +702,7 @@ const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
 
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): the model and effort for code, and the rest of /gearbox settings.
-  let { code_model: codeModel, code_effort: codeEffort, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
+  let { code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
   // The rules' coding effort; with `auto` (`chooses`), their floor, and the main conversation decides delegation once
   // it has read the work: whether to hand off, to which model, at which effort. gearbox then sets only the main
   // conversation's effort for the turn's first request, advises the rest and holds each agent to safe bounds (decide).
@@ -706,7 +711,7 @@ export const register: Register = (on, options) => {
   // The effort up to which a gear is not put to the person: their coding effort, and for code with `auto`, any, since
   // they left code's effort to the main conversation.
   const askFloor = (writes: boolean): ModelEffort => (chooses() && writes ? 'xhigh' : standing)
-  const current = (): Settings => ({ code_model: codeModel, code_effort: codeEffort, navigator, strict, log: logMode, agent_hooks: agentHooks, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
+  const current = (): Settings => ({ code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
   // What the main conversation runs on while the orchestrator hands off: its model, at its effort, or with `auto` at
   // BRIEFING, since briefing and reviewing the agent is the work (orchestratorPlan sets the rest per turn).
   const orchMain = (): Gear => ({ model: orchModel, effort: orchEffort === 'auto' ? BRIEFING : orchEffort })
@@ -720,9 +725,7 @@ export const register: Register = (on, options) => {
     codeEffort = s.code_effort
     standing = standingOf(codeEffort)
     navigator = s.navigator
-    strict = s.strict
     logMode = s.log
-    agentHooks = s.agent_hooks
     orchestrator = s.orchestrator
     orchModel = s.orchestrator_model
     orchEffort = s.orchestrator_effort
@@ -754,8 +757,13 @@ export const register: Register = (on, options) => {
   // (`launched`, see launchEffort).
   let subagent: string | null | undefined
   let launched: LaunchEffort | undefined
+  // Whether the session runs on Haiku, as last seen (each prompt, request and command reads it). With the orchestrator
+  // on `auto`, a session on Haiku is not orchestrated: whoever starts there shifts models, to save money, and only `on`
+  // (the person's own word) overrides that.
+  let haikuSession = false
+  const orchestratorRuns = () => orchestratorOn(orchestrator, haikuSession)
   // The orchestrator is on and this session is not someone's sub-agent: the main conversation runs on the orchestrator.
-  const orchestrating = () => orchestrator && !subagent
+  const orchestrating = () => orchestratorRuns() && !subagent
   // The model family the main conversation's last request went out on, as sent: a request on another one writes the
   // whole conversation into that model's cache (a `shift`). Before any, the session's own.
   let lastMain: Model | undefined
@@ -1000,7 +1008,7 @@ export const register: Register = (on, options) => {
       },
       isDeferred: false,
     })
-    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | strict on|off | hooks on|off | log on|off|full | orchestrator on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | on | off | ask on|off | usage]' })
+    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | log on|off|full | orchestrator auto|on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | on | off | ask on|off | usage]' })
     enabled = (await $.store.get('enabled')) !== false
     // What an older version stored for a removed setting is dropped once, so nothing reads or logs it again.
     const { kept: stored, stale } = await storedSettings($)
@@ -1032,6 +1040,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'gearbox' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     apply(await loadSettings($, options))
+    haikuSession = String(await $.session.model().catch(() => '')).includes('haiku')
     const [word = '', value] = arg.split(/\s+/)
     if (arg === 'log') {
       if (logMode === 'off') return { text: 'the log is off. /gearbox log on starts one for this session; /gearbox log full also keeps the first 200 characters of each prompt.' }
@@ -1054,7 +1063,7 @@ export const register: Register = (on, options) => {
         return {
           text: isPlaced
             ? 'settings open. Press a value to use it; Esc closes.'
-            : `${settingsText(current())}. The settings panel has no room here; set one with /gearbox model|effort|navigator|strict <value>.`,
+            : `${settingsText(current(), haikuSession)}. The settings panel has no room here; set one with /gearbox model|effort|navigator <value>.`,
         }
       }
       const change = settingPatch(word, value)
@@ -1066,7 +1075,7 @@ export const register: Register = (on, options) => {
         logEvent({ ...(await sessionFacts($, options)), settings: current() })
         await flushLog($, log)
       }
-      return { text: `${settingsText(current())} (from your next prompt)` }
+      return { text: `${settingsText(current(), haikuSession)} (from your next prompt)` }
     }
     if (Object.hasOwn(REMOVED_WORDS, word)) return { text: REMOVED_WORDS[word]! }
     if (word === 'pane' || word === 'panel') {
@@ -1091,13 +1100,13 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'usage cleared' }
     } else if (arg) {
-      return { text: `unknown "${arg}". Try settings, panel, model, effort, navigator, strict, log, hooks, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `unknown "${arg}". Try settings, panel, model, effort, navigator, log, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
-    const mode = session.includes('haiku') ? 'shifting models' : family(session) || orchestrator ? `steering effort on ${family(session) ?? session}` : `readout only (${session} is not a model gearbox knows)`
+    const mode = orchestrating() ? `orchestrating on ${orchModel}` : session.includes('haiku') ? 'shifting models' : family(session) ? `steering effort on ${family(session)}` : `readout only (${session} is not a model gearbox knows)`
     return {
-      text: `${enabled ? `on, ${mode}` : 'off'} · ${settingsText(current())} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox model|effort|navigator <value>.`,
+      text: `${enabled ? `on, ${mode}` : 'off'} · ${settingsText(current(), haikuSession)} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox model|effort|navigator <value>.`,
     }
   })
 
@@ -1157,6 +1166,7 @@ export const register: Register = (on, options) => {
     if (Object.keys(changed).length) logEvent({ ev: 'settings', changed })
     await startTurnTally($)
     const session = await $.session.model()
+    haikuSession = session.includes('haiku')
     logEvent({ ev: 'prompt', kind: ownEffort ?? 'typed', chars: e.text.length, ...(logMode === 'full' ? { text: e.text.slice(0, 200) } : {}), session })
     // A session another one started as its sub-agent says so in its first typed prompt: it does the work it was given,
     // on the model and, when gearbox can tell, at the effort it was launched with. Read once; the log says why once.
@@ -1466,7 +1476,7 @@ export const register: Register = (on, options) => {
   // have started keep their work: a late call changes nothing.
   on('tool.call', { tool: 'mcp__gearbox__fan' }, async ($, e) => {
     const say = (text: string) => ({ result: text })
-    if (!enabled || !orchestrator) return say('gearbox: the orchestrator is off, so gearbox splits nothing here; start agents as you see fit.')
+    if (!enabled || !orchestratorRuns()) return say('gearbox: the orchestrator is off, so gearbox splits nothing here; start agents as you see fit.')
     if (e.agentId) return say('gearbox: only the main conversation splits work; carry on with your own brief.')
     if (subagent) return say("gearbox: this session is another session's sub-agent (its first prompt says so), so gearbox splits nothing here: do the work you were given yourself.")
     const parts = readParts((e as any).input?.parts ?? (e as any).parts)
@@ -1523,7 +1533,7 @@ export const register: Register = (on, options) => {
       enabled && floor && !e.model && !e.fork && !e.parentAgentId && e.subagentType === 'general-purpose' && e.parentModel.includes('haiku')
         ? { ...e, model: floor }
         : e
-    const hooked = enabled && agentHooks && !e.resume ? await taskHooks($, hookState, logEvent, e.prompt, e.subagentType) : undefined
+    const hooked = enabled && !e.resume ? await taskHooks($, hookState, logEvent, e.prompt, e.subagentType) : undefined
     if (hooked?.deny) return { deny: hooked.deny }
     const nests = enabled && !e.parentAgentId && !e.fork && !e.resume
     // An agent outside a hand-off never sees the person's messages, so the language of its notes is spelled out.
@@ -1575,7 +1585,7 @@ export const register: Register = (on, options) => {
   // A message the main conversation sends an agent is a task as well: the hooks run on it, and what they print goes
   // with it. One between agents is left alone.
   on('session.send', async ($, e, next) => {
-    if (!enabled || !agentHooks || e.agentId) return next(e)
+    if (!enabled || e.agentId) return next(e)
     const agent = (await listAgents($))?.find(a => [a.id, a.name, a.teammateId].includes(e.to))
     const hooked = agent && (await taskHooks($, hookState, logEvent, e.text, agent.type))
     if (hooked?.deny) return { isDelivered: false as const, reason: hooked.deny }
@@ -1587,7 +1597,7 @@ export const register: Register = (on, options) => {
   // Code's own (a suggestion, a side question), not a task.
   on('classic.SubagentStop', async ($, e, next) => {
     const own = await next(e)
-    if (!enabled || !agentHooks || !e.agent_type) return own
+    if (!enabled || !e.agent_type) return own
     const said = await stopHooks($, hookState, logEvent, e)
     if (!said.block && !said.context.length) return own
     return {
@@ -1823,18 +1833,18 @@ export const register: Register = (on, options) => {
       const path = (e as { file_path?: unknown }).file_path
       return /^(Edit|Write|MultiEdit)$/.test(tool) && typeof path === 'string' && writesNoCode(path, await $.session.cwd().catch(() => ''), await repoRoot($))
     }
-    // Strict holds the main conversation to a deep, lane or fan hand-off only with a fixed coding effort. With `auto`
-    // the hand-off was advice, and the main conversation, which has read the work, may do it itself.
-    const holds = strict && !chooses()
+    // Hand-offs are held to their agents only with a fixed coding effort. With `auto` the hand-off was advice, and the
+    // main conversation, which has read the work, may do it itself.
+    const holds = !chooses()
     // The orchestrator does not write code: a change goes to a lane, except the one-spot edit its plan kept here.
     if (orchestrating() && holds && !mainMayEdit && !deepPending() && /^(Edit|Write|MultiEdit|NotebookEdit)$/.test(tool) && !(await notCode())) {
       logEvent({ ev: 'strict', tool, mode: 'orchestrator', refused: true })
       const held = laneResumable(lanes.sonnet, Date.now()) ? lanes.sonnet : undefined
       return {
-        deny: `gearbox orchestrator: the main conversation does not write code. Start an Agent with no subagent_type and model "sonnet" with a brief that stands on its own${held ? ` (or SendMessage to "${held.id}", the sonnet lane that already holds this work)` : ''}; it makes the change and you review what it returns. (The person can allow doing it here with /gearbox strict off, or turn the orchestrator off with /gearbox orchestrator off.)`,
+        deny: `gearbox orchestrator: the main conversation does not write code. Start an Agent with no subagent_type and model "sonnet" with a brief that stands on its own${held ? ` (or SendMessage to "${held.id}", the sonnet lane that already holds this work)` : ''}; it makes the change and you review what it returns. (The person can turn the orchestrator off with /gearbox orchestrator off.)`,
       }
     }
-    // Strict: deep work is the stronger model's. Until its agent starts, the main model may read a little to write
+    // Deep work is the stronger model's. Until its agent starts, the main model may read a little to write
     // the brief, but not edit, run commands or keep reading: a note alone was ignored (bench/escalation, layer B).
     if (holds && deepPending() && !BRIEFING_TOOLS.test(tool)) {
       if (!looksUp(tool, String((e as any).command ?? '')) || ++deepReads > BRIEF_READS) {
@@ -1843,10 +1853,10 @@ export const register: Register = (on, options) => {
         logEvent({ ev: 'strict', tool, mode: owed ? 'fan' : 'deep', refused: true, ...(owed ? { owed } : {}) })
         if (owed)
           return {
-            deny: `gearbox: this request is split between ${turnHandoff?.parts?.length ?? owed} agents that run at the same time, and ${owed} of them ${owed === 1 ? 'has' : 'have'} not started yet. Start ${owed === 1 ? 'it' : 'them'} as the hand-off note says, all in one message: plain Agents (no subagent_type), each on its part's model with a brief for that part alone; they do the work, and you review what they return. Until then edits, commands and more reads are refused here. (The person can allow doing it here with /gearbox strict off.)`,
+            deny: `gearbox: this request is split between ${turnHandoff?.parts?.length ?? owed} agents that run at the same time, and ${owed} of them ${owed === 1 ? 'has' : 'have'} not started yet. Start ${owed === 1 ? 'it' : 'them'} as the hand-off note says, all in one message: plain Agents (no subagent_type), each on its part's model with a brief for that part alone; they do the work, and you review what they return. Until then edits, commands and more reads are refused here.`,
           }
         return {
-          deny: `gearbox: this work is owed to an ${g?.model ?? 'opus'} agent. Start an Agent with no subagent_type, model "${g?.model ?? 'opus'}" and effort "${g?.effort ?? 'high'}", with a brief that stands on its own${turnHandoff?.resume ? ` (or SendMessage to "${turnHandoff.resume}", the agent that already holds it)` : ''}; it does the work, and you review what it returns. Until then edits, commands and more reads are refused here. (The person can allow doing it here with /gearbox strict off.)`,
+          deny: `gearbox: this work is owed to an ${g?.model ?? 'opus'} agent. Start an Agent with no subagent_type, model "${g?.model ?? 'opus'}" and effort "${g?.effort ?? 'high'}", with a brief that stands on its own${turnHandoff?.resume ? ` (or SendMessage to "${turnHandoff.resume}", the agent that already holds it)` : ''}; it does the work, and you review what it returns. Until then edits, commands and more reads are refused here.`,
         }
       }
     }
@@ -1856,7 +1866,7 @@ export const register: Register = (on, options) => {
       const shell = /^(Bash|PowerShell)$/.test(tool)
       const inline = mode === 'drive' ? isBrowserTool(tool) : mode === 'wait' ? shell && isLongCommand(command) : shell && isChoreCommand(command)
       // The main conversation may not do a hand-off step's work itself; the refusal says what to start. This holds
-      // whatever the settings, strict and the coding effort `auto` included: clicking through a browser, waiting on a
+      // whatever the settings, the coding effort `auto` included: clicking through a browser, waiting on a
       // long command and running a git chore are what must not stay in the main conversation, whose every request
       // re-reads the whole context, and a note alone was not enough (0.23.0 and 0.23.1 held them only under strict).
       if (inline) {
@@ -1941,11 +1951,12 @@ export const register: Register = (on, options) => {
   // for the readout, in any session, and its usage tallied.
   on('turn.step', async function* ($, e, next) {
     let step = e
+    if (!e.agentId) haikuSession = String(e.model).includes('haiku')
     if (!e.agentId && enabled && subagent) {
       // A sub-agent session: the model it was launched on, as Claude Code sends it, and the effort it was launched at
       // where gearbox can tell (ownEffort), else the effort gearbox picks for the work.
       if (turnGear && !ownEffort) step = { ...step, effort: turnGear.effort }
-    } else if (!e.agentId && enabled && orchestrator) {
+    } else if (!e.agentId && enabled && orchestratorRuns()) {
       // The orchestrator: the main conversation runs on its own model at its own effort, whatever the session is on.
       if (turnGear) step = { ...step, model: turnGear.model, ...(ownEffort ? {} : { effort: turnGear.effort }) }
     } else if (!e.agentId && enabled) {
@@ -2196,6 +2207,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: SETTINGS_PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const s = settingsFrom(options, await read($, SETTINGS))
+    const haiku = String(await $.session.model().catch(() => '')).includes('haiku')
     // A desktop pane is narrow and its measured row height ignores wrapped buttons: the label sits above its buttons
     // there, so they have the whole width and a row's height is its own.
     const stacked = e.surface !== 'terminal'
@@ -2227,6 +2239,9 @@ export const register: Register = (on, options) => {
           </Box>
         ))}
         <Text dimColor>The marked value is in use. Changes apply from your next prompt. Esc closes.</Text>
+        {s.orchestrator === 'auto' && (
+          <Text dimColor>{haiku ? 'Orchestrator auto: off in this Haiku session, which shifts models. Press on to use it here.' : 'Orchestrator auto: on here. A session on Haiku shifts models instead; press on to orchestrate those too.'}</Text>
+        )}
       </Box>
     )
   })

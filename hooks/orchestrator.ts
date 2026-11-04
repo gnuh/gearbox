@@ -7,28 +7,46 @@ import { BRIEFING, EFFORTS, type FanPart, type Gear, type Handoff, MODELS as LAD
 // The orchestrator's effort: a level, or `auto`, which sets the main conversation's effort per prompt (see orchestratorPlan).
 export type OrchestratorEffort = ModelEffort | 'auto'
 export const ORCHESTRATOR_EFFORTS: readonly OrchestratorEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh']
-export type OrchestratorSettings = { orchestrator: boolean; orchestrator_model: 'haiku' | 'sonnet' | 'opus'; orchestrator_effort: OrchestratorEffort; orchestrator_agents: number }
+// `auto`: on, except in a session on Haiku, which keeps shifting models (see orchestratorOn).
+export type OrchestratorMode = 'auto' | 'on' | 'off'
+export const ORCHESTRATOR_MODES: readonly OrchestratorMode[] = ['auto', 'on', 'off']
+export type OrchestratorSettings = { orchestrator: OrchestratorMode; orchestrator_model: 'haiku' | 'sonnet' | 'opus'; orchestrator_effort: OrchestratorEffort; orchestrator_agents: number }
 
-// What the main conversation runs on while the orchestrator is on, unless the person picks another.
-export const ORCHESTRATOR: { model: 'sonnet'; effort: OrchestratorEffort } = { model: 'sonnet', effort: 'auto' }
+// The orchestrator is on unless the person turns it off (or the session is on Haiku, see orchestratorOn), and the main
+// conversation then runs on Opus at `auto` effort, unless the person picks another.
+export const ORCHESTRATOR: { mode: OrchestratorMode; model: 'opus'; effort: OrchestratorEffort } = { mode: 'auto', model: 'opus', effort: 'auto' }
 const MODELS = ['haiku', 'sonnet', 'opus'] as const
-// How many agents a request may fan out to at once: 1 to 6, 3 unless the person picks another; 1 is no fan-out.
-export const AGENTS = 3
+// How many agents a request may fan out to at once: 1 to 6, 6 unless the person picks another; 1 is no fan-out.
+export const AGENTS = 6
 const agentsFrom = (v: unknown): number => {
   const n = typeof v === 'string' && /^[1-6]$/.test(v.trim()) ? Number(v.trim()) : v
   return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 6 ? n : AGENTS
 }
 
-export const orchestratorFrom = (o: Record<string, unknown>): OrchestratorSettings => ({
-  orchestrator: o.orchestrator === true,
-  orchestrator_model: MODELS.includes(o.orchestrator_model as never) ? (o.orchestrator_model as OrchestratorSettings['orchestrator_model']) : ORCHESTRATOR.model as 'sonnet',
+// What /gearbox stored for the orchestrator: on, off or auto (a boolean is what an older version stored: true is on,
+// false is off). Only the person puts a value there, so it is always theirs.
+const storedMode = (v: unknown): OrchestratorMode | undefined => (v === true ? 'on' : v === false ? 'off' : ORCHESTRATOR_MODES.includes(v as OrchestratorMode) ? (v as OrchestratorMode) : undefined)
+// The plugin option is a boolean whose default is true, and Claude Code passes that default in as the option, so true
+// cannot be told from the person's own true: it means the default, `auto`. Only false, which differs from the default, is
+// the person's word.
+const optionMode = (v: unknown): OrchestratorMode => (v === false ? 'off' : ORCHESTRATOR.mode)
+
+// Whether the orchestrator runs the main conversation: when the person set it on with /gearbox, and with `auto` (the
+// default) unless the session is on Haiku, whose person started there to shift models cheaply.
+export const orchestratorOn = (mode: OrchestratorMode, haiku: boolean): boolean => mode === 'on' || (mode === 'auto' && !haiku)
+
+// `options` are the plugin's, `stored` what /gearbox stored, which wins.
+export const orchestratorFrom = (options: Record<string, unknown>, stored: Record<string, unknown> = {}): OrchestratorSettings => orchestratorOf({ ...options, ...stored }, storedMode(stored.orchestrator) ?? optionMode(options.orchestrator))
+const orchestratorOf = (o: Record<string, unknown>, mode: OrchestratorMode): OrchestratorSettings => ({
+  orchestrator: mode,
+  orchestrator_model: MODELS.includes(o.orchestrator_model as never) ? (o.orchestrator_model as OrchestratorSettings['orchestrator_model']) : ORCHESTRATOR.model,
   orchestrator_effort: ORCHESTRATOR_EFFORTS.includes(o.orchestrator_effort as OrchestratorEffort) ? (o.orchestrator_effort as OrchestratorEffort) : o.orchestrator_effort === 'max' ? 'xhigh' : ORCHESTRATOR.effort,
   orchestrator_agents: agentsFrom(o.orchestrator_agents),
 })
 
 // One `/gearbox orchestrator[-model|-effort|-agents] <value>`; undefined when the word or the value is not one it takes.
 export const orchestratorPatch = (word: string, value: string | undefined): Partial<OrchestratorSettings> | undefined => {
-  if (word === 'orchestrator' && (value === 'on' || value === 'off')) return { orchestrator: value === 'on' }
+  if (word === 'orchestrator' && ORCHESTRATOR_MODES.includes(value as OrchestratorMode)) return { orchestrator: value as OrchestratorMode }
   if (word === 'orchestrator-model' && MODELS.includes(value as never)) return { orchestrator_model: value as OrchestratorSettings['orchestrator_model'] }
   if (word === 'orchestrator-effort' && ORCHESTRATOR_EFFORTS.includes(value as OrchestratorEffort)) return { orchestrator_effort: value as OrchestratorEffort }
   if (word === 'orchestrator-agents' && value !== undefined && /^[1-6]$/.test(value)) return { orchestrator_agents: Number(value) }

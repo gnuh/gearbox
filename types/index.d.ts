@@ -32,8 +32,8 @@ export type GearboxLoop = {
 export type GearboxReports = Record<string, { texts: string[]; useId?: string }>
 
 // What the person set through /gearbox; unset keys fall back to the plugin's options, then the defaults. Keys of
-// removed settings an older version stored (steer, escalate, band, pane) are ignored, and dropped at session start.
-export type GearboxSettings = { code_model?: string; code_effort?: string; navigator?: string; strict?: boolean; log?: string; agent_hooks?: boolean; orchestrator?: boolean; orchestrator_model?: string; orchestrator_effort?: string; orchestrator_agents?: number }
+// removed settings an older version stored (steer, escalate, band, pane, strict, agent_hooks) are ignored, and dropped at session start.
+export type GearboxSettings = { code_model?: string; code_effort?: string; navigator?: string; log?: string; orchestrator?: boolean | string; orchestrator_model?: string; orchestrator_effort?: string; orchestrator_agents?: number }
 
 // This turn, from the person's last prompt: requests per model, the session cost when it began, the costs of the
 // turns before it, why its gear (a headline and a detail) for the band, and when it began (the agents finished
