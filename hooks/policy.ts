@@ -403,6 +403,13 @@ export const typedLanguage = (messages: readonly string[]): string | undefined =
 // hand-off never sees the person's messages.
 export const notesIn = (language?: string): string => (language ? ` Write the brief notes you give between steps in ${language}.` : '')
 
+// A session another session started as its sub-agent, as its first typed prompt says ("Act as the test sub-agent for
+// this task…"): the words that say it, else undefined. Such a session does the work it was given, so gearbox hands
+// none of it on. Only the prompt's opening counts, where a role is given, not a document pasted below it; and a
+// sub-agent named as someone else's ("act as the reviewer of the sub-agent's work") does not make this one.
+export const subagentAsk = (text: string): string | undefined =>
+  /\bact as (?:the|an?)\b[^.\n]{0,40}\bsub-?agent\b(?!['’]s)/i.exec(text.slice(0, 300))?.[0]
+
 const STEP_TASK: Record<Step['mode'], string> = {
   lookup: 'that fetches it and returns the full relevant content word for word (for a ticket: title, description, acceptance criteria, comments that change the scope; for notes: each matching note\'s title and full text), with nothing summarized away',
   drive: 'with a checklist you write here first (where to go and what to do); it must not edit files or judge pass or fail, only report per step exactly what it saw: visible text and values, what each screenshot shows, console errors and failed network requests',
@@ -515,7 +522,12 @@ export const BRIEF_READS = 3
 // `fan`: the orchestrator's hand-off of independent parts, one agent each, all started at once; `gear` is the part
 // a nod goes back to.
 // `code`: the work handed off writes code (a deep, lane or side hand-off; a fan-out's parts say it each, by `edits`).
-export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep' | 'lane' | 'fan'; gear: Gear; judge?: Gear; resume?: string; parts?: FanPart[]; code?: boolean }
+// `relay`: the orchestrator's lane that only relays a long command or a git chore. Like a long-command or chore
+// hand-off, it is never advice and the command itself is held to the lane, whatever the settings.
+export type Handoff = { kind: 'drive' | 'wait' | 'chore' | 'aside' | 'deep' | 'lane' | 'fan'; gear: Gear; judge?: Gear; resume?: string; parts?: FanPart[]; code?: boolean; relay?: 'wait' | 'chore' }
+// The hand-offs that are advice with the coding effort on `auto`: work the main conversation could do itself once it
+// has read it. A browser check, a long command and a git chore, a relay lane's included, never are.
+export const advises = (h: Handoff | undefined): boolean => !!h && (h.kind === 'deep' || h.kind === 'lane' || h.kind === 'fan') && !h.relay
 // One part of a fan-out: what it does, its gear, and whether it edits files. `resume`: the lane that takes it, by
 // its id; `lane`: the agent started for it becomes its model's lane. Neither: a fresh agent for this turn only.
 // `review`: it reviews (alone or merged with code), so it never runs below Opus, whatever model its call names.
@@ -526,6 +538,15 @@ export const handoffLabel = (h: Handoff) =>
   h.kind === 'fan'
     ? `fan × ${h.parts?.length ?? 0} → ${(h.parts ?? []).map(p => `${label(p.gear)}${p.resume ? ' (same agent)' : ''}`).join(', ')}`
     : `${h.kind}${h.resume ? ' (same agent)' : ''} → ${label(h.gear)}${h.judge ? `, judge ${label(h.judge)}` : ''}`
+
+// A browser check's hand-off, in steer mode and under the orchestrator alike: the navigator (or Haiku or Sonnet, when the
+// person names one) clicks at low and only collects evidence, and the planner, a different model, judges it, unless the
+// check calls for a stronger model than the planner's (subtle or costly): then that model's subagent judges and fixes.
+export const driveHandoff = (r: Reading, want: Gear, planner: Model, navigator: Model): Handoff => {
+  const up = upFor(want)
+  const judge = below(planner, up) && mayGoUp('analyze', r.depth) && (r.depth >= 2 || r.care === 'costly') ? { model: up, effort: upTo(EFFORTS, DEPTH_EFFORT[r.depth]!, 'medium') } : undefined
+  return { kind: 'drive', gear: { model: r.ask.model === 'haiku' || r.ask.model === 'sonnet' ? r.ask.model : navigator, effort: 'low' }, ...(judge ? { judge } : {}) }
+}
 
 // Splits a turn between the main conversation and a subagent. `floor` is the main model so far;
 // `hasEarlier` says whether there is earlier work for the request to be unrelated to. With `fixed`, the
@@ -544,11 +565,7 @@ export const plan = (r: Reading, want: Gear, floor: Model | undefined, hasEarlie
   // On tool-heavy turns the main model only plans and judges; a costly target still gets opus for that.
   const planner = fixed ?? (r.care === 'costly' ? upTo(MODELS, base, 'opus') : base)
   const costly = r.care === 'costly'
-  if (r.mode === 'drive') {
-    const up = upFor(want)
-    const judge = below(planner, up) && mayGoUp('analyze', r.depth) && (r.depth >= 2 || costly) ? { model: up, effort: upTo(EFFORTS, DEPTH_EFFORT[r.depth]!, 'medium') } : undefined
-    return { main: { model: planner, effort: 'medium' }, handoff: { kind: 'drive', gear: { model: r.ask.model === 'haiku' || r.ask.model === 'sonnet' ? r.ask.model : navigator, effort: 'low' }, ...(judge ? { judge } : {}) } }
-  }
+  if (r.mode === 'drive') return { main: { model: planner, effort: 'medium' }, handoff: driveHandoff(r, want, planner, navigator) }
   if (r.mode === 'wait') return { main: { model: planner, effort: 'low' }, handoff: { kind: 'wait', gear: { model: 'haiku', effort: 'low' } } }
   if (r.mode === 'commit' && long) return { main: { model: planner, effort: 'low' }, handoff: { kind: 'chore', gear: choreGear(r.depth) } }
   if (want.model === 'fable' && r.ask.model !== 'fable' && fixed !== 'fable')
@@ -707,38 +724,54 @@ export const goAhead = (work: Reading | undefined, own: Reading | undefined, flo
 const SPLIT = 'Send it all to that one agent unless the new work splits into independent pieces: then call mcp__gearbox__fan first.'
 
 // With the coding effort on `auto` the main conversation decides delegation once it has read the work: whether to hand
-// off, to which model, at which effort. The deep, lane and fan notes are then advice: what gearbox suggests and why,
-// with the same how-to, and strict holds the main conversation to none of it.
-const DECIDE = 'Decide after reading: hand it off, or do it here if what you read shows it fits here.'
+// off, to which model, at which effort, and strict holds it to none of it. An even-handed "decide after reading" lost
+// to Claude Code's own guidance (do the work yourself when in doubt) almost every time: under 0.23.0 and 0.23.1 eight
+// suggested hand-offs started two agents, both because the person asked. So the deep, lane and fan notes speak for the
+// person's choice, the reason gearbox runs at all: handing off is the default, and keeping the work here the exception,
+// said in one line the debug log reads back (keptReason). `orchestrated`: the person turned the orchestrator on, and
+// the note may say so; in steer mode it says only what is true there, that they route such work through gearbox.
+export const KEPT = 'Keeping it here:'
+const prefers = (orchestrated: boolean, to: string) =>
+  orchestrated ? `The person turned on gearbox's orchestrator so that work like this goes to ${to}` : `The person uses gearbox to route work like this to ${to}`
+const KEEP = `Keep it here only if it turns out to be a few tool calls, and then say so in one line starting "${KEPT}". This preference overrides the default of doing work yourself when in doubt.`
+// The mechanics, each said once: the call names the agent's gear, the brief stands on its own, a follow-up names its
+// effort on its first line, the report reaches the person by itself, and code that comes back is read as a diff.
+const NAMED = 'naming its model and effort on the call (gearbox runs what you name: effort medium to xhigh, a review on Opus at least)'
+const START = `${PLAIN}, ${NAMED}, with a brief that stands on its own: the goal, the limits, what is decided here, the files to read, and what to hand back`
+const EFFORT_FIRST = 'with "effort: <level>" as its first line'
+const REPORTED = 'Its report shows to the person as it comes back: reply with your review, not a copy.'
+const DIFF_BACK = 'Review its diff (git diff on the files it reports), not only its report, and send fixes back to it.'
+// What the fan tool's answer says of each part's gear with the coding effort on `auto`.
 const NAMES = 'Name the model and effort on the Agent call: gearbox runs it at what you name (effort from medium to xhigh; a review on Opus at least) and fills what you leave out with its suggestion. A follow-up by SendMessage names its effort on its first line, "effort: <level>" (gearbox takes it off).'
-// The main conversation's own effort is set before it reads anything; once it has read, it may change it.
-export const EFFORT_TOOL = 'If what you read shows this turn needs more or less thought than it was given, call mcp__gearbox__effort to set your own effort for the rest of it.'
 
-const adviceNote = ({ kind, gear, resume, parts, code }: Handoff, why: string, isolate: boolean): string => {
+// The reason the main conversation gave for keeping advised work here: the rest of its line that starts with KEPT,
+// markdown emphasis or a quote mark before it allowed, at most 200 characters. Undefined when it wrote none.
+export const keptReason = (text: string): string | undefined => {
+  const m = /^[ \t>*_]*Keeping it here\s*:[*_]*[ \t]*(.*)$/im.exec(text)
+  const reason = m?.[1]!.replace(/[*_]+$/, '').trim()
+  return reason ? reason.slice(0, 200) : undefined
+}
+
+const adviceNote = ({ kind, gear, resume, parts, code }: Handoff, why: string, isolate: boolean, orchestrated: boolean): string => {
+  if (kind === 'fan') return fanNote(parts ?? [], true, isolate, why, orchestrated)
   const reason = why ? ` (${why})` : ''
-  const coded = code ? ` ${DIFF_REVIEW}` : ''
-  const fresh = `${PLAIN} with ${BRIEF}`
-  const back = `using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded)`
-  switch (kind) {
-    case 'lane':
-      return resume
-        ? `gearbox suggests: the ${gear.model} lane ${resume}, which already holds this work and what it found, at ${gear.effort}${reason}. ${DECIDE} If you hand off, send it the person's new message, with anything decided here since, ${back}; start a new agent only if that one no longer answers or the work needs another model: ${fresh}, which becomes the lane of the model you name. ${SPLIT} ${NAMES} ${RELAY}${coded} ${EFFORT_TOOL}`
-        : `gearbox suggests: the ${gear.model} lane at ${gear.effort}${reason}. ${DECIDE} If you hand off, start ${fresh}, and say what to hand back; it becomes the lane of the model you name. ${NAMES} Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first. ${RELAY}${coded} ${EFFORT_TOOL}`
-    case 'deep':
-      return resume
-        ? `gearbox suggests: going on in the ${gear.model} agent ${resume}, which already holds this work and what it found, at ${gear.effort}${reason}. ${DECIDE} If you hand off, send it the person's new message, with anything decided here since, ${back}; start a new agent only if that one no longer answers or the work needs another model: ${fresh}. ${NAMES} ${RELAY}${coded} ${EFFORT_TOOL}`
-        : `gearbox suggests: ${gear.model === 'opus' ? 'an' : 'a'} ${gear.model} agent at ${gear.effort}${reason}. ${DECIDE} If you hand off, start ${fresh}, and say what to hand back. ${NAMES} Send follow-ups to that same agent with SendMessage. ${RELAY}${coded} ${EFFORT_TOOL}`
-    default:
-      return fanNote(parts ?? [], true, isolate, why)
-  }
+  const lane = kind === 'lane'
+  const becomes = lane ? '; it becomes the lane of the model you name' : ''
+  const to = resume ? `the ${gear.model} ${lane ? 'lane' : 'agent'} ${resume}, which already holds this work, at ${gear.effort}` : `${lane ? `the ${gear.model} lane` : gear.model} at ${gear.effort}`
+  const how = resume
+    ? `To hand off, send it the person's new message, with anything decided here since, by SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded), ${EFFORT_FIRST}. Only if it no longer answers or the work needs another model, start ${START}${becomes}.${lane ? ` ${SPLIT}` : ''}`
+    : `To hand off, start ${START}${becomes}. Send follow-ups to it by SendMessage, ${EFFORT_FIRST}${lane ? '; if new work splits into independent pieces, call mcp__gearbox__fan first' : ''}.`
+  return `${prefers(orchestrated, 'an agent')}: ${to}${reason}. Hand it off. ${KEEP}\n${how} ${REPORTED}${code ? ` ${DIFF_BACK}` : ''}`
 }
 
 // `chooses`: the coding effort is `auto`, so the main model decides: the deep, lane and fan notes are advice (`why`:
-// the reading they come from), and an agent that writes code elsewhere runs at the effort it names.
+// the reading they come from; `orchestrated`: the orchestrator is on), and an agent that writes code elsewhere runs at
+// the effort it names. A relay lane is not advice: only its command is held to it then, strict holding nothing else.
 // `isolate`: Claude Code can make a part's worktree (see OWN_WORKTREE); a fan-out's note says which way they are made.
-export const handoffNote = (h: Handoff, chooses = false, isolate = true, why = ''): string => {
-  if (chooses && (h.kind === 'deep' || h.kind === 'lane' || h.kind === 'fan')) return adviceNote(h, why, isolate)
+export const handoffNote = (h: Handoff, chooses = false, isolate = true, why = '', orchestrated = false): string => {
+  if (chooses && advises(h)) return adviceNote(h, why, isolate, orchestrated)
   const { kind, gear, judge, resume, parts, code } = h
+  const held = chooses && h.relay ? ` The ${h.relay === 'wait' ? 'long command' : 'git chore'} itself is refused here: it is the lane's.` : ''
   const picks = chooses && !!code
   const effort = picks ? 'the effort you choose' : `effort "${gear.effort}"`
   const agent = `an Agent with model "${gear.model}"${kind === 'aside' || kind === 'deep' || kind === 'chore' ? ` and ${effort}` : ''}`
@@ -765,8 +798,8 @@ ${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.eff
       return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.${coded}`
     case 'lane':
       return resume
-        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} ${jobs} ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
-        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. ${jobs} Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first. Until it starts, edits, commands and more reads are refused here. ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
+        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} ${jobs}${held} ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
+        : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. ${jobs} Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first.${held || ' Until it starts, edits, commands and more reads are refused here.'} ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
     case 'fan':
       return fanNote(parts ?? [], chooses, isolate)
     case 'deep':
@@ -804,9 +837,9 @@ export const fanReply = (parts: readonly FanPart[], chooses = false, isolate = t
 export const apartEdits = (parts: readonly FanPart[]) => parts.filter(p => p.edits).length >= 2
 
 // The fan-out: every part's agent starts in one message, so they run at the same time; gearbox sets each one's effort.
-// `chooses`: the coding effort is `auto`, so the split is advice (`why`: the reading it comes from), and each part's
-// model and effort are the main conversation's to name.
-const fanNote = (parts: readonly FanPart[], chooses = false, isolate = true, why = ''): string => {
+// `chooses`: the coding effort is `auto`, so the split is advice (`why`: the reading it comes from), handing the parts
+// off its default as for any advice (see prefers), and each part's model and effort are the main conversation's to name.
+const fanNote = (parts: readonly FanPart[], chooses = false, isolate = true, why = '', orchestrated = true): string => {
   const apart = apartEdits(parts)
   const edits = parts.some(p => p.edits)
   const back = (p: FanPart) =>
@@ -814,16 +847,24 @@ const fanNote = (parts: readonly FanPart[], chooses = false, isolate = true, why
       ? `it makes the change, checks it, and hands back the files it changed${apart ? (isolate ? ', its worktree branch' : ', its worktree branch and path') : ''}, how it checked them and anything left open`
       : 'it hands back its findings in full'
   const suggested = (p: FanPart) => (chooses ? `, at ${p.gear.effort}${p.review ? ' (a review: Opus at least)' : ''}` : '')
+  const worktrees = apart ? (isolate ? ' Each part that edits files starts with isolation "worktree", in a git worktree of its own, so the agents cannot collide.' : ` ${NO_ISOLATION}`) : ''
+  const merge = apart ? ` Merge the worktree branches into ${isolate ? 'the working tree' : 'the repository each was made in'} (git merge or cherry-pick); a conflict that needs editing goes back to an agent.` : ''
+  const each = parts.map(
+    (p, i) =>
+      `   ${i + 1}. ${p.what}: ${p.resume ? `send it with SendMessage to "${p.resume}", the ${p.gear.model} lane that already holds earlier work, in that same message (load SendMessage with ToolSearch first if it is not loaded)` : `model "${p.gear.model}"${p.edits && apart ? (isolate ? ', isolation "worktree"' : ', its own git worktree') : ''}`}${suggested(p)}; ${back(p)}.`,
+  )
+  if (chooses)
+    return [
+      `${prefers(orchestrated, 'agents')}: this request splits into ${parts.length} independent parts, one agent each, running at the same time${why ? ` (${why})` : ''}. Hand them off. If the parts turn out to need each other's results, give the work to one agent instead. ${KEEP}`,
+      `1. Start every part in ONE message: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, ${NAMED}, and a brief for that part alone: its own files, the files the other parts change, and what to hand back.${parts.some(p => p.resume) ? ` A part a lane takes goes to it by SendMessage, ${EFFORT_FIRST}.` : ''} Do not start one and wait for it before the next.${worktrees}`,
+      ...each,
+      `2. Wait for every result. Review each${edits ? ', the diff of each part that edits included' : ''}, and reconcile them.${merge} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Reply with the reconciled outcome and your review, not a copy of the reports.`,
+    ].join('\n')
   return [
-    chooses
-      ? `gearbox suggests: splitting this request into ${parts.length} independent parts, which run at the same time, one agent each${why ? ` (${why})` : ''}. Decide after reading: split it, give it to one agent, or do it here.`
-      : `gearbox handoff, fan-out: this request splits into ${parts.length} independent parts, which run at the same time, one agent each.`,
-    `1. ${chooses ? 'If you split, start' : 'Start'} every part in ONE message, all at once: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, its model, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back. Do not start one and wait for it before the next.${apart ? (isolate ? ' Each part that edits files starts with isolation "worktree", in a git worktree of its own, so the agents cannot collide.' : ` ${NO_ISOLATION}`) : ''}`,
-    ...parts.map(
-      (p, i) =>
-        `   ${i + 1}. ${p.what}: ${p.resume ? `send it with SendMessage to "${p.resume}", the ${p.gear.model} lane that already holds earlier work, in that same message (load SendMessage with ToolSearch first if it is not loaded)` : `model "${p.gear.model}"${p.edits && apart ? (isolate ? ', isolation "worktree"' : ', its own git worktree') : ''}`}${suggested(p)}; ${back(p)}.`,
-    ),
-    `2. ${chooses ? NAMES : `gearbox sets each agent's effort. Until all ${parts.length} have started, edits, commands and more reads are refused here.`}`,
-    `3. Wait for every result before going on. Then review each${edits ? ', the diff of each part that edits included (git diff on the files it reports), not only its report' : ''}, and reconcile them: overlaps, contradictions, anything one part found that changes another.${apart ? ` Merge the worktree branches into ${isolate ? 'the working tree' : 'the repository each was made in'} (git merge or cherry-pick); a conflict that needs editing goes back to an agent.` : ''} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Each part's report shows to the person under its call: reply with the reconciled outcome and your review, not a copy of the reports.${chooses ? ` ${EFFORT_TOOL}` : ''}`,
+    `gearbox handoff, fan-out: this request splits into ${parts.length} independent parts, which run at the same time, one agent each.`,
+    `1. Start every part in ONE message, all at once: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, its model, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back. Do not start one and wait for it before the next.${worktrees}`,
+    ...each,
+    `2. gearbox sets each agent's effort. Until all ${parts.length} have started, edits, commands and more reads are refused here.`,
+    `3. Wait for every result before going on. Then review each${edits ? ', the diff of each part that edits included (git diff on the files it reports), not only its report' : ''}, and reconcile them: overlaps, contradictions, anything one part found that changes another.${merge} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Each part's report shows to the person under its call: reply with the reconciled outcome and your review, not a copy of the reports.`,
   ].join('\n')
 }

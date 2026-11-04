@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { NEUTRAL, ORCHESTRATOR, ORCHESTRATOR_EFFORTS, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
-import { RESUME_MS, RESUME_TOKENS, type FanPart, type Gear, type Part, type Phase, type Reading, gearFor, handoffNote, label, route, routeNote } from './policy'
+import { RESUME_MS, RESUME_TOKENS, type FanPart, type Gear, type Part, type Phase, type Reading, gearFor, handoffNote, label, plan, route, routeNote } from './policy'
 
 const reading = (r: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...r })
 // A pinned orchestrator effort; `auto` is the default.
@@ -172,10 +172,34 @@ test('everything else goes to the lane of the model the work calls for, at the e
   expect(orchestratorPlan(reading({ mode: 'answer', reach: 'area', depth: 2 }), { model: 'sonnet', effort: 'high' }, MAIN)).toEqual({ main: MAIN, handoff: { kind: 'lane', gear: { model: 'sonnet', effort: 'high' } } })
   // One-spot code is a lane when it is subtle.
   expect(orchestratorPlan(reading({ mode: 'code', reach: 'point', depth: 2 }), { model: 'haiku', effort: 'high' }, MAIN).handoff?.kind).toBe('lane')
-  // A long command waits in Haiku's lane, a git chore in the chore gear's.
-  expect(orchestratorPlan(reading({ mode: 'wait' }), { model: 'sonnet', effort: 'medium' }, MAIN).handoff).toEqual({ kind: 'lane', gear: { model: 'haiku', effort: 'low' } })
-  expect(orchestratorPlan(reading({ mode: 'commit', depth: 0 }), { model: 'haiku', effort: 'low' }, MAIN).handoff).toEqual({ kind: 'lane', gear: { model: 'haiku', effort: 'low' } })
-  expect(orchestratorPlan(reading({ mode: 'commit', depth: 1 }), { model: 'sonnet', effort: 'medium' }, MAIN).handoff).toEqual({ kind: 'lane', gear: { model: 'sonnet', effort: 'medium' } })
+  // A long command waits in Haiku's lane, a git chore in the chore gear's: lanes that only relay the command.
+  expect(orchestratorPlan(reading({ mode: 'wait' }), { model: 'sonnet', effort: 'medium' }, MAIN).handoff).toEqual({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, relay: 'wait' })
+  expect(orchestratorPlan(reading({ mode: 'commit', depth: 0 }), { model: 'haiku', effort: 'low' }, MAIN).handoff).toEqual({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, relay: 'chore' })
+  expect(orchestratorPlan(reading({ mode: 'commit', depth: 1 }), { model: 'sonnet', effort: 'medium' }, MAIN).handoff).toEqual({ kind: 'lane', gear: { model: 'sonnet', effort: 'medium' }, relay: 'chore' })
+})
+
+test('a browser check is no lane’s: the navigator clicks at low and the orchestrator judges, or a stronger model’s agent when the check calls for one, as in steer mode', () => {
+  const plain = reading({ mode: 'drive', reach: 'area', depth: 1 })
+  // Before 0.23.2 a drive fell through to a lane on the work's model, which clicked and judged its own clicks.
+  expect(orchestratorPlan(plain, gearFor(plain, 'xhigh'), MAIN)).toEqual({ main: MAIN, handoff: { kind: 'drive', gear: { model: 'sonnet', effort: 'low' } } })
+  expect(orchestratorPlan(plain, gearFor(plain, 'xhigh'), MAIN, 3, 'xhigh', undefined, false, false, 'haiku').handoff).toEqual({ kind: 'drive', gear: { model: 'haiku', effort: 'low' } })
+  // A subtle or costly check across the system, on a Sonnet orchestrator: an Opus agent judges the evidence.
+  const hard = reading({ mode: 'drive', reach: 'system', depth: 2 })
+  expect(orchestratorPlan(hard, gearFor(hard, 'xhigh'), MAIN).handoff).toEqual({ kind: 'drive', gear: { model: 'sonnet', effort: 'low' }, judge: { model: 'opus', effort: 'high' } })
+  // On an Opus orchestrator, the orchestrator judges it itself: it is already that model.
+  const opus: Gear = { model: 'opus', effort: 'high' }
+  expect(orchestratorPlan(hard, gearFor(hard, 'xhigh'), opus).handoff).toEqual({ kind: 'drive', gear: { model: 'sonnet', effort: 'low' } })
+  // A navigator the person names (Haiku or Sonnet) wins over the setting; another model does not.
+  for (const [model, navigates] of [['haiku', 'haiku'], ['sonnet', 'sonnet'], ['opus', 'haiku']] as const) {
+    const asked = reading({ mode: 'drive', ask: { model } })
+    expect(orchestratorPlan(asked, gearFor(asked, 'xhigh'), opus, 3, 'xhigh', undefined, false, false, 'haiku').handoff?.gear).toEqual({ model: navigates, effort: 'low' })
+  }
+  // With the orchestrator's effort on auto it writes the checklist and judges at medium, as steer mode's main does.
+  expect(orchestratorPlan(plain, gearFor(plain, 'xhigh'), opus, 3, 'xhigh', undefined, true).main).toEqual({ model: 'opus', effort: 'medium' })
+  // The same hand-off steer mode gives, with the coding effort auto or not: it is never advice.
+  expect(orchestratorPlan(hard, gearFor(hard, 'xhigh'), MAIN, 3, 'xhigh', undefined, false, true).handoff).toEqual(plan(hard, gearFor(hard, 'xhigh'), undefined, false, 'sonnet', 'sonnet', false, false, true).handoff)
+  // A guess hands nothing off, a browser check's included.
+  expect(orchestratorPlan({ ...plain, sure: false }, gearFor(plain, 'xhigh'), MAIN)).toEqual({ main: MAIN })
 })
 
 test('a review never stays on the orchestrator: it goes to the Opus lane, at the effort its depth calls for', () => {

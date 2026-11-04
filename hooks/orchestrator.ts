@@ -2,7 +2,7 @@
 // long-lived subagent per model. A lane starts at the top effort it will need and each message lowers it (bench/lanes:
 // a mod's effort on a resumed agent reaches the API and keeps the cache; lowering takes hold fully, raising only half).
 import type { ModelEffort } from 'claude-code'
-import { BRIEFING, EFFORTS, type FanPart, type Gear, type Handoff, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, capXhigh, choreGear, filesReach as scope, gearFor, mechanical, normPath as norm, pathFolder as folder, pins, staysPut, upFor, upTo } from './policy'
+import { BRIEFING, EFFORTS, type FanPart, type Gear, type Handoff, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, capXhigh, choreGear, driveHandoff, filesReach as scope, gearFor, mechanical, normPath as norm, pathFolder as folder, pins, staysPut, upFor, upTo } from './policy'
 
 // The orchestrator's effort: a level, or `auto`, which sets the main conversation's effort per prompt (see orchestratorPlan).
 export type OrchestratorEffort = ModelEffort | 'auto'
@@ -181,10 +181,16 @@ export const fanParts = (r: Reading, cap: number, standing: ModelEffort, code?: 
 // and later choosing the agent's effort is where it is won or lost, save a lane that only relays a command (a long
 // command, a git chore), which runs low. `advice`: the coding effort is `auto`, so the hand-off is advice, and none is
 // given for what stays put (staysPut): an answer at depth 0 or 1 of any reach or care, and any guess, a review's included.
-export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, standing: ModelEffort = 'xhigh', code?: Model, auto = false, advice = false): Plan => {
+// A browser check is no lane's: as in steer mode, the navigator (`navigator`) clicks and the orchestrator, a different
+// model, judges the evidence at medium (a stronger model's subagent, when the check calls for one; see driveHandoff).
+// Before 0.23.2 it fell through to a lane on the work's model, which navigated and judged its own clicks. A long
+// command and a git chore still go to the lane that only relays them, marked `relay`: never advice, and the command
+// itself is held to it.
+export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, standing: ModelEffort = 'xhigh', code?: Model, auto = false, advice = false, navigator: Model = 'sonnet'): Plan => {
   const keep = (): Plan => ({ main: auto ? { ...main, effort: capXhigh(want.effort) } : main })
   const hand = (handoff: Handoff, relay = false): Plan => ({ main: auto ? { ...main, effort: relay ? 'low' : BRIEFING } : main, handoff })
   if ((!r.sure && r.mode !== 'review') || (advice && staysPut(r))) return keep()
+  if (r.mode === 'drive') return { main: auto ? { ...main, effort: 'medium' } : main, handoff: driveHandoff(r, want, main.model, navigator) }
   const small = r.reach === 'point' || r.reach === 'area'
   const ordinary = r.care !== 'costly'
   const pinned = pins(r, code)
@@ -194,8 +200,8 @@ export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, st
   if (fan.length) return hand({ kind: 'fan', gear: fan[0]!.gear, parts: fan })
   const enough = pinned ? want.model === main.model || mechanical(r) : LADDER.indexOf(want.model) <= LADDER.indexOf(main.model)
   if (ordinary && r.mode === 'code' && r.depth <= 1 && small && enough) return keep()
-  if (r.mode === 'wait') return hand({ kind: 'lane', gear: { model: 'haiku', effort: 'low' } }, true)
-  if (r.mode === 'commit') return hand({ kind: 'lane', gear: choreGear(r.depth) }, true)
+  if (r.mode === 'wait') return hand({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, relay: 'wait' }, true)
+  if (r.mode === 'commit') return hand({ kind: 'lane', gear: choreGear(r.depth), relay: 'chore' }, true)
   return hand({ kind: want.model === 'fable' ? 'deep' : 'lane', gear: want })
 }
 
