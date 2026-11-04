@@ -446,7 +446,7 @@ export const workEffort = (steps: Step[]): ModelEffort =>
 // means it skipped the subagent.
 export const doesHandoffWork = (tool: string) => /^(Bash|PowerShell)$|chrome|playwright|browser|computer/i.test(tool)
 
-// What strict mode keeps out of the main conversation during a hand-off step: driving the browser in a browser
+// What the hold keeps out of the main conversation during a hand-off step: driving the browser in a browser
 // check, and the long command itself (a test run, a build, a deploy) in a long-command step. Other shell work,
 // such as reading a file to settle the command, stays allowed.
 export const isBrowserTool = (tool: string) => /chrome|playwright|browser|computer/i.test(tool)
@@ -724,7 +724,7 @@ export const goAhead = (work: Reading | undefined, own: Reading | undefined, flo
 const SPLIT = 'Send it all to that one agent unless the new work splits into independent pieces: then call mcp__gearbox__fan first.'
 
 // With the coding effort on `auto` the main conversation decides delegation once it has read the work: whether to hand
-// off, to which model, at which effort, and strict holds it to none of it. An even-handed "decide after reading" lost
+// off, to which model, at which effort, and nothing holds it to any of it. An even-handed "decide after reading" lost
 // to Claude Code's own guidance (do the work yourself when in doubt) almost every time: under 0.23.0 and 0.23.1 eight
 // suggested hand-offs started two agents, both because the person asked. So the deep, lane and fan notes speak for the
 // person's choice, the reason gearbox runs at all: handing off is the default, and keeping the work here the exception,
@@ -766,7 +766,7 @@ const adviceNote = ({ kind, gear, resume, parts, code }: Handoff, why: string, i
 
 // `chooses`: the coding effort is `auto`, so the main model decides: the deep, lane and fan notes are advice (`why`:
 // the reading they come from; `orchestrated`: the orchestrator is on), and an agent that writes code elsewhere runs at
-// the effort it names. A relay lane is not advice: only its command is held to it then, strict holding nothing else.
+// the effort it names. A relay lane is not advice: only its command is held to it then, the hold of a fixed coding effort holding nothing else.
 // `isolate`: Claude Code can make a part's worktree (see OWN_WORKTREE); a fan-out's note says which way they are made.
 export const handoffNote = (h: Handoff, chooses = false, isolate = true, why = '', orchestrated = false): string => {
   if (chooses && advises(h)) return adviceNote(h, why, isolate, orchestrated)

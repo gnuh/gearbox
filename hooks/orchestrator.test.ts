@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NEUTRAL, ORCHESTRATOR, ORCHESTRATOR_EFFORTS, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
+import { NEUTRAL, ORCHESTRATOR, ORCHESTRATOR_EFFORTS, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
 import { RESUME_MS, RESUME_TOKENS, type FanPart, type Gear, type Part, type Phase, type Reading, gearFor, handoffNote, label, plan, route, routeNote } from './policy'
 
 const reading = (r: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...r })
@@ -8,23 +8,44 @@ const MAIN: Gear = { model: 'sonnet', effort: 'medium' }
 const part = (what: string, mode: Part['mode'], depth: Part['depth'], files: string[] = []): Part => ({ what, mode, depth, files })
 const whats = (groups: Part[][]) => groups.map(g => g.map(p => p.what))
 
-test('the orchestrator is off by default and, once on, is Sonnet at an effort of auto', () => {
-  expect(orchestratorFrom({})).toEqual({ orchestrator: false, orchestrator_model: 'sonnet', orchestrator_effort: 'auto', orchestrator_agents: 3 })
-  expect(ORCHESTRATOR).toEqual({ model: 'sonnet', effort: 'auto' })
+test('a new install has the orchestrator on auto, on Opus at an effort of auto, with up to 6 agents', () => {
+  expect(orchestratorFrom({})).toEqual({ orchestrator: 'auto', orchestrator_model: 'opus', orchestrator_effort: 'auto', orchestrator_agents: 6 })
+  expect(ORCHESTRATOR).toEqual({ mode: 'auto', model: 'opus', effort: 'auto' })
   expect(ORCHESTRATOR_EFFORTS).toEqual(['auto', 'low', 'medium', 'high', 'xhigh'])
-  expect(orchestratorFrom({ orchestrator: true, orchestrator_model: 'opus', orchestrator_effort: 'high' })).toEqual({ orchestrator: true, orchestrator_model: 'opus', orchestrator_effort: 'high', orchestrator_agents: 3 })
+  // What the person set stays: off, another model, another effort, another number of agents.
+  expect(orchestratorFrom({}, { orchestrator: 'on', orchestrator_model: 'sonnet', orchestrator_effort: 'high' })).toEqual({ orchestrator: 'on', orchestrator_model: 'sonnet', orchestrator_effort: 'high', orchestrator_agents: 6 })
+  expect(orchestratorFrom({ orchestrator_model: 'haiku', orchestrator_agents: 2 }, { orchestrator: 'off' })).toEqual({ orchestrator: 'off', orchestrator_model: 'haiku', orchestrator_effort: 'auto', orchestrator_agents: 2 })
+  // The plugin option is a boolean with a default of true, which Claude Code passes in: true is the default, `auto`,
+  // and only false is the person's word. What /gearbox stored is always the person's, and wins: on, off or auto, or the
+  // boolean an older version stored (true is on, false is off).
+  expect(orchestratorFrom({ orchestrator: true }).orchestrator).toBe('auto')
+  expect(orchestratorFrom({ orchestrator: false }).orchestrator).toBe('off')
+  expect(orchestratorFrom({ orchestrator: false }, { orchestrator: 'on' }).orchestrator).toBe('on')
+  expect(orchestratorFrom({ orchestrator: false }, { orchestrator: 'auto' }).orchestrator).toBe('auto')
+  expect(orchestratorFrom({ orchestrator: true }, { orchestrator: true }).orchestrator).toBe('on')
+  expect(orchestratorFrom({ orchestrator: true }, { orchestrator: false }).orchestrator).toBe('off')
   // Values it does not take fall back to the defaults.
-  expect(orchestratorFrom({ orchestrator: 'yes', orchestrator_model: 'fable', orchestrator_effort: 'huge' })).toEqual({ orchestrator: false, orchestrator_model: 'sonnet', orchestrator_effort: 'auto', orchestrator_agents: 3 })
+  expect(orchestratorFrom({ orchestrator: 'yes', orchestrator_model: 'fable', orchestrator_effort: 'huge' }, { orchestrator: 'sometimes' })).toEqual({ orchestrator: 'auto', orchestrator_model: 'opus', orchestrator_effort: 'auto', orchestrator_agents: 6 })
   // max is no longer offered: a stored or plugin max is xhigh.
   expect(orchestratorFrom({ orchestrator_effort: 'max' }).orchestrator_effort).toBe('xhigh')
 })
 
-test('the orchestrator starts up to 3 agents at once unless the person picks 1 to 6; 1 turns fan-out off', () => {
+test('the orchestrator runs when set on, and on auto unless the session is on Haiku, which shifts models', () => {
+  expect(orchestratorOn('on', false)).toBe(true)
+  expect(orchestratorOn('on', true)).toBe(true) // the person's own word, a Haiku session included
+  expect(orchestratorOn('auto', false)).toBe(true)
+  expect(orchestratorOn('auto', true)).toBe(false)
+  expect(orchestratorOn('off', false)).toBe(false)
+  expect(orchestratorOn('off', true)).toBe(false)
+})
+
+test('the orchestrator starts up to 6 agents at once unless the person picks 1 to 6; 1 turns fan-out off', () => {
+  expect(orchestratorFrom({}).orchestrator_agents).toBe(6)
   expect(orchestratorFrom({ orchestrator_agents: 5 }).orchestrator_agents).toBe(5)
   expect(orchestratorFrom({ orchestrator_agents: 1 }).orchestrator_agents).toBe(1)
   // A value kept as text, as a settings screen may store it.
   expect(orchestratorFrom({ orchestrator_agents: '2' }).orchestrator_agents).toBe(2)
-  for (const bad of [0, 7, 2.5, 'many', true, '']) expect(orchestratorFrom({ orchestrator_agents: bad }).orchestrator_agents).toBe(3)
+  for (const bad of [0, 7, 2.5, 'many', true, '']) expect(orchestratorFrom({ orchestrator_agents: bad }).orchestrator_agents).toBe(6)
   expect(orchestratorPatch('orchestrator-agents', '4')).toEqual({ orchestrator_agents: 4 })
   expect(orchestratorPatch('orchestrator-agents', '1')).toEqual({ orchestrator_agents: 1 })
   for (const bad of ['0', '7', 'two', '3.5', '0x3', undefined]) expect(orchestratorPatch('orchestrator-agents', bad)).toBeUndefined()
@@ -133,8 +154,9 @@ test('the first part of each model goes to that model’s lane; other parts, and
 })
 
 test('/gearbox orchestrator, -model and -effort each take only their own values', () => {
-  expect(orchestratorPatch('orchestrator', 'on')).toEqual({ orchestrator: true })
-  expect(orchestratorPatch('orchestrator', 'off')).toEqual({ orchestrator: false })
+  expect(orchestratorPatch('orchestrator', 'on')).toEqual({ orchestrator: 'on' })
+  expect(orchestratorPatch('orchestrator', 'off')).toEqual({ orchestrator: 'off' })
+  expect(orchestratorPatch('orchestrator', 'auto')).toEqual({ orchestrator: 'auto' })
   expect(orchestratorPatch('orchestrator-model', 'opus')).toEqual({ orchestrator_model: 'opus' })
   expect(orchestratorPatch('orchestrator-effort', 'high')).toEqual({ orchestrator_effort: 'high' })
   expect(orchestratorPatch('orchestrator-effort', 'auto')).toEqual({ orchestrator_effort: 'auto' })

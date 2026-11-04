@@ -1,4 +1,13 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, test as fresh } from 'claude-code/testing'
+
+// A new install has the orchestrator on, on Opus, with up to 6 agents. These tests are written for a plain session, and
+// for a Sonnet orchestrator with up to 3 agents when they turn it on, so each starts from those unless its own options
+// say otherwise; `fresh` is the test with the defaults a new install gets.
+const test: typeof fresh = ((name: string, ...rest: any[]) => {
+  const run = rest.pop()
+  const opts = rest[0] ?? {}
+  return fresh(name, { ...opts, options: { orchestrator: false, orchestrator_model: 'sonnet', orchestrator_agents: 3, ...opts.options } }, run)
+}) as typeof fresh
 import { NESTING, hookBrief } from './policy'
 import { readOutput } from './classic'
 
@@ -52,7 +61,7 @@ const world = (on: any, w: World = {}) => {
   on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt.replace(NESTING, '')), { model: 'inherit', agentId: 'a1' }))
   on('session.send', (_: unknown, e: any) => (sent.push(e.text), { isDelivered: true as const }))
   for (const quiet of ['ui.status', 'ui.log']) on(quiet, () => ({ value: undefined }))
-  return { calls, prompts, sent }
+  return { calls, prompts, sent, kv }
 }
 
 const spawn = ($: any, extra: object = {}) =>
@@ -174,16 +183,13 @@ test('with disableAllHooks set, nothing runs and the task goes as it was', async
   expect(w.prompts).toEqual(['fix the billing bug'])
 })
 
-test('/gearbox hooks off keeps the person\'s hooks from agents; on brings them back', async ($: any, on) => {
+test('your hooks always run for agents: /gearbox hooks says it is no longer a setting and stores nothing', async ($: any, on) => {
   const w = world(on, { sources: { user: { hooks: { ...ONE('/h/pre.sh'), ...STOP('/h/post.sh') } } }, says: { '/h/pre.sh': { stdout: 'ctx' }, '/h/post.sh': { stdout: '{"decision":"block","reason":"again"}' } } })
-  expect((await $.command.run({ command: 'gearbox', args: 'hooks off' })).text).toContain('hooks for agents off')
-  await spawn($)
-  expect((await stop($)).block).toBeUndefined()
-  expect(w.calls).toHaveLength(0)
-  expect((await $.command.run({ command: 'gearbox', args: 'hooks on' })).text).toContain('hooks for agents on')
+  for (const arg of ['hooks off', 'hooks on', 'hooks maybe']) expect((await $.command.run({ command: 'gearbox', args: arg })).text).toContain('hooks is no longer a setting')
+  expect(w.kv.get('settings')).toBeUndefined()
   await spawn($)
   expect(w.calls).toHaveLength(1)
-  expect((await $.command.run({ command: 'gearbox', args: 'hooks maybe' })).text).toBe('hooks takes on or off')
+  expect((await stop($)).block).toBe('again')
 })
 
 test('an agent that stops goes through the person\'s Stop hooks: a block or feedback sends it back to work', async ($: any, on) => {
@@ -300,10 +306,11 @@ test('with the log on, the hooks run for an agent are recorded without their tex
   expect(JSON.stringify(log)).not.toContain('secret project note')
 })
 
-test('with the plugin option agent_hooks off, the person\'s hooks stay with the main conversation', { options: { agent_hooks: false } }, async ($: any, on) => {
+test('a plugin option or a stored value of the removed agent_hooks, off, changes nothing: the person\'s hooks still run for agents', { options: { agent_hooks: false } }, async ($: any, on) => {
   const w = world(on, { sources: { user: { hooks: { ...ONE('/h/pre.sh'), ...STOP('/h/post.sh') } } }, says: { '/h/pre.sh': { stdout: 'ctx' }, '/h/post.sh': { stdout: '{"decision":"block","reason":"again"}' } } })
+  w.kv.set('settings', { agent_hooks: false })
   await spawn($)
-  expect((await stop($)).block).toBeUndefined()
-  expect(w.calls).toHaveLength(0)
-  expect(w.prompts).toEqual(['fix the billing bug'])
+  expect(w.calls).toHaveLength(1)
+  expect(w.prompts[0]).toContain('ctx')
+  expect((await stop($)).block).toBe('again')
 })

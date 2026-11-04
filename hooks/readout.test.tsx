@@ -1,5 +1,14 @@
 import type { AgentStatus } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock, test as fresh } from 'claude-code/testing'
+
+// A new install has the orchestrator on, on Opus, with up to 6 agents. These tests are written for a plain session, and
+// for a Sonnet orchestrator with up to 3 agents when they turn it on, so each starts from those unless its own options
+// say otherwise; `fresh` is the test with the defaults a new install gets.
+const test: typeof fresh = ((name: string, ...rest: any[]) => {
+  const run = rest.pop()
+  const opts = rest[0] ?? {}
+  return fresh(name, { ...opts, options: { orchestrator: false, orchestrator_model: 'sonnet', orchestrator_agents: 3, ...opts.options } }, run)
+}) as typeof fresh
 
 // The test runtime has timers; the hooks' own environment, whose types these files use, does not.
 declare const setTimeout: (done: (value?: unknown) => void, ms: number) => unknown

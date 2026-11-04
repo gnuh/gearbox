@@ -1,7 +1,7 @@
 {
   "name": "gearbox",
-  "version": "0.23.2",
-  "description": "Per-prompt model and effort for Claude Code: Haiku sessions shift models, other sessions keep their model and get the right effort, tool-heavy work goes to cheap subagents, runs of reads on long conversations go to Haiku, an optional orchestrator keeps the main conversation to planning, runs the work in one long-lived lane per model and splits a request of independent parts across several agents at once, and a live readout shows every agent's model.",
+  "version": "0.24.0",
+  "description": "Per-prompt model and effort for Claude Code. By default an orchestrator keeps the main conversation on Opus to plan, brief and review, runs the work in one long-lived agent per model and splits independent parts across up to 6 agents at once; browser checks, long commands and git chores go to cheap subagents; a session started on Haiku keeps shifting models instead; and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
   },
@@ -42,12 +42,6 @@
       ],
       "default": "sonnet"
     },
-    "strict": {
-      "type": "boolean",
-      "title": "Strict hand-offs",
-      "description": "With a fixed coding effort, hold the main conversation to a deep, lane or fan-out hand-off until its agents start, and keep the orchestrator from writing code beyond the small edits its plan keeps; with coding effort auto those hand-offs are advice and strict holds none of them. Browser checks, long commands and git chores are always held to their subagents, whatever this setting. Also settable with /gearbox strict.",
-      "default": true
-    },
     "log": {
       "type": "string",
       "title": "Debug log",
@@ -59,17 +53,11 @@
       ],
       "default": "off"
     },
-    "agent_hooks": {
-      "type": "boolean",
-      "title": "Your hooks for subagents",
-      "description": "Run your own UserPromptSubmit and Stop hooks for subagents as the main conversation gets them, which Claude Code does not: a subagent's task goes through your UserPromptSubmit hooks (what they print goes to it), and when it stops through your Stop hooks (a block or feedback sends it back to work). Also settable with /gearbox hooks.",
-      "default": true
-    },
     "orchestrator": {
       "type": "boolean",
       "title": "Orchestrator",
-      "description": "The main conversation only plans, briefs and reviews; the work runs in lanes, one long-lived subagent per model, each started at the top effort and lowered per job. Off by default. Also settable with /gearbox orchestrator.",
-      "default": false
+      "description": "The main conversation only plans, briefs and reviews; the work runs in lanes, one long-lived subagent per model, each started at the top effort and lowered per job. On by default, except in a session started on Haiku, which keeps shifting models (/gearbox orchestrator on orchestrates those too). Also settable with /gearbox orchestrator.",
+      "default": true
     },
     "orchestrator_model": {
       "type": "string",
@@ -80,7 +68,7 @@
         "sonnet",
         "opus"
       ],
-      "default": "sonnet"
+      "default": "opus"
     },
     "orchestrator_effort": {
       "type": "string",
@@ -99,7 +87,7 @@
       "type": "number",
       "title": "Orchestrator parallel agents",
       "description": "While the orchestrator is on, the most agents a request of independent parts goes out to at once, from 1 to 6; 1 turns the fan-out off. The orchestrator decides from the survey whether a request splits and into how many, never more than this. Also settable with /gearbox orchestrator-agents.",
-      "default": 3
+      "default": 6
     }
   }
 }
