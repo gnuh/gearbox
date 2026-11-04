@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, EFFORT_TOOL, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
+import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, KEPT, keptReason, subagentAsk, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -674,42 +674,103 @@ test('a follow-up names its effort on its first line, which gearbox takes off', 
   for (const text of ['go on\neffort: high', 'effort: high, and fix it', 'the effort: high part', 'effort: ludicrous\nfix it']) expect(effortLine(text)).toEqual({ message: text })
 })
 
-test('a code hand-off asks for its diff to be reviewed; with the coding effort auto, the deep and lane notes are advice: what gearbox suggests and why', () => {
+test('a code hand-off asks for its diff to be reviewed; with the coding effort auto, the deep and lane notes are advice whose default is to hand off, for the person’s choice', () => {
   const gear = { model: 'sonnet', effort: 'xhigh' } as const
   const deep = handoffNote({ kind: 'deep', gear, code: true })
   expect(deep).toContain(DIFF_REVIEW)
   expect(deep).toContain('effort "xhigh"')
-  expect(deep).not.toContain('gearbox suggests')
+  expect(deep).not.toContain('Hand it off.')
   const advice = handoffNote({ kind: 'deep', gear, code: true }, true, true, 'code · area · depth 2')
-  expect(advice).toStartWith('gearbox suggests: a sonnet agent at xhigh (code · area · depth 2). Decide after reading')
-  expect(advice).toContain('Name the model and effort on the Agent call')
-  expect(advice).toContain('effort from medium to xhigh; a review on Opus at least')
-  expect(advice).toContain('"effort: <level>"')
+  // Without the orchestrator it claims none: only that the person routes such work through gearbox.
+  expect(advice).toStartWith('The person uses gearbox to route work like this to an agent: sonnet at xhigh (code · area · depth 2). Hand it off. Keep it here only if it turns out to be a few tool calls, and then say so in one line starting "Keeping it here:". This preference overrides the default of doing work yourself when in doubt.\n')
+  expect(advice).not.toContain('orchestrator')
+  expect(advice).not.toContain('Decide after reading')
+  expect(advice).toContain('naming its model and effort on the call (gearbox runs what you name: effort medium to xhigh, a review on Opus at least)')
+  expect(advice).toContain('Send follow-ups to it by SendMessage, with "effort: <level>" as its first line.')
   expect(advice).not.toContain('effort "xhigh"')
-  expect(advice).toContain(DIFF_REVIEW)
-  expect(advice).toContain(EFFORT_TOOL)
+  expect(advice).toContain('Review its diff (git diff on the files it reports)')
+  // The brief is one sentence now, not the long list it was.
+  expect(advice).toContain('a brief that stands on its own: the goal, the limits, what is decided here, the files to read, and what to hand back.')
+  expect(advice).not.toContain('what was tried and ruled out')
+  // With the orchestrator on, the note says the person turned it on for this.
+  const orchestrated = handoffNote({ kind: 'deep', gear, code: true }, true, true, 'code · area · depth 2', true)
+  expect(orchestrated).toStartWith("The person turned on gearbox's orchestrator so that work like this goes to an agent: sonnet at xhigh (code · area · depth 2). Hand it off.")
+  expect(orchestrated.slice(orchestrated.indexOf('\n'))).toBe(advice.slice(advice.indexOf('\n')))
   // Work that writes no code is advice too, with no diff to read.
   const answer = handoffNote({ kind: 'deep', gear }, true, true, 'answer · system · depth 2')
-  expect(answer).toStartWith('gearbox suggests: a sonnet agent at xhigh (answer · system · depth 2).')
-  expect(answer).not.toContain(DIFF_REVIEW)
+  expect(answer).toStartWith('The person uses gearbox to route work like this to an agent: sonnet at xhigh (answer · system · depth 2).')
+  expect(answer).not.toContain('Review its diff')
   expect(handoffNote({ kind: 'deep', gear })).not.toContain(DIFF_REVIEW)
-  expect(handoffNote({ kind: 'deep', gear, resume: 'a-1' }, true, true, 'x')).toContain('going on in the sonnet agent a-1, which already holds this work')
+  const back = handoffNote({ kind: 'deep', gear, resume: 'a-1' }, true, true, 'x')
+  expect(back).toContain('the sonnet agent a-1, which already holds this work, at xhigh (x). Hand it off.')
+  expect(back).toContain('by SendMessage to "a-1" (load SendMessage with ToolSearch first if it is not loaded), with "effort: <level>" as its first line')
   // A lane's job, fresh or resumed: advice, and the lane is the one of the model the main conversation names.
   for (const resume of [undefined, 'lane-s']) {
-    const lane = handoffNote({ kind: 'lane', gear, code: true, resume }, true, true, 'code · area · depth 2')
-    expect(lane).toStartWith(`gearbox suggests: the sonnet lane ${resume ? `${resume}, which already holds this work and what it found, ` : ''}at xhigh (code · area · depth 2).`)
-    expect(lane).toContain('the lane of the model you name')
+    const lane = handoffNote({ kind: 'lane', gear, code: true, resume }, true, true, 'code · area · depth 2', true)
+    expect(lane).toStartWith(`The person turned on gearbox's orchestrator so that work like this goes to an agent: the sonnet lane ${resume ? `${resume}, which already holds this work, ` : ''}at xhigh (code · area · depth 2). Hand it off.`)
+    expect(lane).toContain('it becomes the lane of the model you name')
+    expect(lane).toContain('mcp__gearbox__fan')
     expect(lane).not.toContain('gearbox sets the effort of each job')
     expect(lane).not.toContain('refused')
-    expect(lane).toContain(DIFF_REVIEW)
+    expect(lane).toContain('Review its diff')
     expect(handoffNote({ kind: 'lane', gear, resume })).toContain('gearbox sets the effort of each job')
   }
   // A side task that writes code keeps its note, the effort the main conversation's.
   const aside = handoffNote({ kind: 'aside', gear, code: true }, true)
   expect(aside).toContain('the effort you choose')
   expect(aside).toContain(DIFF_REVIEW)
-  // Browser checks, long commands and git chores stay hand-offs.
+  // Browser checks, long commands and git chores stay hand-offs, and so does the orchestrator's lane that only relays a
+  // long command or a git chore: under auto it says only the command itself is held to it, since strict holds nothing.
   for (const kind of ['drive', 'wait', 'chore'] as const) expect(handoffNote({ kind, gear: { model: 'haiku', effort: 'low' } }, true)).toStartWith('gearbox handoff')
+  for (const [relay, what] of [['wait', 'long command'], ['chore', 'git chore']] as const)
+    for (const resume of [undefined, 'lane-h']) {
+      const lane = handoffNote({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, relay, resume }, true, true, 'x', true)
+      expect(lane).toStartWith('gearbox handoff, lane')
+      expect(lane).toContain(`The ${what} itself is refused here: it is the lane's.`)
+      expect(lane).not.toContain('edits, commands and more reads are refused')
+      // With a fixed coding effort it reads as any lane's.
+      expect(handoffNote({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, relay, resume })).toBe(handoffNote({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, resume }))
+    }
+})
+
+test('the advice is noticeably shorter than the 0.23.1 notes it replaces', () => {
+  const gear = { model: 'opus', effort: 'high' } as const
+  // The lengths of the 0.23.1 deep and fresh-lane advice for this hand-off, code and all.
+  for (const [h, was] of [[{ kind: 'deep', gear, code: true }, 1433], [{ kind: 'lane', gear, code: true }, 1563]] as const) {
+    const now = handoffNote(h, true, true, 'code · system · depth 2', true)
+    expect(now.length).toBeLessThan(was * 0.7)
+  }
+})
+
+test('the reason the main conversation gives for keeping advised work: its "Keeping it here:" line, emphasis and all, 200 characters at most', () => {
+  expect(keptReason('Keeping it here: a one-line rename in two files.')).toBe('a one-line rename in two files.')
+  expect(keptReason('Read the files first.\n**Keeping it here:** it is three reads and an edit.\nThen…')).toBe('it is three reads and an edit.')
+  expect(keptReason('> keeping it here: the fix is one line')).toBe('the fix is one line')
+  expect(keptReason(`Keeping it here: ${'x'.repeat(300)}`)).toHaveLength(200)
+  // Only a line that starts with it counts, and an empty one says nothing.
+  for (const text of ['I am not keeping it here: an agent takes it.', 'Keeping it here:', '', 'Handing it to an Opus agent.']) expect(keptReason(text)).toBeUndefined()
+  expect(KEPT).toBe('Keeping it here:')
+})
+
+test('a session started as another session’s sub-agent says so in its first prompt; a mention of someone else’s sub-agent does not count', () => {
+  for (const text of [
+    'Act as the test sub-agent for this task. The repo is at /w/app.',
+    'Act as the implementation sub-agent for GAUNTLET-12: build the importer.',
+    'act as a subagent: review the diff of src/quote.ts',
+    'Act as an independent review sub-agent.',
+  ])
+    expect(subagentAsk(text)).toBeDefined()
+  expect(subagentAsk('Act as the test sub-agent for this task…')).toBe('Act as the test sub-agent')
+  for (const text of [
+    'Fix the importer and add tests.',
+    'Act as the reviewer of the sub-agent’s work.',
+    "Act as the reviewer of the sub-agent's work.",
+    'Act as the tech lead. Then start a sub-agent for the tests.',
+    'Act as the person in charge of planning every big release of the sub-agent platform',
+    'Write docs for the sub-agents feature.',
+    `${'Context. '.repeat(40)}Act as the test sub-agent.`,
+  ])
+    expect(subagentAsk(text)).toBeUndefined()
 })
 
 test('with the coding effort auto, a route’s code agents take the main model’s effort, and a fan-out is advice: each part’s gear is a suggestion, and nothing is refused until they start', () => {
@@ -733,14 +794,17 @@ test('with the coding effort auto, a route’s code agents take the main model�
   expect(reply).not.toContain('refused')
   expect(fanReply(parts)).toContain('part 1: orders: add paging: model "sonnet", gearbox runs it at high')
   expect(fanReply(parts)).toContain('Until all 2 have started, edits, commands and more reads are refused here.')
-  const fan = handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts }, true, true, 'code · area · depth 2')
-  expect(fan).toStartWith('gearbox suggests: splitting this request into 2 independent parts, which run at the same time, one agent each (code · area · depth 2). Decide after reading')
-  expect(fan).toContain('1. If you split, start every part in ONE message')
+  // The split is advice whose default is to hand the parts off, as for a single hand-off.
+  const fan = handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts }, true, true, 'code · area · depth 2', true)
+  expect(fan).toStartWith("The person turned on gearbox's orchestrator so that work like this goes to agents: this request splits into 2 independent parts, one agent each, running at the same time (code · area · depth 2). Hand them off. If the parts turn out to need each other's results, give the work to one agent instead. Keep it here only if it turns out to be a few tool calls, and then say so in one line starting \"Keeping it here:\".")
+  expect(fan).not.toContain('split it, give it to one agent, or do it here')
+  expect(fan).toContain('1. Start every part in ONE message')
   expect(fan).toContain('2. review the retry change: model "opus", at medium (a review: Opus at least)')
-  expect(fan).toContain('Name the model and effort on the Agent call')
+  expect(fan).toContain('naming its model and effort on the call')
   expect(fan).toContain('the diff of each part that edits included')
-  expect(fan).toContain(EFFORT_TOOL)
   expect(fan).not.toContain('refused')
+  // A part a lane takes goes by SendMessage, its effort on the first line.
+  expect(handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts: [{ ...parts[0]!, resume: 'lane-s' }, parts[1]!] }, true, true, 'x', true)).toContain('A part a lane takes goes to it by SendMessage, with "effort: <level>" as its first line.')
   expect(handoffNote({ kind: 'fan', gear: parts[0]!.gear, parts })).toContain("gearbox sets each agent's effort. Until all 2 have started")
 })
 
