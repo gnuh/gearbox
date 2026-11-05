@@ -7,14 +7,15 @@ import { BRIEFING, EFFORTS, type FanPart, type Gear, type Handoff, MODELS as LAD
 // The orchestrator's effort: a level, or `auto`, which sets the main conversation's effort per prompt (see orchestratorPlan).
 export type OrchestratorEffort = ModelEffort | 'auto'
 export const ORCHESTRATOR_EFFORTS: readonly OrchestratorEffort[] = ['auto', 'low', 'medium', 'high', 'xhigh']
-// `auto`: on, except in a session on Haiku, which keeps shifting models (see orchestratorOn).
+// `on` orchestrates every session; `auto` is on, except in a session on Haiku, which keeps shifting models (see
+// orchestratorOn); `off` turns it off.
 export type OrchestratorMode = 'auto' | 'on' | 'off'
 export const ORCHESTRATOR_MODES: readonly OrchestratorMode[] = ['auto', 'on', 'off']
 export type OrchestratorSettings = { orchestrator: OrchestratorMode; orchestrator_model: 'haiku' | 'sonnet' | 'opus'; orchestrator_effort: OrchestratorEffort; orchestrator_agents: number }
 
-// The orchestrator is on unless the person turns it off (or the session is on Haiku, see orchestratorOn), and the main
-// conversation then runs on Opus at `auto` effort, unless the person picks another.
-export const ORCHESTRATOR: { mode: OrchestratorMode; model: 'opus'; effort: OrchestratorEffort } = { mode: 'auto', model: 'opus', effort: 'auto' }
+// The orchestrator is on, in every session, Haiku ones included, unless the person turns it off or picks `auto`
+// (see orchestratorOn), and the main conversation then runs on Opus at `auto` effort, unless the person picks another.
+export const ORCHESTRATOR: { mode: OrchestratorMode; model: 'opus'; effort: OrchestratorEffort } = { mode: 'on', model: 'opus', effort: 'auto' }
 const MODELS = ['haiku', 'sonnet', 'opus'] as const
 // How many agents a request may fan out to at once: 1 to 6, 6 unless the person picks another; 1 is no fan-out.
 export const AGENTS = 6
@@ -23,20 +24,18 @@ const agentsFrom = (v: unknown): number => {
   return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 6 ? n : AGENTS
 }
 
-// What /gearbox stored for the orchestrator: on, off or auto (a boolean is what an older version stored: true is on,
-// false is off). Only the person puts a value there, so it is always theirs.
-const storedMode = (v: unknown): OrchestratorMode | undefined => (v === true ? 'on' : v === false ? 'off' : ORCHESTRATOR_MODES.includes(v as OrchestratorMode) ? (v as OrchestratorMode) : undefined)
-// The plugin option is a boolean whose default is true, and Claude Code passes that default in as the option, so true
-// cannot be told from the person's own true: it means the default, `auto`. Only false, which differs from the default, is
-// the person's word.
-const optionMode = (v: unknown): OrchestratorMode => (v === false ? 'off' : ORCHESTRATOR.mode)
+// What /gearbox stored for the orchestrator, or the plugin option says: on, off or auto (a boolean is what an older
+// version stored, and what the manifest's option is: true is on, false is off). The manifest's default, true, is the
+// default mode, `on`, so Claude Code passing it in changes nothing; an `auto` is always the person's word, and nothing
+// reads it as unset.
+const modeOf = (v: unknown): OrchestratorMode | undefined => (v === true ? 'on' : v === false ? 'off' : ORCHESTRATOR_MODES.includes(v as OrchestratorMode) ? (v as OrchestratorMode) : undefined)
 
-// Whether the orchestrator runs the main conversation: when the person set it on with /gearbox, and with `auto` (the
-// default) unless the session is on Haiku, whose person started there to shift models cheaply.
+// Whether the orchestrator runs the main conversation: with `on` (the default) in every session, and with `auto` unless
+// the session is on Haiku, whose person started there to shift models cheaply.
 export const orchestratorOn = (mode: OrchestratorMode, haiku: boolean): boolean => mode === 'on' || (mode === 'auto' && !haiku)
 
 // `options` are the plugin's, `stored` what /gearbox stored, which wins.
-export const orchestratorFrom = (options: Record<string, unknown>, stored: Record<string, unknown> = {}): OrchestratorSettings => orchestratorOf({ ...options, ...stored }, storedMode(stored.orchestrator) ?? optionMode(options.orchestrator))
+export const orchestratorFrom = (options: Record<string, unknown>, stored: Record<string, unknown> = {}): OrchestratorSettings => orchestratorOf({ ...options, ...stored }, modeOf(stored.orchestrator) ?? modeOf(options.orchestrator) ?? ORCHESTRATOR.mode)
 const orchestratorOf = (o: Record<string, unknown>, mode: OrchestratorMode): OrchestratorSettings => ({
   orchestrator: mode,
   orchestrator_model: MODELS.includes(o.orchestrator_model as never) ? (o.orchestrator_model as OrchestratorSettings['orchestrator_model']) : ORCHESTRATOR.model,

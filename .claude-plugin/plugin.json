@@ -1,7 +1,7 @@
 {
   "name": "gearbox",
-  "version": "0.24.0",
-  "description": "Per-prompt model and effort for Claude Code. By default an orchestrator keeps the main conversation on Opus to plan, brief and review, runs the work in one long-lived agent per model and splits independent parts across up to 6 agents at once; browser checks, long commands and git chores go to cheap subagents; a session started on Haiku keeps shifting models instead; and a live readout shows every agent's model.",
+  "version": "0.24.1",
+  "description": "Per-prompt model and effort for Claude Code. By default an orchestrator keeps the main conversation on Opus to plan, brief and review, runs the work in one long-lived agent per model and splits independent parts across up to 6 agents at once; browser checks, long commands and git chores go to cheap subagents; and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
   },
@@ -11,14 +11,14 @@
     "code_model": {
       "type": "string",
       "title": "Coding model",
-      "description": "The model all code runs on. auto (the default) lets the rules pick it, as for any work: the session's model, handed up to a stronger one when the work calls for it. sonnet, opus or fable fix it: every code turn, code-writing subagent and go-ahead to write code runs on exactly that model at your coding effort, in a subagent when the conversation runs another model, save a mechanical edit at one spot, which stays in the conversation (Fable always in a subagent, without asking first); other work keeps the rules. Also settable with /gearbox model.",
+      "description": "The model all code runs on. sonnet (the default), opus or fable fix it: every code turn, code-writing subagent and go-ahead to write code runs on exactly that model at your coding effort, in a subagent when the conversation runs another model, save a mechanical edit at one spot, which stays in the conversation (Fable always in a subagent, without asking first); other work keeps the rules. auto lets the rules pick it, as for any work: the session's model, handed up to a stronger one when the work calls for it. Also settable with /gearbox model.",
       "options": [
         "auto",
         "sonnet",
         "opus",
         "fable"
       ],
-      "default": "auto"
+      "default": "sonnet"
     },
     "code_effort": {
       "type": "string",
@@ -56,7 +56,7 @@
     "orchestrator": {
       "type": "boolean",
       "title": "Orchestrator",
-      "description": "The main conversation only plans, briefs and reviews; the work runs in lanes, one long-lived subagent per model, each started at the top effort and lowered per job. On by default, except in a session started on Haiku, which keeps shifting models (/gearbox orchestrator on orchestrates those too). Also settable with /gearbox orchestrator.",
+      "description": "The main conversation only plans, briefs and reviews; the work runs in lanes, one long-lived subagent per model, each started at the top effort and lowered per job. On by default, in every session, Haiku ones included; /gearbox orchestrator auto leaves a session started on Haiku shifting models instead, and off turns it off. Also settable with /gearbox orchestrator.",
       "default": true
     },
     "orchestrator_model": {

@@ -54,18 +54,20 @@ Work as usual. The commands you will use:
 
 | `/gearbox …` | Default |
 |---|---|
-| `orchestrator auto\|on\|off` | `auto` (on, except Haiku sessions) |
+| `orchestrator auto\|on\|off` | `on` (`auto` is on, except Haiku sessions) |
 | `orchestrator-model haiku\|sonnet\|opus` | `opus` |
 | `orchestrator-effort auto\|low\|medium\|high\|xhigh` | `auto` |
 | `orchestrator-agents 1-6` | `6` |
-| `model auto\|sonnet\|opus\|fable` (coding model) | `auto` |
+| `model auto\|sonnet\|opus\|fable` (coding model) | `sonnet` |
 | `effort medium\|high\|xhigh\|auto` (coding effort) | `xhigh` |
 | `navigator sonnet\|haiku` | `sonnet` |
 | `log off\|on\|full` | `off` |
 
 Hand-offs are always strict and your own hooks always run for subagents. Neither is a setting.
 
-**Coming from 0.23 or earlier:** the orchestrator is now on unless you set it. Turn it off with `/gearbox orchestrator off`. A session started on Haiku keeps shifting models instead (`/gearbox orchestrator on` orchestrates it too).
+**Coming from 0.24.0:** the coding model is now `sonnet` and the orchestrator `on` unless you set them, so code runs on Sonnet and a session started on Haiku is orchestrated too. `/gearbox model auto` lets the rules pick the code model again, and `/gearbox orchestrator auto` leaves a Haiku session shifting models instead.
+
+**Coming from 0.23 or earlier:** the orchestrator is now on unless you set it. Turn it off with `/gearbox orchestrator off`. A session started on Haiku is orchestrated too (`/gearbox orchestrator auto` leaves it shifting models instead).
 
 <details>
 <summary>How a turn flows</summary>

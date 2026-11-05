@@ -1,12 +1,13 @@
 import { expect, test as fresh } from 'claude-code/testing'
 
-// A new install has the orchestrator on, on Opus, with up to 6 agents. These tests are written for a plain session, and
-// for a Sonnet orchestrator with up to 3 agents when they turn it on, so each starts from those unless its own options
-// say otherwise; `fresh` is the test with the defaults a new install gets.
+// A new install has the orchestrator on, on Opus, with up to 6 agents, and code fixed to Sonnet. These tests are written
+// for a plain session whose rules pick code's model, and for a Sonnet orchestrator with up to 3 agents when they turn
+// it on, so each starts from those unless its own options say otherwise; `fresh` is the test with the defaults a new
+// install gets.
 const test: typeof fresh = ((name: string, ...rest: any[]) => {
   const run = rest.pop()
   const opts = rest[0] ?? {}
-  return fresh(name, { ...opts, options: { orchestrator: false, orchestrator_model: 'sonnet', orchestrator_agents: 3, ...opts.options } }, run)
+  return fresh(name, { ...opts, options: { code_model: 'auto', orchestrator: false, orchestrator_model: 'sonnet', orchestrator_agents: 3, ...opts.options } }, run)
 }) as typeof fresh
 
 // The test runtime has timers; the hooks' own environment, whose types these files use, does not.
@@ -673,19 +674,19 @@ test('a model you name for the browser step is used only if your own words say i
 })
 
 // A new install: nothing stored and no plugin option set (`fresh` is the test without the wrapper's starting options).
-fresh('a new install has the orchestrator on, on Opus at auto, up to 6 agents, and codes at xhigh on the rules’ model; what the person stored wins over each', async ($: any, on) => {
-  const r = rig(on, [{ reach: 'area', depth: 1, mode: 'code' }, { reach: 'system', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
+fresh('a new install has the orchestrator on, on Opus at auto, up to 6 agents, and codes at xhigh on Sonnet; what the person stored wins over each', async ($: any, on) => {
+  const r = rig(on, [{ reach: 'point', depth: 0, mode: 'code' }, { reach: 'system', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
   const status = async () => (await $.command.run({ command: 'gearbox', args: '' })).text
-  expect(await status()).toContain('coding model auto · coding effort xhigh · navigator sonnet · orchestrator auto, on (opus·auto, up to 6 agents at once); a Haiku session shifts models instead · log off')
-  // The session is already on the orchestrator's model: no model change, and small code stays here at the coding effort.
+  expect(await status()).toContain('coding model sonnet · coding effort xhigh · navigator sonnet · orchestrator on (opus·auto, up to 6 agents at once) · log off')
+  // The session is already on the orchestrator's model: no model change, and a mechanical edit at one spot stays here at the coding effort.
   await sayOn($, 'claude-opus-5-5', 'rename the discount label in the cart')
   expect(r.steps).toEqual(['opus·xhigh'])
   expect(r.notes[0]).toEqual([])
-  // Work that needs more goes to a lane, and the main conversation does not write the code itself.
+  // Other code goes to the lane of the coding model, Sonnet, and the main conversation does not write it itself.
   await sayOn($, 'claude-opus-5-5', 'rework how discounts are applied across the checkout, the cart and the invoices')
-  expect(r.notes[1]![0]).toContain('this work is the opus lane')
+  expect(r.notes[1]![0]).toContain('this work is the sonnet lane')
   const refused = JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'cart.ts', old_string: 'a', new_string: 'b' }))
-  expect(refused).toContain('owed to an opus agent')
+  expect(refused).toContain('owed to an sonnet agent')
   expect(refused).not.toContain('strict')
   // What was stored or set stays: each fallback is only a fallback.
   r.kv.set('settings', { orchestrator: false })
@@ -697,22 +698,77 @@ fresh('a new install has the orchestrator on, on Opus at auto, up to 6 agents, a
   expect(await status()).toContain('orchestrator on (opus·auto, up to 6 agents at once) · log off')
 })
 
-// Orchestrator `auto`, the default: on, except in a session on Haiku, which keeps shifting models. Only what /gearbox
-// stored (`orchestrator on`) orchestrates a Haiku session. The plugin option is a boolean whose default, true, Claude
-// Code passes in as the option, so a true option cannot be told from the default: it is `auto`; only false is the
-// person's word.
+// The coding model's default is sonnet, and `auto` is the person's word, never read as unset: a stored `auto` wins over the
+// manifest's default (which Claude Code passes in as the plugin option), and so does a plugin option of `auto`.
+fresh('the coding model starts as sonnet; an explicit /gearbox model auto, a stored auto and a plugin option of auto are kept, and a value it does not take falls back to sonnet', async ($: any, on) => {
+  const r = rig(on, [], { session: 'claude-opus-5-5' })
+  const status = async () => (await $.command.run({ command: 'gearbox', args: '' })).text
+  expect(r.kv.get('settings')).toBeUndefined()
+  expect(await status()).toContain('coding model sonnet · ')
+  // The settings panel marks sonnet, and a press on auto stores it and moves the mark.
+  const pane = await $.ui.mount({ ...SETTINGS_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'model-sonnet' }))?.props.label).toBe('sonnet ✓')
+  await pane.press({ key: 'model-auto' })
+  expect(r.kv.get('settings')).toEqual({ code_model: 'auto' })
+  expect((await pane.find({ key: 'model-auto' }))?.props.label).toBe('auto ✓')
+  r.kv.delete('settings')
+  expect((await $.command.run({ command: 'gearbox', args: 'model auto' })).text).toContain('coding model auto · ')
+  expect(r.kv.get('settings')).toEqual({ code_model: 'auto' })
+  expect(await status()).toContain('coding model auto · ')
+  expect((await $.command.run({ command: 'gearbox', args: 'model sonnet' })).text).toContain('coding model sonnet · ')
+  expect(r.kv.get('settings')).toEqual({ code_model: 'sonnet' })
+  r.kv.set('settings', { code_model: 'auto' })
+  expect(await status()).toContain('coding model auto · ')
+  r.kv.set('settings', { code_model: 'gpt' })
+  expect(await status()).toContain('coding model sonnet · ')
+})
+
+fresh('the coding model: a plugin option of auto is the person’s word, even though the default is sonnet; what /gearbox stored wins over it', { options: { code_model: 'auto' } }, async ($: any, on) => {
+  const r = rig(on, [], { session: 'claude-opus-5-5' })
+  const status = async () => (await $.command.run({ command: 'gearbox', args: '' })).text
+  expect(await status()).toContain('coding model auto · ')
+  r.kv.set('settings', { code_model: 'opus' })
+  expect(await status()).toContain('coding model opus · ')
+})
+
+// Orchestrator `on`, the default, orchestrates every session, Haiku ones included. `auto` (the person's word, which no
+// default is told from) is on, except in a session on Haiku, which keeps shifting models. The plugin option is a boolean
+// whose default, true, Claude Code passes in: it is the default, `on`; false is off.
 const SYSTEM_CODE = { reach: 'system', depth: 2, mode: 'code' } as const
-const LANE_NOTE = 'this work is the opus lane'
+const LANE_NOTE = 'this work is the sonnet lane'
 const WORK = 'rework how discounts are applied across the checkout, the cart and the invoices'
-fresh('orchestrator auto, a session on Haiku with the default settings: shift mode, no orchestrator; the status and the panel say so', async ($: any, on) => {
+fresh('orchestrator on, a fresh install in a session on Haiku with the default settings: the orchestrator runs it, no shift mode; the status and the panel say so', async ($: any, on) => {
   const r = rig(on, [SYSTEM_CODE], { session: 'claude-haiku-5-5' })
   on('tool.call', () => ({ result: '' }))
+  const status = (await $.command.run({ command: 'gearbox', args: '' })).text
+  expect(status).toContain('orchestrating on opus')
+  expect(status).not.toContain('shifting models')
+  expect(status).toContain('orchestrator on (opus·auto, up to 6 agents at once)')
+  expect(r.kv.get('settings')).toBeUndefined()
+  await say($, WORK)
+  // The orchestrator takes the main conversation to Opus, hands the code to the lane of the coding model, and refuses the edit here.
+  expect(r.steps).toEqual(['opus·high'])
+  expect(r.notes[0]![0]).toContain(LANE_NOTE)
+  expect(JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'cart.ts', old_string: 'a', new_string: 'b' }))).toContain('owed to an sonnet agent')
+  expect(JSON.stringify(await $.tool.call({ tool: 'mcp__gearbox__fan', parts: [{ what: 'a', mode: 'code', depth: 1 }, { what: 'b', mode: 'code', depth: 1 }] }))).not.toContain('the orchestrator is off')
+  // The settings panel marks on, and says nothing of auto.
+  const pane = await $.ui.mount({ ...SETTINGS_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'orchestrator-on' }))?.props.label).toBe('on ✓')
+  expect(JSON.stringify(await pane.findAll({ type: 'Text' }))).not.toContain('Orchestrator auto')
+})
+
+fresh('orchestrator auto, a session on Haiku: shift mode, no orchestrator; the status and the panel say so', async ($: any, on) => {
+  const r = rig(on, [SYSTEM_CODE], { session: 'claude-haiku-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  // Auto is the person's word: a stored auto is kept though the default is on.
+  expect((await $.command.run({ command: 'gearbox', args: 'orchestrator auto' })).text).toContain('orchestrator auto, off in this Haiku session')
+  expect(r.kv.get('settings')).toEqual({ orchestrator: 'auto' })
   const status = (await $.command.run({ command: 'gearbox', args: '' })).text
   expect(status).toContain('shifting models')
   expect(status).toContain('orchestrator auto, off in this Haiku session, which shifts models; /gearbox orchestrator on uses it here (opus·auto, up to 6 agents at once)')
   await say($, WORK)
   // The main model rises to the work's model and writes the code itself: no lane, nothing refused.
-  expect(r.steps).toEqual(['opus·xhigh'])
+  expect(r.steps).toEqual(['sonnet·xhigh'])
   expect(r.notes[0]).toEqual([])
   expect(JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'cart.ts', old_string: 'a', new_string: 'b' }))).not.toContain('gearbox')
   // The fan tool knows the orchestrator is off here.
@@ -729,22 +785,23 @@ fresh('orchestrator auto, a session on Haiku with the default settings: shift mo
 // prompt's session too, for 174 requests in one session). So shifting a Haiku session up must not make it look like
 // another model: the next prompt is still shift mode, and the orchestrator stays out. This rig answers a request with the
 // model gearbox sent, as the real engine does.
-fresh('orchestrator auto, a Haiku session shifted up to Opus by shift mode on its first prompt is still shift mode on the next: no orchestrator takes over', async ($: any, on) => {
+fresh('orchestrator auto, a Haiku session shifted up (to its coding model, Sonnet) by shift mode on its first prompt is still shift mode on the next: no orchestrator takes over', async ($: any, on) => {
   const r = rig(on, [SYSTEM_CODE, SYSTEM_CODE, SYSTEM_CODE], { session: 'claude-haiku-5-5' })
   on('tool.call', () => ({ result: '' }))
+  await $.command.run({ command: 'gearbox', args: 'orchestrator auto' })
   const status = async () => (await $.command.run({ command: 'gearbox', args: '' })).text
   const edit = async () => JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'cart.ts', old_string: 'a', new_string: 'b' }))
   await say($, WORK)
-  expect(r.steps).toEqual(['opus·xhigh']) // shift mode moved the request up; the session is still on Haiku
+  expect(r.steps).toEqual(['sonnet·xhigh']) // shift mode moved the request up; the session is still on Haiku
   expect(r.notes[0]).toEqual([])
   expect(await status()).toContain('shifting models')
-  expect(await status()).toContain('main model opus')
+  expect(await status()).toContain('main model sonnet')
   expect(await edit()).not.toContain('gearbox')
   // Prompt 2, with two requests (the second after a tool call): still shift mode, still no lane.
   await $.prompt.submit({ text: WORK, asUser: true })
   await stepOnce($)
   await stepOnce($, { index: 1 })
-  expect(r.steps).toEqual(['opus·xhigh', 'opus·xhigh', 'opus·xhigh'])
+  expect(r.steps).toEqual(['sonnet·xhigh', 'sonnet·xhigh', 'sonnet·xhigh'])
   expect(r.notes[1]).toEqual([])
   const later = await status()
   expect(later).toContain('shifting models')
@@ -755,30 +812,37 @@ fresh('orchestrator auto, a Haiku session shifted up to Opus by shift mode on it
   // And a third, a turn later.
   await say($, WORK)
   expect(r.notes[2]).toEqual([])
-  expect(r.steps.at(-1)).toBe('opus·xhigh')
+  expect(r.steps.at(-1)).toBe('sonnet·xhigh')
 })
 
-fresh('orchestrator auto, a session on Haiku after an explicit /gearbox orchestrator on: the orchestrator runs it; auto brings the shift back', async ($: any, on) => {
+fresh('orchestrator, a session on Haiku: on by default; auto brings the shift back and on orchestrates it again', async ($: any, on) => {
   const r = rig(on, [SYSTEM_CODE], { session: 'claude-haiku-5-5' })
   on('tool.call', () => ({ result: '' }))
+  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('orchestrating on opus')
+  expect((await $.command.run({ command: 'gearbox', args: 'orchestrator auto' })).text).toContain('orchestrator auto, off in this Haiku session')
+  expect(r.kv.get('settings')).toEqual({ orchestrator: 'auto' })
+  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('shifting models')
   expect((await $.command.run({ command: 'gearbox', args: 'orchestrator on' })).text).toContain('orchestrator on (opus·auto, up to 6 agents at once)')
   expect(r.kv.get('settings')).toEqual({ orchestrator: 'on' })
   expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('orchestrating on opus')
   await say($, WORK)
   expect(r.notes[0]![0]).toContain(LANE_NOTE)
-  expect(JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'cart.ts', old_string: 'a', new_string: 'b' }))).toContain('owed to an opus agent')
-  expect((await $.command.run({ command: 'gearbox', args: 'orchestrator auto' })).text).toContain('orchestrator auto, off in this Haiku session')
-  expect(r.kv.get('settings')).toEqual({ orchestrator: 'auto' })
+  expect(JSON.stringify(await $.tool.call({ tool: 'Edit', file_path: 'cart.ts', old_string: 'a', new_string: 'b' }))).toContain('owed to an sonnet agent')
 })
 
-fresh('orchestrator: a plugin option of true is the default and shifts a Haiku session; what /gearbox stored wins', { options: { orchestrator: true } }, async ($: any, on) => {
-  const r = rig(on, [SYSTEM_CODE, SYSTEM_CODE], { session: 'claude-haiku-5-5' })
+fresh('orchestrator: a plugin option of true is the default, on, and orchestrates a Haiku session; what /gearbox stored wins, an auto included', { options: { orchestrator: true } }, async ($: any, on) => {
+  const r = rig(on, [SYSTEM_CODE, SYSTEM_CODE, SYSTEM_CODE], { session: 'claude-haiku-5-5' })
+  on('tool.call', () => ({ result: '' }))
   await say($, WORK)
-  expect(r.notes[0]).toEqual([])
-  expect(r.steps).toEqual(['opus·xhigh'])
+  expect(r.notes[0]![0]).toContain(LANE_NOTE)
+  expect(r.steps).toEqual(['opus·high'])
   r.kv.set('settings', { orchestrator: true }) // the boolean an older version stored: the person's on
   await say($, WORK)
   expect(r.notes[1]![0]).toContain(LANE_NOTE)
+  r.kv.set('settings', { orchestrator: 'auto' }) // the person's auto, told apart from the option's default
+  expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('shifting models')
+  await say($, WORK)
+  expect(r.notes[2]).toEqual([])
 })
 
 fresh('orchestrator: a plugin option of false is off, in every session, until /gearbox says otherwise', { options: { orchestrator: false } }, async ($: any, on) => {
@@ -791,13 +855,17 @@ fresh('orchestrator: a plugin option of false is off, in every session, until /g
 })
 
 for (const session of ['claude-opus-5-5', 'claude-sonnet-5-5']) {
-  fresh(`orchestrator auto, a session on ${session.split('-')[1]} with the default settings: the orchestrator runs it, on Opus`, async ($: any, on) => {
+  fresh(`orchestrator on, a session on ${session.split('-')[1]} with the default settings: the orchestrator runs it, on Opus`, async ($: any, on) => {
     const r = rig(on, [SYSTEM_CODE], { session })
     expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('orchestrating on opus')
     await sayOn($, session, WORK)
     expect(r.notes[0]![0]).toContain(LANE_NOTE)
     expect(r.steps).toEqual(['opus·high'])
     const pane = await $.ui.mount({ ...SETTINGS_PANE, surface: 'terminal' })
+    expect((await pane.find({ key: 'orchestrator-on' }))?.props.label).toBe('on ✓')
+    // Only a chosen auto explains itself.
+    expect(JSON.stringify(await pane.findAll({ type: 'Text' }))).not.toContain('Orchestrator auto')
+    await $.command.run({ command: 'gearbox', args: 'orchestrator auto' })
     expect(JSON.stringify(await pane.findAll({ type: 'Text' }))).toContain('Orchestrator auto: on here. A session on Haiku shifts models instead')
   })
 }

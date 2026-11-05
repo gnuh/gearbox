@@ -10,7 +10,7 @@
     {
       "name": "gearbox",
       "source": "./",
-      "description": "Per-prompt model and effort for Claude Code. By default an orchestrator keeps the main conversation on Opus to plan, brief and review, runs the work in one long-lived agent per model and splits independent parts across up to 6 agents at once; browser checks, long commands and git chores go to cheap subagents; a session started on Haiku keeps shifting models instead; and a live readout shows every agent's model."
+      "description": "Per-prompt model and effort for Claude Code. By default an orchestrator keeps the main conversation on Opus to plan, brief and review, runs the work in one long-lived agent per model and splits independent parts across up to 6 agents at once; browser checks, long commands and git chores go to cheap subagents; and a live readout shows every agent's model."
     }
   ]
 }

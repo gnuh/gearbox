@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, KEPT, keptReason, subagentAsk, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
+import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, KEPT, keptReason, subagentAsk, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODEL, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -211,6 +211,7 @@ test('handing up is always on (the escalate setting is gone): subtle questions, 
 
 test('a fixed coding model: code’s model is exactly it, whatever its reach or care; its effort, other work and the person’s ask are as before', () => {
   expect(CODE_MODELS).toEqual(['auto', 'sonnet', 'opus', 'fable'])
+  expect(CODE_MODEL).toBe('sonnet') // what a new install fixes it to; auto is the person's word
   expect(pinnedModel('auto')).toBeUndefined()
   expect(pinnedModel(undefined)).toBeUndefined()
   expect(pinnedModel('opus')).toBe('opus')
