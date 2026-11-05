@@ -306,8 +306,11 @@ export const route = (phases: Phase[], main: Model, standing: ModelEffort, costl
 export const escalated = (s: Step) => s.by === 'agent' && (s.mode === 'code' || s.mode === 'answer' || s.mode === 'analyze')
 
 // What a subagent taking over the main model's work needs: it sees nothing of this conversation.
-const BRIEF =
-  'a brief that stands on its own: where the project is, the goal, the limits, what is already decided here, what was tried and ruled out, and what the person asked for along the way; point it at files rather than pasting them'
+// The skills Claude Code lists to a handed-off agent are the agent's to load, and most subagent Skill calls (33 of 40 in
+// the author's logs) were of skills the brief named. So a brief names the ones that apply. gearbox reads no skill list:
+// the main conversation sees it and says which.
+const SKILLS = 'any listed skills that apply (have the agent load them with the Skill tool)'
+const BRIEF = `a brief that stands on its own: where the project is, the goal, the limits, what is already decided here, what was tried and ruled out, what the person asked for along the way, and ${SKILLS}; point it at files rather than pasting them`
 // Such a subagent starts as a plain Agent, so gearbox runs it on the gear the work calls for, not a typed agent's own.
 const PLAIN = 'a plain Agent (no subagent_type)'
 
@@ -739,7 +742,7 @@ const KEEP = `Keep it here only if it turns out to be a few tool calls, and then
 // The mechanics, each said once: the call names the agent's gear, the brief stands on its own, a follow-up names its
 // effort on its first line, the report reaches the person by itself, and code that comes back is read as a diff.
 const NAMED = 'naming its model and effort on the call (gearbox runs what you name: effort medium to xhigh, a review on Opus at least)'
-const START = `${PLAIN}, ${NAMED}, with a brief that stands on its own: the goal, the limits, what is decided here, the files to read, and what to hand back`
+const START = `${PLAIN}, ${NAMED}, with a brief that stands on its own: the goal, the limits, what is decided here, the files to read, ${SKILLS}, and what to hand back`
 const EFFORT_FIRST = 'with "effort: <level>" as its first line'
 const REPORTED = 'Its report shows to the person as it comes back: reply with your review, not a copy.'
 const DIFF_BACK = 'Review its diff (git diff on the files it reports), not only its report, and send fixes back to it.'
@@ -761,7 +764,7 @@ const adviceNote = ({ kind, gear, resume, parts, code }: Handoff, why: string, i
   const becomes = lane ? '; it becomes the lane of the model you name' : ''
   const to = resume ? `the ${gear.model} ${lane ? 'lane' : 'agent'} ${resume}, which already holds this work, at ${gear.effort}` : `${lane ? `the ${gear.model} lane` : gear.model} at ${gear.effort}`
   const how = resume
-    ? `To hand off, send it the person's new message, with anything decided here since, by SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded), ${EFFORT_FIRST}. Only if it no longer answers or the work needs another model, start ${START}${becomes}.${lane ? ` ${SPLIT}` : ''}`
+    ? `To hand off, send it the person's new message, with anything decided here since and ${SKILLS}, by SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded), ${EFFORT_FIRST}. Only if it no longer answers or the work needs another model, start ${START}${becomes}.${lane ? ` ${SPLIT}` : ''}`
     : `To hand off, start ${START}${becomes}. Send follow-ups to it by SendMessage, ${EFFORT_FIRST}${lane ? '; if new work splits into independent pieces, call mcp__gearbox__fan first' : ''}.`
   return `${prefers(orchestrated, 'an agent')}: ${to}${reason}. Hand it off. ${KEEP}\n${how} ${REPORTED}${code ? ` ${DIFF_BACK}` : ''}`
 }
@@ -797,16 +800,16 @@ ${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.eff
 2. Start ${agent} with that brief. It runs only that, changes nothing else, and reports what it did with any link, hash or id.
 3. Tell the person the outcome.`
     case 'aside':
-      return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.${coded}`
+      return `gearbox handoff, side task: this looks unrelated to the work so far. If it needs more than a quick edit, start ${agent} with a brief that stands on its own: where the project is, what to achieve, the limits, how to check the result, ${SKILLS}, and anything decided here that applies. Send follow-ups to that same agent with SendMessage. If it turns out to be a quick edit, or part of the earlier work after all, do it here.${coded}`
     case 'lane':
       return resume
-        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} ${jobs}${held} ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
+        ? `gearbox handoff, lane: the ${gear.model} lane ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since and ${SKILLS}, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${BRIEF}. ${SPLIT} ${jobs}${held} ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
         : `gearbox handoff, lane: this work is the ${gear.model} lane's, not yours. Start ${PLAIN} with model "${gear.model}" and ${BRIEF}, and say what to hand back. ${jobs} Send follow-ups to that same agent with SendMessage, unless the new work splits into independent pieces: then call mcp__gearbox__fan first.${held || ' Until it starts, edits, commands and more reads are refused here.'} ${RELAY}${code ? ` ${DIFF_REVIEW}` : ''}`
     case 'fan':
       return fanNote(parts ?? [], chooses, isolate)
     case 'deep':
       return resume
-        ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${effort} and ${BRIEF}. ${RELAY}${coded}`
+        ? `gearbox handoff, deep work goes on: the ${gear.model} agent ${resume} already holds this work and what it found. Send it the person's new message, with anything decided here since and ${SKILLS}, using SendMessage to "${resume}" (load SendMessage with ToolSearch first if it is not loaded). Start no new agent unless that one no longer answers; then start ${PLAIN} with model "${gear.model}" and ${effort} and ${BRIEF}. ${RELAY}${coded}`
         : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and ${effort} and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage. ${RELAY}${coded}`
   }
 }
@@ -858,7 +861,7 @@ const fanNote = (parts: readonly FanPart[], chooses = false, isolate = true, why
   if (chooses)
     return [
       `${prefers(orchestrated, 'agents')}: this request splits into ${parts.length} independent parts, one agent each, running at the same time${why ? ` (${why})` : ''}. Hand them off. If the parts turn out to need each other's results, give the work to one agent instead. ${KEEP}`,
-      `1. Start every part in ONE message: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, ${NAMED}, and a brief for that part alone: its own files, the files the other parts change, and what to hand back.${parts.some(p => p.resume) ? ` A part a lane takes goes to it by SendMessage, ${EFFORT_FIRST}.` : ''} Do not start one and wait for it before the next.${worktrees}`,
+      `1. Start every part in ONE message: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, ${NAMED}, and a brief for that part alone: its own files, the files the other parts change, ${SKILLS}, and what to hand back.${parts.some(p => p.resume) ? ` A part a lane takes goes to it by SendMessage, ${EFFORT_FIRST}.` : ''} Do not start one and wait for it before the next.${worktrees}`,
       ...each,
       `2. Wait for every result. Review each${edits ? ', the diff of each part that edits included' : ''}, and reconcile them.${merge} Run the combined check (tests, build) here, or through a Haiku agent when it is a long command. Reply with the reconciled outcome and your review, not a copy of the reports.`,
     ].join('\n')
