@@ -8,31 +8,33 @@ const MAIN: Gear = { model: 'sonnet', effort: 'medium' }
 const part = (what: string, mode: Part['mode'], depth: Part['depth'], files: string[] = []): Part => ({ what, mode, depth, files })
 const whats = (groups: Part[][]) => groups.map(g => g.map(p => p.what))
 
-test('a new install has the orchestrator on auto, on Opus at an effort of auto, with up to 6 agents', () => {
-  expect(orchestratorFrom({})).toEqual({ orchestrator: 'auto', orchestrator_model: 'opus', orchestrator_effort: 'auto', orchestrator_agents: 6 })
-  expect(ORCHESTRATOR).toEqual({ mode: 'auto', model: 'opus', effort: 'auto' })
+test('a new install has the orchestrator on, on Opus at an effort of auto, with up to 6 agents', () => {
+  expect(orchestratorFrom({})).toEqual({ orchestrator: 'on', orchestrator_model: 'opus', orchestrator_effort: 'auto', orchestrator_agents: 6 })
+  expect(ORCHESTRATOR).toEqual({ mode: 'on', model: 'opus', effort: 'auto' })
   expect(ORCHESTRATOR_EFFORTS).toEqual(['auto', 'low', 'medium', 'high', 'xhigh'])
   // What the person set stays: off, another model, another effort, another number of agents.
   expect(orchestratorFrom({}, { orchestrator: 'on', orchestrator_model: 'sonnet', orchestrator_effort: 'high' })).toEqual({ orchestrator: 'on', orchestrator_model: 'sonnet', orchestrator_effort: 'high', orchestrator_agents: 6 })
   expect(orchestratorFrom({ orchestrator_model: 'haiku', orchestrator_agents: 2 }, { orchestrator: 'off' })).toEqual({ orchestrator: 'off', orchestrator_model: 'haiku', orchestrator_effort: 'auto', orchestrator_agents: 2 })
-  // The plugin option is a boolean with a default of true, which Claude Code passes in: true is the default, `auto`,
-  // and only false is the person's word. What /gearbox stored is always the person's, and wins: on, off or auto, or the
+  // The plugin option is a boolean with a default of true, which Claude Code passes in: true is on, the default mode,
+  // and false is off. What /gearbox stored is the person's, and wins: on, off or auto (never read as unset), or the
   // boolean an older version stored (true is on, false is off).
-  expect(orchestratorFrom({ orchestrator: true }).orchestrator).toBe('auto')
+  expect(orchestratorFrom({ orchestrator: true }).orchestrator).toBe('on')
   expect(orchestratorFrom({ orchestrator: false }).orchestrator).toBe('off')
   expect(orchestratorFrom({ orchestrator: false }, { orchestrator: 'on' }).orchestrator).toBe('on')
   expect(orchestratorFrom({ orchestrator: false }, { orchestrator: 'auto' }).orchestrator).toBe('auto')
+  expect(orchestratorFrom({ orchestrator: true }, { orchestrator: 'auto' }).orchestrator).toBe('auto') // the default is on, so a stored auto is told apart from it
+  expect(orchestratorFrom({}, { orchestrator: 'auto' }).orchestrator).toBe('auto')
   expect(orchestratorFrom({ orchestrator: true }, { orchestrator: true }).orchestrator).toBe('on')
   expect(orchestratorFrom({ orchestrator: true }, { orchestrator: false }).orchestrator).toBe('off')
   // Values it does not take fall back to the defaults.
-  expect(orchestratorFrom({ orchestrator: 'yes', orchestrator_model: 'fable', orchestrator_effort: 'huge' }, { orchestrator: 'sometimes' })).toEqual({ orchestrator: 'auto', orchestrator_model: 'opus', orchestrator_effort: 'auto', orchestrator_agents: 6 })
+  expect(orchestratorFrom({ orchestrator: 'yes', orchestrator_model: 'fable', orchestrator_effort: 'huge' }, { orchestrator: 'sometimes' })).toEqual({ orchestrator: 'on', orchestrator_model: 'opus', orchestrator_effort: 'auto', orchestrator_agents: 6 })
   // max is no longer offered: a stored or plugin max is xhigh.
   expect(orchestratorFrom({ orchestrator_effort: 'max' }).orchestrator_effort).toBe('xhigh')
 })
 
-test('the orchestrator runs when set on, and on auto unless the session is on Haiku, which shifts models', () => {
+test('the orchestrator runs when set on, Haiku sessions included, and on auto unless the session is on Haiku, which shifts models', () => {
   expect(orchestratorOn('on', false)).toBe(true)
-  expect(orchestratorOn('on', true)).toBe(true) // the person's own word, a Haiku session included
+  expect(orchestratorOn('on', true)).toBe(true) // the default, a Haiku session included
   expect(orchestratorOn('auto', false)).toBe(true)
   expect(orchestratorOn('auto', true)).toBe(false)
   expect(orchestratorOn('off', false)).toBe(false)

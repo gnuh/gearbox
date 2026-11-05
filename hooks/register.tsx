@@ -761,8 +761,8 @@ export const register: Register = (on, options) => {
   let subagent: string | null | undefined
   let launched: LaunchEffort | undefined
   // Whether the session runs on Haiku, as last seen (each prompt, request and command reads it). With the orchestrator
-  // on `auto`, a session on Haiku is not orchestrated: whoever starts there shifts models, to save money, and only `on`
-  // (the person's own word) overrides that.
+  // on `auto` (the person's choice), a session on Haiku is not orchestrated: whoever starts there shifts models, to save
+  // money. With `on`, the default, it is orchestrated like any other.
   let haikuSession = false
   const orchestratorRuns = () => orchestratorOn(orchestrator, haikuSession)
   // The orchestrator is on and this session is not someone's sub-agent: the main conversation runs on the orchestrator.
