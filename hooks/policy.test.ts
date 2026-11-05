@@ -691,7 +691,7 @@ test('a code hand-off asks for its diff to be reviewed; with the coding effort a
   expect(advice).not.toContain('effort "xhigh"')
   expect(advice).toContain('Review its diff (git diff on the files it reports)')
   // The brief is one sentence now, not the long list it was.
-  expect(advice).toContain('a brief that stands on its own: the goal, the limits, what is decided here, the files to read, and what to hand back.')
+  expect(advice).toContain('a brief that stands on its own: the goal, the limits, what is decided here, the files to read, any listed skills that apply (have the agent load them with the Skill tool), and what to hand back.')
   expect(advice).not.toContain('what was tried and ruled out')
   // With the orchestrator on, the note says the person turned it on for this.
   const orchestrated = handoffNote({ kind: 'deep', gear, code: true }, true, true, 'code · area · depth 2', true)
@@ -741,6 +741,27 @@ test('the advice is noticeably shorter than the 0.23.1 notes it replaces', () =>
     const now = handoffNote(h, true, true, 'code · system · depth 2', true)
     expect(now.length).toBeLessThan(was * 0.7)
   }
+})
+
+test('a brief names any listed skills that apply: new and follow-up hand-offs to a lane, deep work, a side task, a fan-out, advice and a route step; a command, a git chore and a browser check carry no such clause', () => {
+  const gear = { model: 'sonnet', effort: 'high' } as const
+  const part = (what: string): FanPart => ({ what, gear, edits: false })
+  const parts = [part('read the api'), part('read the web')]
+  const skills = 'any listed skills that apply (have the agent load them with the Skill tool)'
+  const briefs = [
+    handoffNote({ kind: 'lane', gear }),
+    handoffNote({ kind: 'lane', gear, resume: 'a1' }),
+    handoffNote({ kind: 'deep', gear }),
+    handoffNote({ kind: 'deep', gear, resume: 'a1' }),
+    handoffNote({ kind: 'aside', gear }),
+    handoffNote({ kind: 'fan', gear, parts }),
+    fanReply(parts),
+    handoffNote({ kind: 'lane', gear }, true, true, 'code · area · depth 2', true),
+    handoffNote({ kind: 'lane', gear, resume: 'a1' }, true, true, 'code · area · depth 2', true),
+    handoffNote({ kind: 'fan', gear, parts }, true, true, 'two parts', true),
+  ]
+  for (const note of briefs) expect(note).toContain(skills)
+  for (const kind of ['wait', 'chore', 'drive'] as const) expect(handoffNote({ kind, gear })).not.toContain('Skill tool')
 })
 
 test('the reason the main conversation gives for keeping advised work: its "Keeping it here:" line, emphasis and all, 200 characters at most', () => {
