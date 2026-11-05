@@ -1037,3 +1037,272 @@ test('a response stopped early (Esc) reaches the stream beneath, which settles',
   expect(settled()).toBe(1)
 })
 
+
+// ---- the skills an agent loaded ----
+
+// The skills a tool call by `agentId` loads, in order.
+const load = async ($: any, agentId: string | undefined, ...names: string[]) => {
+  for (const skill of names) await $.tool.call({ tool: 'Skill', skill, ...(agentId ? { agentId } : {}) })
+}
+// The names of the author's own subagents' skills, twelve of them: more than a line or two of tags hold.
+const MANY = ['swanson-db-rls-migrations', 'tdd', 'durable-progress', 'diagnosing-bugs', 'swanson-e2e', 'swanson-frontend', 'swanson-core-architecture', 'swanson-verify', 'swanson-recreation-intelligence', 'swanson-shared-packages', 'swanson-checkout-holds', 'swanson-deploy']
+
+test('an agent’s Skill calls are kept by name, once each, in load order; a call reads "Skill: name"; the main conversation’s own are not shown', async ($: any, on) => {
+  bench(on)
+  mock.clock(on)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'review', 'sonnet')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-review', effort: 'medium' })
+  // No skill yet: the agent's row is as it was, with no line for skills.
+  const before = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expectLines(await lines(before, 120), [/^GearBox /, /^─+$/, /^● main /, /^ {2}thinking$/, /^└─● review +sonnet·medium +1 req +Ns$/, /^ {4}thinking$/])
+  await before.unmount()
+  await load($, 'a-review', 'tdd', 'swanson-e2e', 'tdd', '/diagnosing-bugs')
+  await load($, undefined, 'main-only')
+  const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expectLines(await lines(term, 120), [
+    /^GearBox +opus·high · 1 agent · /,
+    /^─+$/,
+    /^● main /,
+    /^ {2}Skill: main-only$/, // the main conversation's call reads the same, but no tag is drawn for it
+    /^└─● review +sonnet·medium +1 req +Ns$/,
+    /^ {5}✦ tdd {3}✦ swanson-e2e {3}✦ diagnosing-bugs$/, // between the identity and the note; a skill once, in load order
+    /^ {4}Skill: diagnosing-bugs$/,
+  ])
+  await term.unmount()
+  const pane = await $.ui.mount({ ...PANE_AT(110), surface: 'terminal' })
+  const text = await show(pane, 110)
+  expect(text).toMatch(/^ {4}skills: tdd · swanson-e2e · diagnosing-bugs$/m)
+  expect(text).not.toMatch(/skills:.*main-only/)
+  expect(text.match(/skills:/g)).toHaveLength(1) // main has none
+  await pane.unmount()
+})
+
+test('the terminal band draws an agent’s skills as tags, in lines of their own between its identity and its note, with the note’s indent', CREW, async ($: any, on) => {
+  await crew($, on)
+  await load($, 'a-t1', 'tdd', 'swanson-e2e')
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expectLines(await lines(ui, 120), [
+    /^GearBox /,
+    /^─+$/,
+    /^● main /,
+    /^ {2}Waiting for the 2 parts/,
+    /^├─● part 1 · customers +sonnet·medium +main +2 req +Ns$/,
+    /^│ {4}✦ tdd {3}✦ swanson-e2e$/,
+    /^│ {3}Grouping orders by customer and adding the totals · Skill$/,
+    /^├─● part 2 · README /,
+    /^│ {3}Running the examples to paste real output into the README · Bash$/, // no skill: no line
+    /^│ └─● Explore · uses of paginate /,
+    /^│ {5}Looking for calls to paginate in src\/ · Grep$/,
+    /^└─✓ part 3 · review money\.ts /,
+  ])
+  // Each tag is a Text of its own, inverse and dimmed (readable in every theme), padded by a space each side; a plain
+  // space stands between tags, and the line is the note's: one Text, truncated.
+  const line = JSON.parse(JSON.stringify(await ui.find({ type: 'Text', text: /^ ✦ tdd {3}✦ swanson-e2e $/ })))
+  expect(line.props).toEqual({ wrap: 'truncate' })
+  expect(line.children).toEqual([
+    { type: 'Text', props: { inverse: true, dimColor: true }, children: [' ✦ tdd '] },
+    ' ',
+    { type: 'Text', props: { inverse: true, dimColor: true }, children: [' ✦ swanson-e2e '] },
+  ])
+  await ui.unmount()
+})
+
+// The tag lines that follow the row matching `after` in a drawn band, up to the first line with no tag.
+const tagLines = (rows: string[], after: RegExp) => {
+  const at = rows.findIndex(l => after.test(l))
+  const out: string[] = []
+  for (const l of rows.slice(at + 1)) {
+    if (!l.includes('✦')) break
+    out.push(l)
+  }
+  return out
+}
+// The names on a tag line, past the tree's guides: tags stand three spaces apart (a padding, the plain space, a padding).
+const namesOn = (line: string) => line.replace(/^[│ ]+/, '').trim().split(/ {3}/).map(t => t.replace(/^✦ /, ''))
+// Every skill is there, once, whole and in load order; no … ends a list; no line is wider than `columns`; and a line
+// breaks only where the next tag would not have fit (the line as drawn ends one padding short: its trailing space is trimmed).
+const expectWrapped = (tags: string[], names: string[], columns: number) => {
+  expect(tags.flatMap(namesOn)).toEqual(names)
+  for (const l of tags) {
+    expect(l).not.toContain('…')
+    expect(l.length).toBeLessThanOrEqual(columns)
+  }
+  tags.slice(1).forEach((l, i) => expect(tags[i]!.length + 1 + 1 + (namesOn(l)[0]!.length + 4)).toBeGreaterThan(columns))
+}
+
+test('a long list of skills wraps between tags onto as many lines as it needs, none dropped and no …; no line is wider than the terminal, at 120 columns and at 80', CREW, async ($: any, on) => {
+  await crew($, on)
+  await load($, 'a-t1', 'tdd', 'swanson-e2e')
+  await load($, 'a-t2', ...MANY)
+  const wide = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  const rows = await lines(wide, 120)
+  expectLines(rows, [
+    /^GearBox /,
+    /^─+$/,
+    /^● main /,
+    /^ {2}Waiting for the 2 parts/,
+    /^├─● part 1 · customers /,
+    /^│ {4}✦ tdd {3}✦ swanson-e2e$/,
+    /^│ {3}Grouping orders by customer and adding the totals · Skill$/,
+    /^└─● part 2 · README /,
+    /^ {5}✦ swanson-db-rls-migrations {3}✦ tdd {3}✦ durable-progress {3}✦ diagnosing-bugs {3}✦ swanson-e2e {3}✦ swanson-frontend$/,
+    /^ {5}✦ swanson-core-architecture {3}✦ swanson-verify {3}✦ swanson-recreation-intelligence {3}✦ swanson-shared-packages$/,
+    /^ {5}✦ swanson-checkout-holds {3}✦ swanson-deploy$/,
+    /^ {4}Running the examples to paste real output into the README · Skill$/,
+    /^ {2}└─● Explore · uses of paginate /,
+    /^ {6}Looking for calls to paginate in src\/ · Grep$/,
+    /^\+1 agent · Panel$/,
+  ])
+  expectWrapped(tagLines(rows, /part 2 · README/), MANY, 120)
+  for (const l of rows) expect(l.length).toBeLessThanOrEqual(120)
+  await wide.unmount()
+  // Under 100 columns the narrow band keeps every tag too, on lines as wide as its room.
+  const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  const small = await lines(narrow, 80)
+  expectLines(small, [
+    /^GearBox /,
+    /^─+$/,
+    /^● main /,
+    /^ {2}Waiting for the 2 parts/,
+    /^├─● part 1 {2}/,
+    /^│ {4}✦ tdd {3}✦ swanson-e2e$/,
+    /^│ {3}Grouping orders by customer and adding the totals$/,
+    /^└─● part 2 {2}/,
+    /^ {5}✦ swanson-db-rls-migrations {3}✦ tdd {3}✦ durable-progress$/,
+    /^ {5}✦ diagnosing-bugs {3}✦ swanson-e2e {3}✦ swanson-frontend$/,
+    /^ {5}✦ swanson-core-architecture {3}✦ swanson-verify$/,
+    /^ {5}✦ swanson-recreation-intelligence {3}✦ swanson-shared-packages$/,
+    /^ {5}✦ swanson-checkout-holds {3}✦ swanson-deploy$/,
+    /^ {4}Running the examples to paste real output into the README$/,
+    /^ {2}└─● Explore {3}/, // an agent's own agent is one line in the narrow band
+    /^\+1 agent · Panel$/,
+  ])
+  expectWrapped(tagLines(small, /part 2 {2}/), MANY, 80)
+  for (const l of small) expect(l.length).toBeLessThanOrEqual(80)
+  await narrow.unmount()
+})
+
+test('an agent with no skills gets no extra line: the band is as it was', CREW, async ($: any, on) => {
+  await crew($, on)
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /✦/ })).toBeUndefined()
+  expect((await lines(ui, 120)).filter(l => l.includes('✦'))).toHaveLength(0)
+  expect(await lines(ui, 120)).toHaveLength(11) // the header, the rule, main's two lines, and each agent's two
+  await ui.unmount()
+})
+
+test('an agent’s skill lines count against the band’s rows: the finished agents give way first, live ones are always drawn', CREW, async ($: any, on) => {
+  await crew($, on)
+  const shown = async () => {
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+    const rows = await lines(ui, 120)
+    await ui.unmount()
+    return rows
+  }
+  // Main's two lines are not counted. 2 + 2 + 2 for the live agents and 1 for the review: 7 of the 8 rows.
+  expect(await shown()).toHaveLength(11)
+  expect((await shown()).some(l => /review money\.ts/.test(l))).toBe(true)
+  // One line of skills (3 + 2 + 2) leaves the review its one row; the twelve skills, in three lines (5 + 2 + 2), leave it none.
+  await load($, 'a-t1', 'tdd')
+  expect(await shown()).toHaveLength(12)
+  expect((await shown()).some(l => /review money\.ts/.test(l))).toBe(true)
+  await load($, 'a-t1', ...MANY)
+  const full = await shown()
+  expect(tagLines(full, /part 1 · customers/)).toHaveLength(3)
+  expect(tagLines(full, /part 1 · customers/).flatMap(namesOn)).toEqual(['tdd', ...MANY.filter(n => n !== 'tdd')]) // tdd was loaded first, once
+  expect(full.some(l => /review money\.ts/.test(l))).toBe(false)
+  expect(full.at(-1)).toBe('+1 agent · Panel')
+  // The live agents stay, past the budget.
+  for (const name of ['part 1 · customers', 'part 2 · README', 'Explore · uses of paginate']) expect(full.some(l => l.includes(name))).toBe(true)
+  await load($, 'a-t2', ...MANY)
+  await load($, 'a-e1', ...MANY)
+  const over = await shown()
+  for (const name of ['part 1 · customers', 'part 2 · README', 'Explore · uses of paginate']) expect(over.some(l => l.includes(name))).toBe(true)
+  expect(over.at(-1)).toBe('+1 agent · Panel')
+})
+
+test('a finished agent keeps its skills under its line, and they take rows of the budget', async ($: any, on) => {
+  bench(on)
+  mock.clock(on)
+  await $.prompt.submit({ text: 'review it' })
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'review money.ts', 'opus')
+  await step($, 'claude-opus-5-5', { agentId: 'a-review money.ts', effort: 'medium' })
+  await load($, 'a-review money.ts', 'security-review', 'code-review')
+  await $.turn.complete({ turnId: 't', answer: '## 6 findings', durationMs: 10, isAborted: false, agentId: 'a-review money.ts' })
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expectLines(await lines(ui, 120), [
+    /^GearBox /,
+    /^─+$/,
+    /^● main /,
+    /^ {2}thinking$/,
+    /^└─✓ review money\.ts +opus·medium +done · 6 findings +1 req +Ns$/,
+    /^ {5}✦ security-review {3}✦ code-review$/,
+  ])
+  await ui.unmount()
+  const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  expectLines(await lines(narrow, 80), [
+    /^GearBox /,
+    /^─+$/,
+    /^● main /,
+    /^ {2}thinking$/,
+    /^└─✓ review money\.ts · 6 findings/,
+    /^ {5}✦ security-review {3}✦ code-review$/,
+  ])
+  await narrow.unmount()
+})
+
+test('the desktop card shows a chip for each skill, in a row between the identity chips and the note, like the worktree chip; none for an agent with no skills', CREW, async ($: any, on) => {
+  const { run } = await crew($, on)
+  await run('t1', 'Creating the worktree for the part', { tool: 'Bash', command: 'git -C /w/app worktree add /tmp/gb-wt-customers -b part/customers' })
+  await load($, 'a-t1', 'tdd', 'swanson-e2e', 'tdd')
+  await load($, 'a-t2', ...MANY) // all of them, wrapping: the desktop does not cut the list
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  const card = async (id: string) => JSON.parse(JSON.stringify(await ui.find({ key: `card-${id}` })))
+  const one = await card('a-t1')
+  const column = one.children[1]
+  expect(column.children).toHaveLength(4) // identity chips, skills, the note, the note before
+  const [identity, skills, note] = column.children
+  // The identity chips row holds the worktree chip; the skills row follows it, then the note row.
+  expect(JSON.stringify(identity)).toContain('⎇ part/customers')
+  expect(JSON.stringify(skills)).not.toContain('⎇')
+  expect(JSON.stringify(note)).toContain('Creating the worktree for the part')
+  // One chip per skill, each once, in load order, in the worktree chip's style: a rounded Box with a dim caption.
+  expect(skills.props).toEqual({ flexDirection: 'row', columnGap: 'sm', alignItems: 'center', flexWrap: 'wrap' })
+  const chip = (name: string) => ({ type: 'Box', props: { key: `skill-${name}`, borderStyle: 'round', paddingX: 'xs', borderDimColor: true }, children: [{ type: 'Text', props: { size: 'caption', dimColor: true }, children: [`✦ ${name}`] }] })
+  expect(skills.children).toEqual([chip('tdd'), chip('swanson-e2e')])
+  const worktree = identity.children.find((c: any) => JSON.stringify(c).includes('⎇'))
+  expect(worktree).toEqual({ type: 'Box', props: { borderStyle: 'round', paddingX: 'xs', borderDimColor: true }, children: [{ type: 'Text', props: { size: 'caption', dimColor: true }, children: ['⎇ part/customers'] }] })
+  // Every skill an agent loaded, without the terminal's cut.
+  const two = await card('a-t2')
+  expect(two.children[1].children[1].children.map((c: any) => c.children[0].children[0])).toEqual(MANY.map(n => `✦ ${n}`))
+  // An agent with no skills, and main: the card is as it was.
+  for (const id of ['main', 'a-t3']) expect(JSON.stringify(await card(id))).not.toContain('✦')
+  expect((await card('a-t3')).children[1].children).toHaveLength(2)
+  await ui.unmount()
+})
+
+test('the panel lists every skill an agent loaded, in a skills: line after its files; a finished agent’s block ends with it', CREW, async ($: any, on) => {
+  const { run } = await crew($, on)
+  await run('t1', 'Testing the grouping', { tool: 'Edit', file_path: '/w/app/src/customers.ts' })
+  await load($, 'a-t1', 'tdd', 'swanson-e2e')
+  await load($, 'a-t2', ...MANY)
+  await load($, 'a-t3', 'code-review') // the review has ended
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE_AT(110), surface })
+    const all = (await lines(ui, 110)).filter(l => !/^\s*$/.test(l))
+    const at = all.findIndex(l => /^│ {3}files: /.test(l))
+    expect(all[at + 1]).toBe('│   skills: tdd · swanson-e2e')
+    const two = all.find(l => /skills: swanson-db/.test(l))
+    expect(two).toBe(`│   skills: ${MANY.join(' · ')}`) // the whole list, which the band cuts
+    // The finished review: its end line, then its skills.
+    const end = all.findIndex(l => /done hh:mm:ss — 6 findings/.test(l))
+    expect(all[end + 1]).toBe('    skills: code-review')
+    await ui.unmount()
+  }
+  // The main conversation and the agents with no skill have no such line.
+  const ui = await $.ui.mount({ ...PANE_AT(110), surface: 'terminal' })
+  expect((await show(ui, 110)).match(/skills:/g)).toHaveLength(3)
+  await ui.unmount()
+})

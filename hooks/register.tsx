@@ -82,7 +82,7 @@ import {
 } from './policy'
 import { runHooks } from './classic'
 import { NARROW, type Queued, type Summary, desktopBand, panelBody, terminalBand } from './agents'
-import { NOTE_EVERY_MS, ended, family, gearText, grown, kilo, live, noteOf, revived, toolName, withFile, withNote, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { NOTE_EVERY_MS, ended, family, gearText, grown, kilo, live, noteOf, revived, toolName, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
 import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lanes, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
 
 // US$ per million tokens.
@@ -153,16 +153,20 @@ export const describeTool = (tool: string, input: Record<string, unknown>): stri
   const first = (v: unknown, n: number) => String(v ?? '').trim().split('\n')[0]!.slice(0, n)
   if (tool === 'Bash' || tool === 'PowerShell') return `${name}: ${first(input.command, 48)}`
   if (tool === 'Agent') return `Agent: ${first(input.description, 40)}`
+  const skill = first(input.skill, 40).replace(/^\/+/, '')
+  if (tool === 'Skill' && skill) return `Skill: ${skill}`
   if (typeof input.file_path === 'string') return `${name} ${input.file_path.split('/').pop()}`
   if (typeof input.url === 'string') return `${name} ${first(input.url, 40)}`
   if (typeof input.pattern === 'string') return `${name} ${first(input.pattern, 32)}`
   return name
 }
 
-// A tool call made: what the loop is doing, the tool its latest note is followed by, and the file it touches.
-const called = (l: GearboxLoop, tool: string, input: Record<string, unknown>): GearboxLoop => {
+// A tool call made: what the loop is doing, the tool its latest note is followed by, and the file it touches. An agent's
+// Skill call is also remembered by name (the main conversation's own are not shown).
+const called = (l: GearboxLoop, tool: string, input: Record<string, unknown>, agent: boolean): GearboxLoop => {
   const doing = describeTool(tool, input)
-  return withFile(withTool({ ...l, doing }, toolName(doing)), tool, input.file_path)
+  const made = withFile(withTool({ ...l, doing }, toolName(doing)), tool, input.file_path)
+  return agent ? withSkill(made, tool, input.skill) : made
 }
 
 const sessionCost = async ($: EngineInterface) => {
@@ -1629,7 +1633,7 @@ export const register: Register = (on, options) => {
     if (!enabled) return next(e)
     // The main conversation starting or messaging any agent takes up the turn's advice (see `advised`).
     if (!e.agentId && advised && (e.tool === 'Agent' || e.tool === 'SendMessage')) advised.handed = true
-    await patch($, e.agentId ?? 'main', l => l && called(l, String(e.tool), e as unknown as Record<string, unknown>))
+    await patch($, e.agentId ?? 'main', l => l && called(l, String(e.tool), e as unknown as Record<string, unknown>, e.agentId !== undefined))
     if (e.tool === 'Agent' && e.isolation === 'worktree') expectMeta(e.tool_use_id, { isolated: true })
     // Subagents do the hand-off work; never stand in their way. A reviewing skill one calls is still remembered.
     if (e.agentId && e.tool === 'Agent') {

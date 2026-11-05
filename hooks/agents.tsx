@@ -1,6 +1,6 @@
 import type { ElementTable, RenderElement } from 'claude-code'
 import type { GearboxLoop } from '../types'
-import { type Node, bars, clock, family, fit, gearText, hue, kilo, live, money, nowOf, ran, shortPath, swapped, treeOf } from './loops'
+import { type Node, bars, clock, family, fit, gearText, hue, kilo, live, money, nowOf, ran, shortPath, swapped, tagsOf, treeOf } from './loops'
 
 // How the readouts draw the agents running: the band above the prompt (a tree of text in the terminal, a card each in
 // the desktop app) and the panel. Both read the same loops; only the drawing differs.
@@ -68,6 +68,7 @@ type Row = {
   stats: string // "4 req  38s"
   note?: NoteLine
   two: boolean // a second line for the note
+  skills: string[] // the skills it loaded, in load order (an agent's; main's are not shown)
 }
 
 const SRC = { main: 'main', rules: 'rules', auto: 'auto' } as const
@@ -91,7 +92,7 @@ const rowOf = (n: Node, now: number, shape: Shape): Row => {
   const [glyph, color] = glyphOf(n.id, l)
   // The narrow band names a running agent by its first word or two ("part 1", "Explore"); a finished one in full.
   const label = shape === 'narrow' && l.state !== 'done' ? labelOf(l).split(' · ')[0]! : labelOf(l)
-  const common = { node: n, glyph, ...(color ? { color } : {}), label, gear: gearText(l), ...(isQueued(n.id) ? {} : { tint: hue(l) }) }
+  const common = { node: n, glyph, ...(color ? { color } : {}), label, gear: gearText(l), skills: l.skills ?? [], ...(isQueued(n.id) ? {} : { tint: hue(l) }) }
   if (isQueued(n.id)) return { ...common, dim: true, extra: 'queued', stats: '', two: false }
   if (l.state === 'done') return { ...common, dim: true, ...(l.effortBy ? { src: SRC[l.effortBy] } : {}), extra: ending(l, shape === 'narrow'), stats: statsOf(l, now, false), two: false }
   const said = nowOf(l)
@@ -133,6 +134,7 @@ const mainRowOf = (main: GearboxLoop, agents: number, now: number): Row => {
     stats: working ? statsOf(main, now, true) : '',
     note,
     two: true,
+    skills: [],
   }
 }
 
@@ -154,8 +156,12 @@ const MIN_HEAD = 24
 const noteFit = (head: string, tail: string, room: number): [string, string] =>
   head.length + tail.length <= room ? [head, tail] : room - tail.length >= MIN_HEAD ? [fit(head, room - tail.length), tail] : [fit(head, room), '']
 
-// The identity line and the note line of each row, in a terminal `columns` wide. `wide`: gear, who chose the effort,
-// worktree, requests and time; `narrow`: gear and time, a finished agent in one line.
+// An agent's skills as tags, in the lines under its identity: the names to draw on each line, as many lines as they need.
+// They stand where the note does (`cont`), so the room is what the note has.
+const tagsFor = (n: Node, skills: readonly string[], columns: number) => tagsOf(skills, Math.max(0, columns - contOf(n).length))
+
+// The identity line, the skills (tags, as many lines as they need) and the note line of each row, in a terminal `columns` wide.
+// `wide`: gear, who chose the effort, worktree, requests and time; `narrow`: gear and time, a finished agent in one line.
 const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number) => {
   const labelW = labelWidth(rows, shape === 'narrow' ? 26 : 32)
   return rows.map(r => {
@@ -200,9 +206,22 @@ const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number
     )
     const cont = contOf(r.node)
     const [head, tail] = r.note ? noteFit(r.note.head, tailOf(r.note, shape), Math.max(0, columns - cont.length)) : ['', '']
+    const tags = tagsFor(r.node, r.skills, columns)
     return (
       <Box key={`agent-${r.node.id}`} flexDirection="column">
         {identity}
+        {tags.map((names, i) => (
+          <Box key={`skills-${r.node.id}-${i}`} flexDirection="row">
+            <Box width={cont.length} flexShrink={0}>
+              <Text dimColor>{cont}</Text>
+            </Box>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text wrap="truncate">
+                {names.flatMap((name, j) => [...(j ? [' '] : []), <Text key={`skill-${name}`} inverse dimColor>{` ✦ ${name} `}</Text>])}
+              </Text>
+            </Box>
+          </Box>
+        ))}
         {r.two && r.note ? (
           <Box flexDirection="row">
             <Box width={cont.length} flexShrink={0}>
@@ -251,7 +270,7 @@ export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: numbe
   const narrow = o.columns < NARROW
   const shape: Shape = narrow ? 'narrow' : 'wide'
   const main = s.loops.main
-  const chosen = choose(withQueued(s.loops, s.queued), { ...(s.since !== undefined ? { since: s.since } : {}), room: BAND_ROOM, cost: n => (live(n.loop) ? (narrow && n.depth >= 2 ? 1 : 2) : 1) })
+  const chosen = choose(withQueued(s.loops, s.queued), { ...(s.since !== undefined ? { since: s.since } : {}), room: BAND_ROOM, cost: n => (live(n.loop) ? (narrow && n.depth >= 2 ? 1 : 2) : 1) + tagsFor(n, n.loop.skills ?? [], o.columns).length })
   const rows = [...(main ? [mainRowOf(main, s.subs.length, s.now)] : []), ...chosen.nodes.map(n => rowOf(n, s.now, shape))]
   return (
     <Box flexDirection="column">
@@ -286,8 +305,8 @@ export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: numbe
 // ---- the desktop's band: metrics, then a card per agent ----
 
 // A chip: the desktop has no pill, so it is a small rounded box around a caption.
-const pill = ({ Box, Text }: Els, text: string, color?: string) => (
-  <Box borderStyle="round" paddingX="xs" {...(color ? { borderColor: color } : { borderDimColor: true })}>
+const pill = ({ Box, Text }: Els, text: string, color?: string, key?: string) => (
+  <Box key={key} borderStyle="round" paddingX="xs" {...(color ? { borderColor: color } : { borderDimColor: true })}>
     <Text size="caption" {...(color ? { color } : { dimColor: true })}>
       {text}
     </Text>
@@ -310,8 +329,8 @@ const nest = (nodes: Node[]): Tree[] => {
   return from(0, 1)[0]
 }
 
-// One agent's card: a rail in its model's colour, its identity as a row of chips, its note with a tool chip, the note
-// before it, and inside it the cards of the agents it started.
+// One agent's card: a rail in its model's colour, its identity as a row of chips, a row of chips for the skills it
+// loaded, its note with a tool chip, the note before it, and inside it the cards of the agents it started.
 const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?: string }): RenderElement => {
   const { Box, Text } = t
   const l = r.node.loop
@@ -338,6 +357,11 @@ const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?
             {r.stats.replace('  ', ' · ')}
           </Text>
         </Box>
+        {r.skills.length ? (
+          <Box flexDirection="row" columnGap="sm" alignItems="center" flexWrap="wrap">
+            {r.skills.map(name => pill(t, `✦ ${name}`, undefined, `skill-${name}`))}
+          </Box>
+        ) : null}
         {note ? (
           <Box flexDirection="row" columnGap="sm" alignItems="center">
             <Box flexShrink={1}>
@@ -501,7 +525,24 @@ export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>
       </Box>
     )
     if (isQueued(n.id)) return [identity]
-    if (l.state === 'done') return [identity, line('end', <Text dimColor wrap="truncate" {...m}>{`${l.failed ?? 'done'}${l.endedAt ? ` ${clock(l.endedAt)}` : ''}${l.result ? ` — ${l.result}` : ''}`}</Text>)]
+    // Every skill it loaded, as the band shows them; the line wraps where the pane is narrow.
+    const skills = l.skills?.length
+      ? [
+          line(
+            'skills',
+            <Text {...m}>
+              <Text dimColor>{'skills: '}</Text>
+              {l.skills.map((name, i) => (
+                <Text key={`${n.id}-s${i}`}>
+                  {i ? <Text dimColor>{' · '}</Text> : null}
+                  {name}
+                </Text>
+              ))}
+            </Text>,
+          ),
+        ]
+      : []
+    if (l.state === 'done') return [identity, line('end', <Text dimColor wrap="truncate" {...m}>{`${l.failed ?? 'done'}${l.endedAt ? ` ${clock(l.endedAt)}` : ''}${l.result ? ` — ${l.result}` : ''}`}</Text>), ...skills]
     const notes = [...(l.notes ?? [])].reverse()
     const files = [...(l.files ?? [])].reverse()
     return [
@@ -540,6 +581,7 @@ export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>
             ),
           ]
         : []),
+      ...skills,
     ]
   })
   return (

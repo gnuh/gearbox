@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { GearboxLoop } from '../types'
-import { FILES_KEPT, NOTES_KEPT, ended, fit, grown, noteOf, revived, shortPath, treeOf, withFile, withNote, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { FILES_KEPT, NOTES_KEPT, SKILLS_KEPT, ended, fit, grown, noteOf, revived, shortPath, tagsOf, treeOf, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
 
 const loop = (extra: Partial<GearboxLoop> = {}): GearboxLoop => ({ label: 'agent', asked: 'sonnet', state: 'working', steps: 0, ...extra })
 
@@ -90,6 +90,56 @@ test('files: read, edited, or new; a file Write makes where the loop had not tou
   for (let i = 0; i < 10; i++) l = withFile(l, 'Read', `/w/f${i}.ts`)
   expect(l.files).toHaveLength(FILES_KEPT)
   expect(l.files?.at(-1)?.path).toBe('/w/f9.ts')
+})
+
+test('skills: a loop keeps the name of each Skill it calls, once, in the order it first called it', () => {
+  let l = loop()
+  l = withSkill(l, 'Skill', 'tdd')
+  l = withSkill(l, 'Skill', 'swanson-e2e')
+  l = withSkill(l, 'Skill', 'tdd') // called again: it keeps its place
+  l = withSkill(l, 'Skill', '/diagnosing-bugs') // a leading slash is not part of the name
+  l = withSkill(l, 'Skill', 'diagnosing-bugs')
+  l = withSkill(l, 'Skill', 'plugin:review') // a plugin's skill keeps its prefix
+  expect(l.skills).toEqual(['tdd', 'swanson-e2e', 'diagnosing-bugs', 'plugin:review'])
+  // Anything that is not a named Skill call changes nothing, and gives back the same loop.
+  for (const [tool, skill] of [['Skill', undefined], ['Skill', '  '], ['Skill', 7], ['Read', 'orders'], ['Agent', 'tdd']] as const) expect(withSkill(l, tool, skill)).toBe(l)
+  expect(withSkill(l, 'Skill', 'tdd')).toBe(l)
+  expect(withSkill(loop(), 'Bash', 'ls').skills).toBeUndefined()
+  // A loop that loads more than it keeps loses the earliest.
+  for (let i = 0; i < SKILLS_KEPT + 6; i++) l = withSkill(l, 'Skill', `s${i}`)
+  expect(l.skills).toHaveLength(SKILLS_KEPT)
+  expect(l.skills?.at(-1)).toBe(`s${SKILLS_KEPT + 5}`)
+})
+
+// A tag line as the band draws it: ` ✦ name ` cells with one space between.
+const drawn = (lines: string[][]) => lines.map(names => names.map(n => ` ✦ ${n} `).join(' '))
+
+test('tags: a list that fits is one line; it breaks between tags, never inside one, onto as many lines as it needs', () => {
+  expect(tagsOf([], 40)).toEqual([])
+  expect(drawn(tagsOf(['tdd', 'swanson-e2e'], 40))).toEqual([' ✦ tdd   ✦ swanson-e2e '])
+  expect(tagsOf(['aa', 'bb', 'cc'], 13)).toEqual([['aa', 'bb'], ['cc']]) // a tag is 4 wider than its name
+  expect(tagsOf(['aa', 'bb', 'cc'], 12)).toEqual([['aa'], ['bb'], ['cc']]) // 13 would not fit in 12
+  // Five tags, three lines: no cap, no …, every skill drawn.
+  expect(drawn(tagsOf(['aa', 'bb', 'cc', 'dd', 'ee'], 15))).toEqual([' ✦ aa   ✦ bb ', ' ✦ cc   ✦ dd ', ' ✦ ee '])
+  expect(drawn(tagsOf(['aa', 'bb', 'cc', 'dd', 'ee'], 13))).toEqual([' ✦ aa   ✦ bb ', ' ✦ cc   ✦ dd ', ' ✦ ee '])
+  // A name wider than a line is cut with …, to a tag as wide as the line, and stands on a line of its own.
+  expect(tagsOf(['x'.repeat(50)], 20)).toEqual([[`${'x'.repeat(15)}…`]])
+  expect(drawn(tagsOf(['x'.repeat(50)], 20))).toEqual([` ✦ ${'x'.repeat(15)}… `])
+  expect(tagsOf(['abcdefgh', 'ijklmnop', 'qrstuvwx'], 12)).toEqual([['abcdefgh'], ['ijklmnop'], ['qrstuvwx']])
+  expect(tagsOf(['ab', 'x'.repeat(50), 'cd'], 20)).toEqual([['ab'], [`${'x'.repeat(15)}…`], ['cd']])
+})
+
+test('tags: every skill is drawn and no line is wider than the room, at the widths a terminal has', () => {
+  const skills = ['swanson-db-rls-migrations', 'tdd', 'durable-progress', 'diagnosing-bugs', 'swanson-e2e', 'swanson-frontend', 'swanson-core-architecture', 'swanson-verify', 'swanson-recreation-intelligence', 'swanson-shared-packages', 'swanson-checkout-holds', 'swanson-deploy']
+  for (let room = 12; room <= 140; room++) {
+    const lines = tagsOf(skills, room)
+    // All of them, in load order, each whole (a name is cut only where it is wider than the line).
+    expect(lines.flat().length).toBe(skills.length)
+    skills.forEach((s, i) => expect(lines.flat()[i]).toBe(s.length + 4 > room ? fit(s, room - 4) : s))
+    for (const line of drawn(lines)) expect(line.length).toBeLessThanOrEqual(room)
+    // It breaks only where the next tag would not fit: each line's first tag did not fit on the line before it.
+    lines.slice(1).forEach((line, i) => expect(drawn([lines[i]!])[0]!.length + 1 + (line[0]!.length + 4)).toBeGreaterThan(room))
+  }
 })
 
 test('a git worktree add names its path and its branch, however the command is written', () => {
