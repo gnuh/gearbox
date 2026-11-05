@@ -17,6 +17,7 @@ import {
   BRIEFING,
   BRIEFING_TOOLS,
   BRIEF_READS,
+  CODE_MODEL,
   CODE_MODELS,
   apartEdits,
   looksUp,
@@ -587,11 +588,13 @@ const withoutRemoved = (o: Record<string, unknown>) => Object.fromEntries(Object
 
 // The person's settings: what /gearbox set (kept in the store) wins over the plugin's options, which not
 // every Claude Code screen lets a person edit. Only known keys are read: a removed setting's value has no say.
+// A string option is read as it is, the manifest's default included: the coding model's default, sonnet, is the same
+// whether Claude Code passes it in or passes nothing, and an `auto` of the person's (stored or an option) is kept.
 export const settingsFrom = (options: PluginOptions, stored: unknown): Settings => {
   const kept: Record<string, unknown> = stored && typeof stored === 'object' ? (stored as Record<string, unknown>) : {}
   const o: Record<string, unknown> = { ...options, ...kept }
   return {
-    code_model: CODE_MODELS.includes(o.code_model as CodeModel) ? (o.code_model as CodeModel) : 'auto',
+    code_model: CODE_MODELS.includes(o.code_model as CodeModel) ? (o.code_model as CodeModel) : CODE_MODEL,
     // A stored or plugin `max` is no longer offered: it falls back to the default, xhigh.
     // `main` is what `auto` was called before 0.20.0.
     code_effort: o.code_effort === 'main' ? 'auto' : CODE_EFFORTS.includes(o.code_effort as CodeEffort) ? (o.code_effort as CodeEffort) : 'xhigh',

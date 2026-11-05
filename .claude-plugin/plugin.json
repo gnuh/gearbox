@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.24.0",
+  "version": "0.24.1",
   "description": "Per-prompt model and effort for Claude Code. By default an orchestrator keeps the main conversation on Opus to plan, brief and review, runs the work in one long-lived agent per model and splits independent parts across up to 6 agents at once; browser checks, long commands and git chores go to cheap subagents; a session started on Haiku keeps shifting models instead; and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -11,14 +11,14 @@
     "code_model": {
       "type": "string",
       "title": "Coding model",
-      "description": "The model all code runs on. auto (the default) lets the rules pick it, as for any work: the session's model, handed up to a stronger one when the work calls for it. sonnet, opus or fable fix it: every code turn, code-writing subagent and go-ahead to write code runs on exactly that model at your coding effort, in a subagent when the conversation runs another model, save a mechanical edit at one spot, which stays in the conversation (Fable always in a subagent, without asking first); other work keeps the rules. Also settable with /gearbox model.",
+      "description": "The model all code runs on. sonnet (the default), opus or fable fix it: every code turn, code-writing subagent and go-ahead to write code runs on exactly that model at your coding effort, in a subagent when the conversation runs another model, save a mechanical edit at one spot, which stays in the conversation (Fable always in a subagent, without asking first); other work keeps the rules. auto lets the rules pick it, as for any work: the session's model, handed up to a stronger one when the work calls for it. Also settable with /gearbox model.",
       "options": [
         "auto",
         "sonnet",
         "opus",
         "fable"
       ],
-      "default": "auto"
+      "default": "sonnet"
     },
     "code_effort": {
       "type": "string",

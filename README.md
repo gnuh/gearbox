@@ -58,12 +58,14 @@ Work as usual. The commands you will use:
 | `orchestrator-model haiku\|sonnet\|opus` | `opus` |
 | `orchestrator-effort auto\|low\|medium\|high\|xhigh` | `auto` |
 | `orchestrator-agents 1-6` | `6` |
-| `model auto\|sonnet\|opus\|fable` (coding model) | `auto` |
+| `model auto\|sonnet\|opus\|fable` (coding model) | `sonnet` |
 | `effort medium\|high\|xhigh\|auto` (coding effort) | `xhigh` |
 | `navigator sonnet\|haiku` | `sonnet` |
 | `log off\|on\|full` | `off` |
 
 Hand-offs are always strict and your own hooks always run for subagents. Neither is a setting.
+
+**Coming from 0.24.0:** the coding model is now `sonnet` unless you set it, so code runs on Sonnet. `/gearbox model auto` lets the rules pick it again.
 
 **Coming from 0.23 or earlier:** the orchestrator is now on unless you set it. Turn it off with `/gearbox orchestrator off`. A session started on Haiku keeps shifting models instead (`/gearbox orchestrator on` orchestrates it too).
 

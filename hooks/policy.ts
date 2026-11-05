@@ -18,9 +18,11 @@ export const upFor = (want: Gear): Model => (want.model === 'fable' ? 'opus' : w
 const mayGoUp = (mode: string, depth: number) => (depth >= 1 || mode === 'review') && mode !== 'commit'
 
 // The coding model: `auto` lets the rules pick code's model as for any work; a model fixes it, so all code runs on
-// exactly that model, whatever the reach or a costly target would pick.
+// exactly that model, whatever the reach or a costly target would pick. A new install fixes it to Sonnet (the manifest's
+// default says the same); `auto` is the person's word, and nothing treats it as unset.
 export type CodeModel = 'auto' | 'sonnet' | 'opus' | 'fable'
 export const CODE_MODELS: readonly CodeModel[] = ['auto', 'sonnet', 'opus', 'fable']
+export const CODE_MODEL: CodeModel = 'sonnet'
 // The model code is fixed to, if any.
 export const pinnedModel = (c: CodeModel | undefined): Model | undefined => (c && c !== 'auto' ? c : undefined)
 
