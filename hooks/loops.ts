@@ -79,6 +79,7 @@ export const nowOf = (l: GearboxLoop): { text: string; tool?: string; said: bool
 
 export const NOTES_KEPT = 3
 export const FILES_KEPT = 6
+export const SKILLS_KEPT = 24
 
 // A note joins the loop's history. `growing`: it is the line a request is still writing (the last note, longer), which
 // takes its place; a line like the last one adds nothing.
@@ -108,6 +109,31 @@ export const withFile = (l: GearboxLoop, tool: string, path: unknown): GearboxLo
   const kind: GearboxFile['kind'] = how === 'write' ? (before ? 'edited' : 'new') : how
   const was = before?.kind
   return { ...l, files: [...files.filter(f => f.path !== path), { path, kind: was && KIND_RANK[was] > KIND_RANK[kind] ? was : kind }].slice(-FILES_KEPT) }
+}
+
+// A skill the loop loads joins its list, once, in the order it was first called (a skill called again keeps its place).
+// The Skill tool's name may carry a leading slash. A loop that loads more than SKILLS_KEPT keeps the latest.
+export const withSkill = (l: GearboxLoop, tool: string, skill: unknown): GearboxLoop => {
+  const name = tool === 'Skill' && typeof skill === 'string' ? skill.trim().replace(/^\/+/, '') : ''
+  const skills = l.skills ?? []
+  return !name || skills.includes(name) ? l : { ...l, skills: [...skills, name].slice(-SKILLS_KEPT) }
+}
+
+// A skill the band draws as a tag, ` ✦ name `, one space between tags. They fill lines `room` characters wide, as many
+// lines as the list needs, breaking between tags and never inside one (a name wider than a line is cut with …).
+export const tagsOf = (skills: readonly string[], room: number): string[][] => {
+  const lines: string[][] = []
+  let used = 0
+  for (const skill of skills) {
+    const name = fit(skill, Math.max(1, room - 4))
+    const width = name.length + 4
+    if (!lines.length || used + 1 + width > room) {
+      lines.push([])
+      used = width
+    } else used += 1 + width
+    lines.at(-1)!.push(name)
+  }
+  return lines
 }
 
 // A file as the panel names it: under the worktree or the session's folder, relative to it; else its last two parts.

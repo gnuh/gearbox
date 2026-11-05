@@ -17,6 +17,7 @@ export type GearboxLoop = {
   said?: string // the first line of the latest text it wrote, before calling a tool
   notes?: GearboxNote[] // the last few things it said, oldest first
   files?: GearboxFile[] // the files it touched, the latest last
+  skills?: string[] // the skills an agent loaded, each once, in the order it first called them (never main's own)
   worktree?: string // the branch (else the folder's name) of the git worktree it works in; "worktree" when only the isolation is known
   worktreePath?: string // where that worktree is
   usage?: { in: number; out: number; usd: number } // tokens and list-price dollars its requests used (main: this turn)
