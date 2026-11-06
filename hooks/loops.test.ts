@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { GearboxDemand, GearboxLoop } from '../types'
-import { FILES_KEPT, NOTES_KEPT, SKILLS_KEPT, demandOf, ended, groupsOf, hasAgents, latestDemand, metaOf, fit, grown, noteOf, revived, shortPath, tagsOf, treeOf, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { FILES_KEPT, NOTES_KEPT, SKILLS_KEPT, demandOf, ended, finished, groupsOf, hasAgents, latestDemand, metaOf, fit, grown, noteOf, revived, shortPath, tagsOf, treeOf, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, working, worktreeAdd } from './loops'
 
 const loop = (extra: Partial<GearboxLoop> = {}): GearboxLoop => ({ label: 'agent', asked: 'sonnet', state: 'working', steps: 0, ...extra })
 
@@ -279,9 +279,52 @@ test('a demand’s state is the agents at work of its agents and since when; sho
   expect(metaOf(one!, false)).toMatch(/^3 of 4 at work · since \d\d:\d\d$/)
   expect(metaOf(one!, true)).toBe('3 at work')
   expect(metaOf(two!, false)).toMatch(/^1 of 1 at work · since \d\d:\d\d$/)
-  const finished = groupsOf({ ...crew(), i1: loop({ parent: 'main', demand: D2, state: 'done', endedAt: 9 }) }, new Set(['i1']))[0]!
-  expect(metaOf(finished, false)).toMatch(/^done · since \d\d:\d\d$/)
-  expect(metaOf(finished, true)).toBe('done')
+  const over = groupsOf({ ...crew(), i1: loop({ parent: 'main', demand: D2, state: 'done', endedAt: 9 }) }, new Set(['i1']))[0]!
+  expect(metaOf(over, false)).toMatch(/^done · since \d\d:\d\d$/)
+  expect(metaOf(over, true)).toBe('done')
   // A group with no demand has no time to say.
-  expect(metaOf({ nodes: [], live: 2, total: 2 }, false)).toBe('2 of 2 at work')
+  expect(metaOf({ nodes: [], live: 2, total: 2, queued: 0 }, false)).toBe('2 of 2 at work')
+})
+
+// The agents of D2 all ended, as the second demand of crew() when its issue agent is done.
+const ended2 = (): Record<string, GearboxLoop> => ({ ...crew(), i1: loop({ parent: 'main', demand: D2, state: 'done', endedAt: 9 }) })
+const group2 = (loops: Record<string, GearboxLoop>, shown: string[] = ['i1']) => groupsOf(loops, new Set(shown)).find(g => g.demand?.id === 'd2')!
+
+test('a demand is finished when none of its agents is at work and none of its parts is queued', () => {
+  expect(finished(group2(crew()))).toBe(false) // its agent is at work
+  expect(finished(group2(ended2()))).toBe(true)
+  // Waiting on background work of its own is still at work.
+  expect(finished(group2({ ...crew(), i1: loop({ parent: 'main', demand: D2, state: 'waiting' }) }))).toBe(false)
+  // A failed, refused or stopped agent has ended too.
+  expect(finished(group2({ ...crew(), i1: loop({ parent: 'main', demand: D2, state: 'done', failed: 'failed', endedAt: 9 }) }))).toBe(true)
+  // A demand whose agents all ended but whose part has not started is not finished: the part is an idle loop, no agent yet.
+  const queued = { ...ended2(), 'queued:0': loop({ label: 'part 4', parent: 'main', demand: D2, state: 'idle' }) }
+  const g = group2(queued)
+  expect([g.live, g.total, g.queued]).toEqual([0, 1, 1])
+  expect(finished(g)).toBe(false)
+  // The queued part counts whether or not it is drawn (the band may have no room for it), and only for its own demand.
+  expect(group2(queued, ['i1']).nodes.map(n => n.id)).toEqual(['i1'])
+  expect(group2(queued, ['i1']).queued).toBe(1)
+  expect(finished(group2({ ...ended2(), 'queued:0': loop({ parent: 'main', demand: D1, state: 'idle' }) }))).toBe(true)
+  // Only parts: no agent yet, and not finished.
+  const only = groupsOf({ main: loop({ label: 'main' }), 'queued:0': loop({ parent: 'main', demand: D2, state: 'idle' }), 'queued:1': loop({ parent: 'main', demand: D2, state: 'idle' }) }, new Set(['queued:0', 'queued:1']))[0]!
+  expect([only.live, only.total, only.queued, finished(only)]).toEqual([0, 0, 2, false])
+})
+
+test('"done" is printed for a finished demand only; one with nothing at work but parts queued says how many are queued', () => {
+  const queued = { ...ended2(), 'queued:0': loop({ label: 'part 4', parent: 'main', demand: D2, state: 'idle' }), 'queued:1': loop({ label: 'part 5', parent: 'main', demand: D2, state: 'idle' }) }
+  const g = group2(queued)
+  expect(metaOf(g, false)).toMatch(/^2 queued · since \d\d:\d\d$/)
+  expect(metaOf(g, true)).toBe('2 queued')
+  // Once one is at work it is "N of M at work" again; the queued parts are not among M.
+  const going = group2({ ...queued, i1: loop({ parent: 'main', demand: D2 }) })
+  expect(metaOf(going, false)).toMatch(/^1 of 1 at work · since \d\d:\d\d$/)
+  expect(metaOf(group2(ended2()), false)).toMatch(/^done · since/)
+})
+
+test('the readouts redraw on a tick while some loop is in a turn: main or an agent, not one waiting', () => {
+  expect(working({ main: loop({ label: 'main' }) })).toBe(true)
+  expect(working({ main: loop({ label: 'main', state: 'idle' }), a: loop({ parent: 'main' }) })).toBe(true)
+  expect(working({ main: loop({ label: 'main', state: 'idle' }), a: loop({ parent: 'main', state: 'waiting' }), b: loop({ parent: 'main', state: 'done' }), 'queued:0': loop({ state: 'idle' }) })).toBe(false)
+  expect(working({})).toBe(false)
 })

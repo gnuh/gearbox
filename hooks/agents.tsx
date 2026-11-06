@@ -1,6 +1,6 @@
 import type { ElementTable, RenderElement } from 'claude-code'
 import type { GearboxDemand, GearboxLoop } from '../types'
-import { type Group, type Node, QUEUED, bars, clock, demandOf, family, fit, gearText, groupsOf, hue, isQueued, kilo, labelOf, live, metaOf, money, nowOf, ran, shortPath, swapped, tagsOf, treeOf } from './loops'
+import { type Group, type Node, QUEUED, bars, clock, demandOf, family, finished, fit, gearText, groupsOf, hue, isQueued, kilo, labelOf, live, metaOf, money, nowOf, ran, shortPath, swapped, tagsOf, treeOf } from './loops'
 import { stoppable } from './stopping'
 
 // How the readouts draw the agents running: the band above the prompt (a tree of text in the terminal, a card each in
@@ -17,6 +17,27 @@ export type StopControl = { Button: ElementTable['Button']; press: (id: string) 
 const FINISHED = '#4FBF6A'
 const WAITING = '#E9A23B'
 const FAILED = '#E5646E'
+// The grey of a finished demand's edges, the one colour it keeps. Text there is dimColor with no colour; a border cannot be
+// dimmed the same way, since borderDimColor is the theme's own dim border, which some terminals draw in a colour (tan).
+// A mid grey reads on a light ground and on a dark one.
+const GREY = '#7C8592'
+
+// The pulse of a working agent's ●: neither surface has opacity in a Text, so the green steps through PULSE_STEPS shades
+// of itself, from full green down to a dim green and back, once per PULSE_CYCLE_MS. The shade is a function of the clock,
+// so every dot in the band is at the same step, and the screen has to be redrawn every PULSE_MS to move it.
+export const PULSE_CYCLE_MS = 2000
+export const PULSE_STEPS = 8
+export const PULSE_MS = PULSE_CYCLE_MS / PULSE_STEPS
+// The dim end of a shade is full green blended with this near-black, 28% green at the dimmest.
+const PULSE_FLOOR = 0.28
+const PULSE_GROUND = [0x0f, 0x12, 0x16] as const
+const PULSE_GREEN = [0x4f, 0xbf, 0x6a] as const
+export const PULSE: readonly string[] = Array.from({ length: PULSE_STEPS }, (_, i) => {
+  const strength = PULSE_FLOOR + (1 - PULSE_FLOOR) * (0.5 + 0.5 * Math.cos((2 * Math.PI * i) / PULSE_STEPS))
+  return `#${PULSE_GREEN.map((g, k) => Math.round(PULSE_GROUND[k]! + (g - PULSE_GROUND[k]!) * strength).toString(16).padStart(2, '0').toUpperCase()).join('')}`
+})
+// The shade of the working ● at `now` (ms): step 0 is the full green.
+export const pulseAt = (now: number): string => PULSE[Math.floor((((now % PULSE_CYCLE_MS) + PULSE_CYCLE_MS) % PULSE_CYCLE_MS) / PULSE_MS)]!
 
 // At most this many live agents are drawn; the rest are counted ("+N agents · Panel").
 const MAX_LIVE = 4
@@ -91,7 +112,11 @@ type Row = {
   two: boolean // a second line for the note
   skills: string[] // the skills it loaded, in load order (an agent's; main's are not shown)
   stop?: 'press' | 'wait' // an agent that can be stopped: its button, or "stopping" once pressed
+  grey?: true // in a finished demand: nothing keeps its colour, there is nothing to stop
 }
+
+// How the rows are drawn: whether the working ● pulses, and whether the demand they belong to is finished (all grey).
+type Look = { pulse: boolean; grey: boolean }
 
 const SRC = { main: 'main', rules: 'rules', auto: 'auto' } as const
 const SOURCE = { main: 'chosen by main', rules: 'by rules', auto: 'auto' } as const
@@ -104,23 +129,26 @@ const ending = (l: GearboxLoop, bare: boolean) => (bare && !l.failed && l.result
 const statsOf = (l: GearboxLoop, now: number, running: boolean) =>
   [`${l.steps} req`, l.since !== undefined && (running || l.endedAt !== undefined) ? ran((running ? now : l.endedAt!) - l.since) : ''].filter(Boolean).join('  ')
 
-const glyphOf = (id: string, l: GearboxLoop): [string, string | undefined] =>
-  isQueued(id) ? ['◌', undefined] : l.state === 'done' ? (l.failed ? ['✗', FAILED] : ['✓', FINISHED]) : l.state === 'waiting' ? ['◐', WAITING] : swapped(l) ? ['⚠', WAITING] : ['●', FINISHED]
+// The glyph of a loop and its colour. Only the ● of a loop at work pulses (with `pulse`); ✓ ✗ ◐ ◌ ⚠ stand still.
+const glyphOf = (id: string, l: GearboxLoop, now: number, pulse: boolean): [string, string | undefined] =>
+  isQueued(id) ? ['◌', undefined] : l.state === 'done' ? (l.failed ? ['✗', FAILED] : ['✓', FINISHED]) : l.state === 'waiting' ? ['◐', WAITING] : swapped(l) ? ['⚠', WAITING] : ['●', pulse && l.state === 'working' ? pulseAt(now) : FINISHED]
 
-const rowOf = (n: Node, now: number, shape: Shape): Row => {
+const rowOf = (n: Node, now: number, shape: Shape, look: Look): Row => {
   const l = n.loop
-  const [glyph, color] = glyphOf(n.id, l)
+  const [glyph, color] = glyphOf(n.id, l, now, look.pulse)
   // The narrow band names a running agent by its first word or two ("part 1", "Explore"); a finished one in full.
   const label = shape === 'narrow' && l.state !== 'done' ? labelOf(l).split(' · ')[0]! : labelOf(l)
+  // In a finished demand every colour goes (the glyph's, the gear's, a note's) and so does the Stop: the rows are dimmed text.
   const common = {
     node: n,
     glyph,
-    ...(color ? { color } : {}),
+    ...(color && !look.grey ? { color } : {}),
     label,
     gear: gearText(l),
     skills: l.skills ?? [],
-    ...(isQueued(n.id) ? {} : { tint: hue(l) }),
-    ...(stoppable(n.id, l) ? { stop: l.stopping ? ('wait' as const) : ('press' as const) } : {}),
+    ...(isQueued(n.id) || look.grey ? {} : { tint: hue(l) }),
+    ...(stoppable(n.id, l) && !look.grey ? { stop: l.stopping ? ('wait' as const) : ('press' as const) } : {}),
+    ...(look.grey ? { grey: true as const } : {}),
   }
   if (isQueued(n.id)) return { ...common, dim: true, extra: 'queued', stats: '', two: false }
   if (l.state === 'done') return { ...common, dim: true, ...(l.effortBy ? { src: SRC[l.effortBy] } : {}), extra: ending(l, shape === 'narrow'), stats: statsOf(l, now, false), two: false }
@@ -129,10 +157,10 @@ const rowOf = (n: Node, now: number, shape: Shape): Row => {
   const note: NoteLine =
     l.state === 'waiting'
       ? { head: 'waiting on its own background work', dim: true }
-      : { head: said.text, ...(said.tool ? { tool: said.tool } : {}), ...(fallback ? { fallback } : {}), ...(said.said ? {} : { dim: true }) }
+      : { head: said.text, ...(said.tool ? { tool: said.tool } : {}), ...(fallback ? { fallback } : {}), ...(said.said && !look.grey ? {} : { dim: true }) }
   return {
     ...common,
-    dim: false,
+    dim: look.grey,
     ...(l.effortBy ? { src: SRC[l.effortBy] } : {}),
     ...(l.worktree ? { extra: `⎇ ${l.worktree}` } : {}),
     stats: statsOf(l, now, true),
@@ -143,7 +171,7 @@ const rowOf = (n: Node, now: number, shape: Shape): Row => {
 }
 
 // The main conversation's row: in a turn, its note; between turns, that it waits on its agents or for a prompt.
-const mainRowOf = (main: GearboxLoop, agents: number, now: number): Row => {
+const mainRowOf = (main: GearboxLoop, agents: number, now: number, pulse: boolean): Row => {
   const said = nowOf(main)
   const working = main.state === 'working'
   const waits = !working && agents > 0
@@ -155,7 +183,7 @@ const mainRowOf = (main: GearboxLoop, agents: number, now: number): Row => {
   return {
     node: { id: 'main', loop: main, depth: 0, last: true, trail: [] },
     glyph: waits ? '◐' : '●',
-    ...(working ? { color: FINISHED } : waits ? { color: WAITING } : {}),
+    ...(working ? { color: pulse ? pulseAt(now) : FINISHED } : waits ? { color: WAITING } : {}),
     label: 'main',
     dim: false,
     gear: gearText(main),
@@ -320,11 +348,16 @@ const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number
   })
 }
 
-// The first line of a demand: its title (bold, cut where the line ends) and, right of it, how its agents are doing.
+// Whether a demand is drawn grey, as a disabled control: it has a box, and its agents have all finished (and none waits to
+// start). An agent with no demand has no box to grey.
+const greyed = (g: Group): boolean => g.demand !== undefined && finished(g)
+
+// The first line of a demand: its title (bold, cut where the line ends) and, right of it, how its agents are doing. A
+// finished demand's title is dimmed.
 const groupHead = ({ Box, Text }: Els, g: Group, short: boolean, key: string, mono: object = {}) => (
   <Box key={`${key}-head`} flexDirection="row" columnGap={2}>
     <Box flexGrow={1} flexShrink={1}>
-      <Text weight="bold" wrap="truncate" {...mono}>
+      <Text weight="bold" wrap="truncate" {...(greyed(g) ? { dimColor: true } : {})} {...mono}>
         {g.demand?.title ?? ''}
       </Text>
     </Box>
@@ -337,15 +370,16 @@ const groupHead = ({ Box, Text }: Els, g: Group, short: boolean, key: string, mo
 )
 
 // A demand in the terminal: a box with a dim round border, its title on the first line and its rows under it (Ink draws the
-// edges, and the padding keeps the rows 4 columns inside the width). Where the terminal is too narrow for the edges
-// (`bordered` false) it is the title and the rows. Agents with no demand are the rows alone.
+// edges, and the padding keeps the rows 4 columns inside the width). Once the demand is finished the border is an explicit
+// grey instead (see GREY). Where the terminal is too narrow for the edges (`bordered` false) it is the title and the rows.
+// Agents with no demand are the rows alone.
 const groupBox = (t: Els, g: Group, rows: RenderElement[], o: { bordered: boolean; short: boolean; mono?: object }) => {
   const { Box } = t
   if (!g.demand) return <Box key="demand-none" flexDirection="column">{rows}</Box>
   const key = `demand-${g.demand.id}`
   const head = groupHead(t, g, o.short, key, o.mono)
   return o.bordered ? (
-    <Box key={key} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+    <Box key={key} flexDirection="column" borderStyle="round" {...(greyed(g) ? { borderColor: GREY } : { borderDimColor: true })} paddingX={1}>
       {head}
       {rows}
     </Box>
@@ -368,6 +402,7 @@ export type Summary = {
   since?: number // when this turn began
   demand?: GearboxDemand // the request in force, which the parts not yet started belong to
   now: number
+  pulse: boolean // the ● of a loop at work steps through its shades with `now`; off, it stays full green
   subs: [string, GearboxLoop][] // the live subagents
   requests: [string, number][] // this turn's, per model
   usd?: number
@@ -393,11 +428,11 @@ export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: numbe
   const inner = bordered ? o.columns - BOX : o.columns
   const all = withQueued(s.loops, s.queued, s.demand)
   const chosen = choose(all, { ...(s.since !== undefined ? { since: s.since } : {}), room: BAND_ROOM, group: bordered ? GROUP_ROWS : 1, cost: n => (live(n.loop) ? (narrow && n.depth >= 2 ? 1 : 2) : 1) + tagsFor(n, n.loop.skills ?? [], inner).length })
-  const groups = groupsOf(all, chosen.shown).map(g => ({ g, rows: g.nodes.map(n => rowOf(n, s.now, shape)) }))
+  const groups = groupsOf(all, chosen.shown).map(g => ({ g, rows: g.nodes.map(n => rowOf(n, s.now, shape, { pulse: s.pulse, grey: greyed(g) })) }))
   const every = groups.flatMap(x => x.rows)
   // The columns are the same in every box, and main's row, which stands outside them, keeps its gear where theirs is.
   const align = alignOf(every, shape, inner, o.stop)
-  const mainRow = main ? mainRowOf(main, s.subs.length, s.now) : undefined
+  const mainRow = main ? mainRowOf(main, s.subs.length, s.now, s.pulse) : undefined
   const body = groups.map(({ g, rows }) => groupBox({ Box, Text }, g, treeRows({ Box, Text }, rows, shape, inner, o.stop, align), { bordered, short: narrow }))
   return (
     <Box flexDirection="column">
@@ -433,9 +468,10 @@ export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: numbe
 
 // ---- the desktop's band: metrics, then a card per agent ----
 
-// A chip: the desktop has no pill, so it is a small rounded box around a caption.
-const pill = ({ Box, Text }: Els, text: string, color?: string, key?: string) => (
-  <Box key={key} borderStyle="round" paddingX="xs" {...(color ? { borderColor: color } : { borderDimColor: true })}>
+// A chip: the desktop has no pill, so it is a small rounded box around a caption. In a finished demand (`grey`) its
+// border is the explicit grey, as the demand's.
+const pill = ({ Box, Text }: Els, text: string, color?: string, key?: string, grey?: boolean) => (
+  <Box key={key} borderStyle="round" paddingX="xs" {...(color ? { borderColor: color } : grey ? { borderColor: GREY } : { borderDimColor: true })}>
     <Text size="caption" {...(color ? { color } : { dimColor: true })}>
       {text}
     </Text>
@@ -443,8 +479,9 @@ const pill = ({ Box, Text }: Els, text: string, color?: string, key?: string) =>
 )
 
 // The strip a demand's title stands on, in the desktop's box: the grey of its text at a fifth of its strength, so it tints
-// the surface's own ground in a light or a dark theme.
+// the surface's own ground in a light or a dark theme. A finished demand's is flatter, at a tenth.
 const STRIP = '#7C859233'
+const STRIP_DONE = '#7C85921A'
 
 type Tree = { node: Node; kids: Tree[] }
 // The nodes in order, as a tree.
@@ -469,7 +506,7 @@ const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?
   const l = r.node.loop
   const note = r.note
   return (
-    <Box key={`card-${r.node.id}`} flexDirection="row" borderStyle="round" borderDimColor columnGap="sm" paddingX="sm">
+    <Box key={`card-${r.node.id}`} flexDirection="row" borderStyle="round" {...(r.grey ? { borderColor: GREY } : { borderDimColor: true })} columnGap="sm" paddingX="sm">
       <Box width={1} flexShrink={0} backgroundColor={r.tint ?? '#777777'} />
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
         <Box flexDirection="row" columnGap="sm" alignItems="center" flexWrap="wrap">
@@ -482,9 +519,9 @@ const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?
               {o.role}
             </Text>
           ) : null}
-          {pill(t, r.gear, r.tint)}
-          {l.effortBy ? pill(t, SOURCE[l.effortBy]) : null}
-          {l.worktree ? pill(t, `⎇ ${l.worktree}`) : null}
+          {pill(t, r.gear, r.tint, undefined, r.grey)}
+          {l.effortBy ? pill(t, SOURCE[l.effortBy], undefined, undefined, r.grey) : null}
+          {l.worktree ? pill(t, `⎇ ${l.worktree}`, undefined, undefined, r.grey) : null}
           <Box flexGrow={1} />
           <Text dimColor tabular size="caption">
             {r.stats.replace('  ', ' · ')}
@@ -493,7 +530,7 @@ const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?
         </Box>
         {r.skills.length ? (
           <Box flexDirection="row" columnGap="sm" alignItems="center" flexWrap="wrap">
-            {r.skills.map(name => pill(t, `✦ ${name}`, undefined, `skill-${name}`))}
+            {r.skills.map(name => pill(t, `✦ ${name}`, undefined, `skill-${name}`, r.grey))}
           </Box>
         ) : null}
         {note ? (
@@ -503,7 +540,7 @@ const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?
                 {note.head}
               </Text>
             </Box>
-            {note.tool ? pill(t, note.tool) : null}
+            {note.tool ? pill(t, note.tool, undefined, undefined, r.grey) : null}
             {note.fallback ? (
               <Text size="caption" color={WAITING}>
                 {`⚠ ${note.fallback}`}
@@ -538,7 +575,10 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
   const main = s.loops.main
   const all = withQueued(s.loops, s.queued, s.demand)
   const chosen = choose(all, { ...(s.since !== undefined ? { since: s.since } : {}), room: EXTRA_CARDS, cost: n => (live(n.loop) ? 0 : 1) })
-  const rows = new Map(chosen.nodes.map(n => [n.id, rowOf(n, s.now, 'wide')]))
+  // Each demand is a bordered container: a strip with its title (left) and how its agents are doing (right), then the cards.
+  // A finished one is all grey.
+  const groups = groupsOf(all, chosen.shown).map(g => ({ g, trees: nest(g.nodes), grey: greyed(g) }))
+  const rows = new Map(groups.flatMap(({ g, grey }) => g.nodes.map(n => [n.id, rowOf(n, s.now, 'wide', { pulse: s.pulse, grey })] as const)))
   const cards = (trees: Tree[]): RenderElement[] =>
     trees.map(({ node, kids }) => {
       const l = node.loop
@@ -547,8 +587,6 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
       const before = l.state === 'done' ? undefined : l.notes?.at(-2)?.text
       return card(t, rows.get(node.id)!, cards(kids), { ...(owner ? { role: `started by ${labelOf(owner).split(' · ')[0]}` } : {}), ...(before ? { before } : {}), ...(o.stop ? { stop: o.stop } : {}) })
     })
-  // Each demand is a bordered container: a strip with its title (left) and how its agents are doing (right), then the cards.
-  const groups = groupsOf(all, chosen.shown).map(g => ({ g, trees: nest(g.nodes) }))
   const done = Object.values(s.loops).filter(l => recent(l, s.since)).length
   const works = main?.state === 'working'
   const metric = (k: string, v: string, sub: string, color?: string, extra?: string) => (
@@ -589,13 +627,15 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
       <Box flexDirection="row" columnGap={2}>
         {shown}
       </Box>
-      {main ? card(t, mainRowOf(main, s.subs.length, s.now), [], { role: 'main session', ...(works && main.notes?.at(-2) ? { before: main.notes.at(-2)!.text } : {}) }) : null}
-      {groups.map(({ g, trees }) =>
+      {main ? card(t, mainRowOf(main, s.subs.length, s.now, s.pulse), [], { role: 'main session', ...(works && main.notes?.at(-2) ? { before: main.notes.at(-2)!.text } : {}) }) : null}
+      {groups.map(({ g, trees, grey }) =>
         g.demand ? (
-          <Box key={`demand-${g.demand.id}`} flexDirection="column" borderStyle="round" borderDimColor overflow="hidden">
-            <Box flexDirection="row" columnGap="md" alignItems="center" paddingX="sm" paddingY="xs" backgroundColor={STRIP}>
+          <Box key={`demand-${g.demand.id}`} flexDirection="column" borderStyle="round" {...(grey ? { borderColor: GREY } : { borderDimColor: true })} overflow="hidden">
+            <Box flexDirection="row" columnGap="md" alignItems="center" paddingX="sm" paddingY="xs" backgroundColor={grey ? STRIP_DONE : STRIP}>
               <Box flexShrink={1}>
-                <Text weight="semibold">{g.demand.title}</Text>
+                <Text weight="semibold" {...(grey ? { dimColor: true } : {})}>
+                  {g.demand.title}
+                </Text>
               </Box>
               <Box flexGrow={1} />
               <Text dimColor size="caption">
@@ -622,7 +662,7 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
 // Every loop of the session, finished ones included: main first, then each demand in a box (as the band draws it) holding
 // its agents nested under the loop that started them: its identity, what it has cost, its last notes (the latest first,
 // the earlier dimmed), the files it touched and its worktree.
-export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>, queued: readonly Queued[], o: { now: number; cwd?: string; handoff: boolean; mono: boolean; columns?: number; stop?: StopControl; demand?: GearboxDemand }) => {
+export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>, queued: readonly Queued[], o: { now: number; pulse: boolean; cwd?: string; handoff: boolean; mono: boolean; columns?: number; stop?: StopControl; demand?: GearboxDemand }) => {
   const m = o.mono ? { mono: true as const } : {}
   const all = withQueued(loops, queued, o.demand)
   const main = loops.main
@@ -633,7 +673,8 @@ export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>
   const running = Object.entries(all).filter(([id, l]) => id !== 'main' && live(l)).length
   const mainNode: Node[] = main ? [{ id: 'main', loop: main, depth: 0, last: true, trail: [] }] : []
   const nodes: Node[] = [...mainNode, ...groups.flatMap(g => g.nodes)]
-  const rows = new Map(nodes.map(n => [n.id, n.id === 'main' ? mainRowOf(main!, running, o.now) : rowOf(n, o.now, 'wide')] as const))
+  const grey = new Set(groups.filter(greyed).flatMap(g => g.nodes.map(n => n.id)))
+  const rows = new Map(nodes.map(n => [n.id, n.id === 'main' ? mainRowOf(main!, running, o.now, o.pulse) : rowOf(n, o.now, 'wide', { pulse: o.pulse, grey: grey.has(n.id) })] as const))
   const labelW = labelWidth([...rows.values()], 34)
   const block = (n: Node): RenderElement[] => {
     const l = n.loop
@@ -694,7 +735,7 @@ export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>
             <Text {...m}>
               <Text dimColor>{'skills: '}</Text>
               {l.skills.map((name, i) => (
-                <Text key={`${n.id}-s${i}`}>
+                <Text key={`${n.id}-s${i}`} {...(r.grey ? { dimColor: true } : {})}>
                   {i ? <Text dimColor>{' · '}</Text> : null}
                   {name}
                 </Text>

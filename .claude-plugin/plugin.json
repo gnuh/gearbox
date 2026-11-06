@@ -1,6 +1,6 @@
 {
   "name": "gearbox",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "description": "Per-prompt model and effort for Claude Code. By default an orchestrator keeps the main conversation on Opus to plan, brief and review, runs the work in one long-lived agent per model and splits independent parts across up to 6 agents at once; browser checks, long commands and git chores go to cheap subagents; and a live readout shows every agent's model.",
   "author": {
     "name": "Magno Chiabai"
@@ -52,6 +52,12 @@
         "full"
       ],
       "default": "off"
+    },
+    "pulse": {
+      "type": "boolean",
+      "title": "Pulsing dot",
+      "description": "The dot of an agent at work (and main's, while a turn runs) fades in and out in the band above the prompt, the Panel and the desktop app's cards: the green steps through eight shades in two seconds, so what is working shows at a glance. On by default; off keeps it a steady green. Also settable with /gearbox pulse.",
+      "default": true
     },
     "orchestrator": {
       "type": "boolean",

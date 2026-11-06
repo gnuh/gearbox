@@ -678,7 +678,7 @@ test('a model you name for the browser step is used only if your own words say i
 fresh('a new install has the orchestrator on, on Opus at auto, up to 6 agents, and codes at xhigh on Sonnet; what the person stored wins over each', async ($: any, on) => {
   const r = rig(on, [{ reach: 'point', depth: 0, mode: 'code' }, { reach: 'system', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
   const status = async () => (await $.command.run({ command: 'gearbox', args: '' })).text
-  expect(await status()).toContain('coding model sonnet · coding effort xhigh · navigator sonnet · orchestrator on (opus·auto, up to 6 agents at once) · log off')
+  expect(await status()).toContain('coding model sonnet · coding effort xhigh · navigator sonnet · orchestrator on (opus·auto, up to 6 agents at once) · log off · pulse on')
   // The session is already on the orchestrator's model: no model change, and a mechanical edit at one spot stays here at the coding effort.
   await sayOn($, 'claude-opus-5-5', 'rename the discount label in the cart')
   expect(r.steps).toEqual(['opus·xhigh'])
@@ -932,24 +932,25 @@ test('/gearbox settings opens a panel of buttons; a press saves the value, on ev
   expect((await $.command.run({ command: 'gearbox', args: '' })).text).toContain('coding effort medium · navigator haiku')
 })
 
-test('the settings panel is in blocks, each under its heading and framed: Coding, Hand-offs, Orchestrator, Debug; the removed settings have no row', async ($: any, on) => {
+test('the settings panel is in blocks, each under its heading and framed: Coding, Hand-offs, Orchestrator, Readout, Debug; the removed settings have no row', async ($: any, on) => {
   const r = rig(on, [])
   const buttons = (el: any): string[] => (el && typeof el === 'object' ? [...(el.type === 'Button' ? [el.props.key] : []), ...(el.children ?? []).flatMap(buttons)] : [])
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...SETTINGS_PANE, surface })
     // The blocks, in this order.
-    expect((await ui.findAll({ type: 'Box' })).map((b: any) => b.key as string | undefined).filter((k: string | undefined) => k?.startsWith('settings-'))).toEqual(['settings-coding', 'settings-handoffs', 'settings-orchestrator', 'settings-debug'])
+    expect((await ui.findAll({ type: 'Box' })).map((b: any) => b.key as string | undefined).filter((k: string | undefined) => k?.startsWith('settings-'))).toEqual(['settings-coding', 'settings-handoffs', 'settings-orchestrator', 'settings-readout', 'settings-debug'])
     // Each block: its heading, then a framed box of its rows' buttons, in this order.
     const texts = (el: any): string[] => (typeof el === 'string' ? [el] : el && typeof el === 'object' ? (el.children ?? []).flatMap(texts) : [])
     const block = async (id: string) => (await ui.find({ key: `settings-${id}` }))!
     const heading = async (id: string) => (await block(id)).children[0] as any
     const frame = async (id: string) => (await block(id)).children[1] as any
-    expect(await Promise.all(['coding', 'handoffs', 'orchestrator', 'debug'].map(async id => texts(await heading(id)).join('')))).toEqual(['Coding', 'Hand-offs', 'Orchestrator', 'Debug'])
-    for (const id of ['coding', 'handoffs', 'orchestrator', 'debug']) expect(((await block(id)).children as any[]).map(c => c.type)).toEqual(['Text', 'Box'])
-    for (const id of ['coding', 'handoffs', 'orchestrator', 'debug']) expect((await frame(id)).props.borderStyle).toBe('round')
+    expect(await Promise.all(['coding', 'handoffs', 'orchestrator', 'readout', 'debug'].map(async id => texts(await heading(id)).join('')))).toEqual(['Coding', 'Hand-offs', 'Orchestrator', 'Readout', 'Debug'])
+    for (const id of ['coding', 'handoffs', 'orchestrator', 'readout', 'debug']) expect(((await block(id)).children as any[]).map(c => c.type)).toEqual(['Text', 'Box'])
+    for (const id of ['coding', 'handoffs', 'orchestrator', 'readout', 'debug']) expect((await frame(id)).props.borderStyle).toBe('round')
     expect(buttons(await frame('coding'))).toEqual(['model-auto', 'model-sonnet', 'model-opus', 'model-fable', 'effort-medium', 'effort-high', 'effort-xhigh', 'effort-auto'])
     expect(buttons(await frame('handoffs'))).toEqual(['navigator-sonnet', 'navigator-haiku'])
     expect(buttons(await frame('orchestrator'))).toEqual(['orchestrator-auto', 'orchestrator-on', 'orchestrator-off'])
+    expect(buttons(await frame('readout'))).toEqual(['pulse-on', 'pulse-off'])
     expect(buttons(await frame('debug'))).toEqual(['log-off', 'log-on', 'log-full'])
     expect(texts(await frame('coding')).join(' ')).toMatch(/Model\s+(.*\s)?Effort/)
     // The value in use is marked: auto for the coding model, until the person picks one.
@@ -982,7 +983,7 @@ test('the Debug · Log row of the settings takes hold at once, as /gearbox log d
   const ui = await $.ui.mount({ ...SETTINGS_PANE, surface: 'terminal' })
   // Off: says so, and that it applies now; the footer tells the log from the rest.
   expect(await caption(ui, 'Applies now. Nothing is written.')).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'The marked value is in use. Log applies now; the rest from your next prompt. Esc closes.' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'The marked value is in use. Log and Pulse apply now; the rest from your next prompt. Esc closes.' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Changes apply from your next prompt/ })).toBeUndefined()
   expect(files.size).toBe(0)
   await stepOnce($)
@@ -1015,6 +1016,40 @@ test('the Debug · Log row of the settings takes hold at once, as /gearbox log d
   expect(await desk.find({ type: 'Text', text: /^Applies now · ~\/\.claude\/gearbox\/logs\/s-1\.jsonl$/ })).toBeDefined()
   expect(events(files).filter(e => e.ev === 'session')).toHaveLength(2) // off, then on again: a header again
   await desk.unmount()
+})
+
+test('/gearbox pulse and the Readout · Pulse row set whether the working dot pulses: on by default, saved when set, applied at once', async ($: any, on) => {
+  const r = rig(on, [])
+  const status = async () => (await $.command.run({ command: 'gearbox', args: '' })).text
+  expect(await status()).toContain('log off · pulse on')
+  expect((await $.command.run({ command: 'gearbox', args: 'pulse off' })).text).toContain('pulse off (applies now)')
+  expect(r.kv.get('settings')).toEqual({ pulse: 'off' })
+  // A value it does not take saves nothing.
+  expect((await $.command.run({ command: 'gearbox', args: 'pulse maybe' })).text).toBe('pulse takes on or off (the dot of an agent at work fades in and out)')
+  expect(r.kv.get('settings')).toEqual({ pulse: 'off' })
+  // The settings panel has the row: the value in use is marked, a press saves the other.
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...SETTINGS_PANE, surface })
+    expect((await ui.find({ key: 'pulse-off' }))?.props.label).toBe('off ✓')
+    expect((await ui.find({ key: 'pulse-on' }))?.props.label).toBe('on')
+    await ui.press({ key: 'pulse-on' })
+    expect(r.kv.get('settings')).toEqual({ pulse: 'on' })
+    expect((await ui.find({ key: 'pulse-on' }))?.props.label).toBe('on ✓')
+    await ui.press({ key: 'pulse-off' })
+    expect(r.kv.get('settings')).toEqual({ pulse: 'off' })
+    await ui.unmount()
+  }
+  expect(await status()).toContain('pulse off')
+})
+
+test('the plugin option pulse turns the pulse off, and what the person set with /gearbox wins over it', { options: { pulse: false } }, async ($: any, on) => {
+  const r = rig(on, [])
+  const status = async () => (await $.command.run({ command: 'gearbox', args: '' })).text
+  expect(await status()).toContain('log off · pulse off')
+  r.kv.set('settings', { pulse: 'on' })
+  expect(await status()).toContain('log off · pulse on')
+  r.kv.set('settings', { pulse: 'nonsense' })
+  expect(await status()).toContain('log off · pulse off') // not a value it takes: the option's
 })
 
 test('/gearbox settings says how to set values where the panel has no room', async ($: any, on) => {
