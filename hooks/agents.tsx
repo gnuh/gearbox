@@ -162,7 +162,7 @@ const STOP_W_NARROW = '[ ■ ]'.length
 const NARROW_FIXED = 14 + 7 + STOP_W_NARROW + 4
 
 // A row's Stop: a button with just the mark, or "stopping…" in its place once pressed ("…" in the narrow band). `kind`:
-// the terminal's wide and narrow band and the panel, or a desktop card, whose button is named for the agent.
+// the terminal's wide and narrow band and the panel, or a desktop card (a secondary button).
 const stopSlot = ({ Text }: Pick<ElementTable, 'Text'>, c: StopControl, r: Row, kind: 'wide' | 'narrow' | 'desktop'): RenderElement | null => {
   if (!r.stop) return null
   const { Button } = c
@@ -177,10 +177,10 @@ const stopSlot = ({ Text }: Pick<ElementTable, 'Text'>, c: StopControl, r: Row, 
       <Text dimColor>{STOP_WAIT}</Text>
     )
   }
+  // The desktop draws a Button's label, not its children, and ButtonProps has no separate name or tooltip: just the mark.
+  // There it is a secondary button, as the unselected values of the settings are, not dim text.
   return kind === 'desktop' ? (
-    <Button key={`stop-${id}`} dimColor label={`Stop ${r.label}`} onPress={() => c.press(id)}>
-      {STOP_MARK}
-    </Button>
+    <Button key={`stop-${id}`} variant="secondary" label={STOP_MARK} onPress={() => c.press(id)} />
   ) : (
     <Button key={`stop-${id}`} dimColor label={STOP_MARK} onPress={() => c.press(id)} />
   )
