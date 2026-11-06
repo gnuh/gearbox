@@ -9,7 +9,7 @@ A Claude Code mod that picks the model and effort for every prompt and sends too
 - **The right gear per prompt.** A quick Sonnet call describes the request, and gearbox's rules turn that into a model and an effort.
 - **Cheap agents for tool-heavy work.** Browser checks go to a navigator, builds and long commands to Haiku, and git chores to Haiku once the conversation is long.
 - **An orchestrator, on by default.** The main conversation stays on Opus and plans, briefs and reviews. Code goes to a long-lived agent, and independent parts run in parallel, up to 6 at once.
-- **A live readout.** The band above the prompt shows every agent's model and effort as it works.
+- **A live readout.** The band above the prompt shows every agent's model and effort as it works, and a Stop button on each agent ends it (and the agents it started) without touching the others.
 
 ## Savings
 

@@ -183,13 +183,13 @@ export const withUsage = (l: GearboxLoop, u: { in: number; out: number; usd: num
 
 // A loop that ends: the moment, how, and the first line of what it handed back.
 export const ended = (l: GearboxLoop, at: number, o: { failed?: GearboxLoop['failed']; result?: string } = {}): GearboxLoop => {
-  const { doing: _, said: __, ...rest } = l
+  const { doing: _, said: __, stopping: ___, ...rest } = l
   return { ...rest, state: 'done', endedAt: at, ...(o.failed ? { failed: o.failed } : {}), ...(o.result ? { result: o.result } : {}) }
 }
 
 // A loop that runs again (a lane given a new job): what marked its last end goes.
 export const revived = (l: GearboxLoop): GearboxLoop => {
-  const { endedAt: _, failed: __, result: ___, ...rest } = l
+  const { endedAt: _, failed: __, result: ___, stopping: ____, ...rest } = l
   return rest
 }
 
@@ -228,3 +228,9 @@ export const treeOf = (loops: Record<string, GearboxLoop>, keep: (id: string, l:
 
 // A loop still at work: in a turn, or between turns waiting on background work of its own.
 export const live = (l?: GearboxLoop) => l?.state === 'working' || l?.state === 'waiting'
+
+// A fan-out part whose agent has not started is drawn as a loop of its own, under main (id `queued:<n>`); it is no agent yet.
+export const QUEUED = 'queued:'
+export const isQueued = (id: string) => id.startsWith(QUEUED)
+// "part 1: customers" reads "part 1 · customers".
+export const labelOf = (l: GearboxLoop) => l.label.replace(/^(part \d+):\s*/i, '$1 · ')

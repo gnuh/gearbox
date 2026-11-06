@@ -975,6 +975,48 @@ test('the settings panel is in blocks, each under its heading and framed: Coding
   await ui.unmount()
 })
 
+test('the Debug · Log row of the settings takes hold at once, as /gearbox log does: the log opens with the session header and what was pending, writes from the next request, and the row says where; the other rows wait for the next prompt', async ($: any, on) => {
+  rig(on, [{ reach: 'area', depth: 1 }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  const caption = (ui: any, text: string | RegExp) => ui.find({ type: 'Text', text })
+  const ui = await $.ui.mount({ ...SETTINGS_PANE, surface: 'terminal' })
+  // Off: says so, and that it applies now; the footer tells the log from the rest.
+  expect(await caption(ui, 'Applies now. Nothing is written.')).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'The marked value is in use. Log applies now; the rest from your next prompt. Esc closes.' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Changes apply from your next prompt/ })).toBeUndefined()
+  expect(files.size).toBe(0)
+  await stepOnce($)
+  expect(files.size).toBe(0) // nothing is written while it is off
+  // On: the header and the settings in force are in the file now, with no prompt in between.
+  await ui.press({ key: 'log-on' })
+  expect(events(files).map(e => e.ev)).toEqual(['session'])
+  expect(events(files)[0]).toMatchObject({ gearbox: '9.9.9', claude: '2.1.311', settings: { log: 'on' } })
+  expect((await ui.find({ key: 'log-on' }))?.props.label).toBe('on ✓')
+  expect(await caption(ui, 'Applies now · ~/.claude/gearbox/logs/s-1.jsonl')).toBeDefined()
+  // The next request is logged, though no prompt came since the press.
+  await stepOnce($)
+  await done($)
+  expect(events(files).map(e => e.ev)).toEqual(['session', 'step', 'turn'])
+  // Full is on as well: no second header, and the caption is the same.
+  await ui.press({ key: 'log-full' })
+  expect(events(files).map(e => e.ev)).toEqual(['session', 'step', 'turn'])
+  expect(await caption(ui, 'Applies now · ~/.claude/gearbox/logs/s-1.jsonl')).toBeDefined()
+  // Off again: the next request is not logged.
+  await ui.press({ key: 'log-off' })
+  expect(await caption(ui, 'Applies now. Nothing is written.')).toBeDefined()
+  await stepOnce($)
+  await done($)
+  expect(events(files).map(e => e.ev)).toEqual(['session', 'step', 'turn'])
+  await ui.unmount()
+  // On the desktop the same row says the same.
+  const desk = await $.ui.mount({ ...SETTINGS_PANE, surface: 'desktop' })
+  expect(await desk.find({ type: 'Text', text: 'Applies now. Nothing is written.' })).toBeDefined()
+  await desk.press({ key: 'log-on' })
+  expect(await desk.find({ type: 'Text', text: /^Applies now · ~\/\.claude\/gearbox\/logs\/s-1\.jsonl$/ })).toBeDefined()
+  expect(events(files).filter(e => e.ev === 'session')).toHaveLength(2) // off, then on again: a header again
+  await desk.unmount()
+})
+
 test('/gearbox settings says how to set values where the panel has no room', async ($: any, on) => {
   rig(on, [])
   on('ui.open', () => ({ value: { isPlaced: false, reason: 'narrow' } }))
