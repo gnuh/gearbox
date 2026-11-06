@@ -4,10 +4,15 @@ export type GearboxNote = { at: number; text: string; tool?: string }
 // A file a loop touched: read, edited, or created (written where it had not read one).
 export type GearboxFile = { path: string; kind: 'read' | 'edited' | 'new' }
 
+// A request that started agents: one typed prompt, or one message typed mid-turn, with the short title the survey gave it
+// (a few words, in English) and when it was typed (ms). The readouts draw the agents of one demand together, in a box.
+export type GearboxDemand = { id: string; title: string; at: number }
+
 // One row per model loop: 'main', or a subagent by its agent id.
 export type GearboxLoop = {
   label: string // "main", or the Agent call's description
   parent?: string // the loop that started it
+  demand?: GearboxDemand // the request it works for: the one in force when it started (or went on, for a lane given new work); an agent an agent started has its parent's
   asked: string // the model the current or last step requested
   answered?: string // the model that answered the last step
   effort?: string

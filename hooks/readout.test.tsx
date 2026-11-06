@@ -137,6 +137,16 @@ const show = async (ui: any, columns: number): Promise<string> => calm(plain(awa
 // The lines the mod drew, without the engine band a test stands in beneath it.
 const lines = async (ui: any, columns: number): Promise<string[]> => (await show(ui, columns)).split('\nengine band')[0]!.trimEnd().split('\n')
 
+// A demand's agents are drawn in a box. `inside` takes the edges off the lines of the boxes (the box's own lines, its top
+// and bottom edge, stay), so a test reads the rows as it did before; `fits` says every line of a box is exactly `columns` wide.
+const inside = (ls: string[]) => ls.map(l => (/^│ .* │$/.test(l) ? l.slice(2, -2).trimEnd() : l))
+const fits = (ls: string[], columns: number) => ls.filter(l => /^[╭│╰]/.test(l)).every(l => l.length === columns)
+const TOP = /^╭─+╮$/
+const BOTTOM = /^╰─+╯$/
+// The title line of a box: the title, and right of it how the demand's agents are doing ("2 of 4 at work · since 14:02").
+const head = (title: RegExp | string, meta: RegExp | string) => new RegExp(`^${typeof title === 'string' ? title : title.source} +${typeof meta === 'string' ? meta : meta.source}$`)
+const SINCE = '(?:\\d+ of \\d+ at work|done) · since \\d\\d:\\d\\d'
+
 // What a drawing's lines should be, one pattern each, in order: a line more or less fails the test.
 const expectLines = (got: string[], want: RegExp[]) => {
   expect(got).toHaveLength(want.length)
@@ -151,6 +161,8 @@ const spawnUnder = ($: any, description: string, model: string, parentAgentId: s
 // parts that run at once: two on Sonnet whose effort it names, a review on Opus that has already reported; part 2
 // started an Explore of its own. `owed`: a fourth part, which the main conversation has not started.
 const CREW = { options: { orchestrator: true, orchestrator_model: 'opus', orchestrator_effort: 'auto', code_effort: 'auto', orchestrator_agents: 4 } }
+// The title the survey gives the crew's request, which heads the box its agents are drawn in.
+const CREW_TITLE = 'Orders by customer, and the README output'
 const CREW_PARTS = [
   { what: 'customers', mode: 'code', depth: 1, files: ['services/customers'] },
   { what: 'README', mode: 'code', depth: 1, files: ['docs/README.md'] },
@@ -165,7 +177,8 @@ const crew = async ($: any, on: any, o: { owed?: boolean } = {}) => {
   const clock = mock.clock(on)
   on('session.cwd', () => ({ value: '/w/app' }))
   on('session.messages', () => ({ value: [] }))
-  on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ reach: 'area', depth: 2, mode: 'code', parts: o.owed ? CREW_PARTS : CREW_PARTS.slice(0, 3) }), usage: USAGE } }) as never)
+  let title = CREW_TITLE // what the survey calls the request it reads: a test changes it to read another
+  on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ title, reach: 'area', depth: 2, mode: 'code', parts: o.owed ? CREW_PARTS : CREW_PARTS.slice(0, 3) }), usage: USAGE } }) as never)
   const start = (id: string, description: string, model: string, extra: object = {}) =>
     $.agent.spawn({ tool_use_id: id, prompt: 'p', description, subagentType: 'general-purpose', model, provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5', background: false, fork: false, ...extra })
   // One request of agent `id`, in which it says something and then calls a tool.
@@ -192,7 +205,7 @@ const crew = async ($: any, on: any, o: { owed?: boolean } = {}) => {
   await step($, 'claude-opus-5-5', { agentId: 'a-t3', effort: 'xhigh' })
   await $.turn.complete({ turnId: 't', answer: '**6 findings** (1 medium: a fractional discount loses 1 cent)\n\nDetails below.', durationMs: 10, isAborted: false, agentId: 'a-t3' })
   b.setCost(13.27)
-  return { ...b, start, run, clock }
+  return { ...b, start, run, clock, setTitle: (t: string) => { title = t } }
 }
 
 test('the panel lists every loop with its model, nested under main', async ($: any, on) => {
@@ -223,13 +236,18 @@ test('the band: a header, main and a row per subagent, above what the mods below
   setCost(10.4)
   const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
   for (const text of [/^GearBox$/, /^opus·high$/, /^1 agent$/, /^2 req$/, /^\$10\.40$/, /^\/review$/, /engine band/]) expect(await term.find({ type: 'Text', text })).toBeDefined()
-  expectLines(await lines(term, 120), [
+  // The agent is drawn in a box of its demand: the command's turn started it, so its title is the command.
+  expect(fits(await lines(term, 120), 120)).toBe(true)
+  expectLines(inside(await lines(term, 120)), [
     /^GearBox +opus·high · 1 agent · this turn 2 req · \$10\.40 · why \/review +\[ Panel \] +\[ Settings \]$/,
     /^─+$/,
     /^● main +opus·high +1 req +Ns$/,
     /^ {2}thinking$/,
+    TOP,
+    head(/\/review/, SINCE),
     /^└─● deploy +haiku·low +1 req +Ns +\[ ■ \]$/,
     /^ {4}Bash: \.\/deploy\.sh staging$/,
+    BOTTOM,
   ])
   expect(await term.find({ type: 'Text', text: /—|⌀|avg/ })).toBeUndefined() // no dash, and no average of one turn
   for (const key of ['band-pane', 'band-settings', 'stop-a-deploy']) expect(await term.find({ key })).toBeDefined()
@@ -262,19 +280,27 @@ test('the band: a header, main and a row per subagent, above what the mods below
 test('the band draws main and its agents as a tree, two lines each: the identity, then the note and its tool; an agent’s own agent nests deeper', CREW, async ($: any, on) => {
   await crew($, on)
   const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-  expectLines(await lines(ui, 120), [
+  // The request's agents are in one box (the survey titled it), 4 columns inside the band; main stays above it.
+  expect(fits(await lines(ui, 120), 120)).toBe(true)
+  expectLines(inside(await lines(ui, 120)), [
     /^GearBox +opus·high \(auto\) · 3 agents · this turn 7 req · \$13\.27 · why code · area +\[ Panel \] +\[ Settings \]$/,
     /^─+$/,
     /^● main +opus·high +1 req +Ns$/,
     /^ {2}Waiting for the 2 parts; part 1 already has green tests · Agent$/,
+    TOP,
+    head(CREW_TITLE, SINCE),
     /^├─● part 1 · customers +sonnet·medium +main +2 req +Ns +\[ ■ \]$/,
     /^│ {3}Grouping orders by customer and adding the totals · Write$/,
     /^├─● part 2 · README +sonnet·medium +main +2 req +Ns +\[ ■ \]$/,
     /^│ {3}Running the examples to paste real output into the README · Bash$/,
     /^│ └─● Explore · uses of paginate +sonnet·low +rules +1 req +Ns +\[ ■ \]$/,
     /^│ {5}Looking for calls to paginate in src\/ · Grep$/,
-    /^└─✓ part 3 · review money\.ts +opus·medium +rules +done · 6 findings \(1 medium: a fraction… +1 req +Ns$/,
+    /^└─✓ part 3 · review money\.ts +opus·medium +rules +done · 6 findings \(1 medium: a[a-z ]*… +1 req +Ns$/,
+    BOTTOM,
   ])
+  // Its meta: the agents at work of the demand's four, and since when.
+  expect(await ui.find({ type: 'Text', text: /^3 of 4 at work · since \d\d:\d\d$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: CREW_TITLE })).toBeDefined()
   // The tool is its own, dimmed, piece after the note.
   expect(await ui.find({ type: 'Text', text: /^Grouping orders by customer and adding the totals · Write$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^ · Write$/ })).toBeDefined()
@@ -284,24 +310,39 @@ test('the band draws main and its agents as a tree, two lines each: the identity
 test('a terminal under 100 columns draws the narrow band: no tool, no source of the effort, no worktree, an agent’s own agent in one line', CREW, async ($: any, on) => {
   await crew($, on)
   const ui = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
-  expectLines(await lines(ui, 80), [
+  // The narrow band's box says only how many are at work.
+  expect(fits(await lines(ui, 80), 80)).toBe(true)
+  expectLines(inside(await lines(ui, 80)), [
     /^GearBox opus·high \(auto\) · 3 agents · \$13\.27 +\[ Panel \] \[ Settings \]$/,
     /^─+$/,
     /^● main +opus·high +Ns$/,
     /^ {2}Waiting for the 2 parts; part 1 already has green tests$/,
+    TOP,
+    head(CREW_TITLE, '3 at work'),
     /^├─● part 1 +sonnet·medium +Ns \[ ■ \]$/,
     /^│ {3}Grouping orders by customer and adding the totals$/,
     /^├─● part 2 +sonnet·medium +Ns \[ ■ \]$/,
     /^│ {3}Running the examples to paste real output into the README$/,
     /^│ └─● Explore +sonnet·low +Ns \[ ■ \]$/,
     /^└─✓ part 3 · review money\.ts · 6 findings .*$/,
+    BOTTOM,
   ])
-  expect(await ui.find({ type: 'Text', text: /this turn|why|rules|· Write/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /this turn|why|rules|· Write|since/ })).toBeUndefined()
   await ui.unmount()
   // A long note is cut with an ellipsis.
-  const tight = await $.ui.mount({ ...BAND_AT(50), surface: 'terminal' })
-  expect((await lines(tight, 50)).some(l => l.endsWith('…'))).toBe(true)
+  const tight = await $.ui.mount({ ...BAND_AT(70), surface: 'terminal' })
+  expect(fits(await lines(tight, 70), 70)).toBe(true)
+  expect((await lines(tight, 70)).some(l => l.endsWith('… │'))).toBe(true)
   await tight.unmount()
+  // Under 60 columns there is no border: the title line, then the rows, each cut to the terminal.
+  const bare = await $.ui.mount({ ...BAND_AT(50), surface: 'terminal' })
+  const rows = await lines(bare, 50)
+  expect(rows.some(l => /^[╭╰]|[╮╯]$/.test(l))).toBe(false)
+  expect(rows.some(l => /^Orders by customer, and the README[a-z ]*… +3 at work$/.test(l))).toBe(true)
+  expect(rows.at(-1)).toMatch(/^└─✓ part 3/)
+  expect(rows.every(l => l.length <= 50)).toBe(true)
+  expect(rows.some(l => l.endsWith('…'))).toBe(true)
+  await bare.unmount()
 })
 
 test('the band draws four live agents at most and counts the rest; an answer from another model shows as ⚠', async ($: any, on) => {
@@ -661,13 +702,16 @@ test('a finished agent is one dimmed line with its result, a failed one has a �
 test('a fan-out part whose agent has not started is queued (◌) under main, until it starts', CREW, async ($: any, on) => {
   const { start } = await crew($, on, { owed: true })
   const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-  const queued = (await lines(term, 120)).slice(-2)
+  // The queued part belongs to the request in force, so it is in that request's box, and it is no agent yet.
+  const queued = inside(await lines(term, 120)).slice(-3)
   expect(queued[0]).toMatch(/^├─✓ part 3 · review money\.ts /)
   expect(queued[1]).toMatch(/^└─◌ part 4 · billing +sonnet·\w+ +queued$/)
-  expect(await term.find({ type: 'Text', text: /^3 agents$/ })).toBeDefined() // a queued part is no agent yet
+  expect(queued[2]).toMatch(BOTTOM)
+  expect(await term.find({ type: 'Text', text: /^3 agents$/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /^3 of 4 at work · since \d\d:\d\d$/ })).toBeDefined()
   await term.unmount()
   const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
-  expect((await lines(narrow, 80)).at(-1)).toMatch(/^└─◌ part 4 +sonnet·\w+ +queued$/)
+  expect(inside(await lines(narrow, 80)).at(-2)).toMatch(/^└─◌ part 4 +sonnet·\w+ +queued$/)
   await narrow.unmount()
   const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
   expect(await desk.find({ key: 'card-queued:0' })).toBeDefined()
@@ -693,11 +737,14 @@ test('the panel gives each agent its last three notes, the files it touched, its
   await run('t1', 'Fixing the totals', { tool: 'Edit', file_path: '/w/app/src/orders.ts' })
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE_AT(110), surface })
-    expectLines((await lines(ui, 110)).filter(l => !/^\s*$/.test(l)).slice(0, 15), [
+    expect(fits(await lines(ui, 110), 110)).toBe(true)
+    expectLines(inside(await lines(ui, 110)).filter(l => !/^\s*$/.test(l)).slice(0, 17), [
       /^3 running · 1 done$/,
       /^● main +opus·high +\(auto: hand-off\) +1 req · Ns · \$0\.17$/,
       /^ {2}hh:mm:ss {2}Waiting for the 2 parts; part 1 already has green tests · Agent$/,
-      /^├─● part 1 · customers +sonnet·medium +chosen by main +⎇ part\/customers {2}\/tmp\/gb-wt-custom… +\[ ■ \]$/,
+      TOP,
+      head(CREW_TITLE, SINCE),
+      /^├─● part 1 · customers +sonnet·medium +chosen by main +⎇ part\/customers {2}\/tmp\/gb-wt-c[a-z-]*… +\[ ■ \]$/,
       /^│ {3}5 req · Ns · 155\.0k in \/ 10\.5k out · \$0\.4[12]$/,
       /^│ {3}hh:mm:ss {2}Fixing the totals · Edit$/,
       /^│ {3}hh:mm:ss {2}Testing the grouping · Edit$/,
@@ -1139,11 +1186,13 @@ test('the terminal band draws an agent’s skills as tags, in lines of their own
   await crew($, on)
   await load($, 'a-t1', 'tdd', 'swanson-e2e')
   const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-  expectLines(await lines(ui, 120), [
+  expectLines(inside(await lines(ui, 120)), [
     /^GearBox /,
     /^─+$/,
     /^● main /,
     /^ {2}Waiting for the 2 parts/,
+    TOP,
+    head(CREW_TITLE, SINCE),
     /^├─● part 1 · customers +sonnet·medium +main +2 req +Ns +\[ ■ \]$/,
     /^│ {4}✦ tdd {3}✦ swanson-e2e$/,
     /^│ {3}Grouping orders by customer and adding the totals · Skill$/,
@@ -1152,6 +1201,7 @@ test('the terminal band draws an agent’s skills as tags, in lines of their own
     /^│ └─● Explore · uses of paginate /,
     /^│ {5}Looking for calls to paginate in src\/ · Grep$/,
     /^└─✓ part 3 · review money\.ts /,
+    BOTTOM,
   ])
   // Each tag is a Text of its own, inverse and dimmed (readable in every theme), padded by a space each side; a plain
   // space stands between tags, and the line is the note's: one Text, truncated.
@@ -1193,35 +1243,43 @@ test('a long list of skills wraps between tags onto as many lines as it needs, n
   await load($, 'a-t1', 'tdd', 'swanson-e2e')
   await load($, 'a-t2', ...MANY)
   const wide = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-  const rows = await lines(wide, 120)
+  const drawn = await lines(wide, 120)
+  const rows = inside(drawn)
   expectLines(rows, [
     /^GearBox /,
     /^─+$/,
     /^● main /,
     /^ {2}Waiting for the 2 parts/,
+    TOP,
+    head(CREW_TITLE, SINCE),
     /^├─● part 1 · customers /,
     /^│ {4}✦ tdd {3}✦ swanson-e2e$/,
     /^│ {3}Grouping orders by customer and adding the totals · Skill$/,
     /^└─● part 2 · README /,
-    /^ {5}✦ swanson-db-rls-migrations {3}✦ tdd {3}✦ durable-progress {3}✦ diagnosing-bugs {3}✦ swanson-e2e {3}✦ swanson-frontend$/,
-    /^ {5}✦ swanson-core-architecture {3}✦ swanson-verify {3}✦ swanson-recreation-intelligence {3}✦ swanson-shared-packages$/,
-    /^ {5}✦ swanson-checkout-holds {3}✦ swanson-deploy$/,
+    /^ {5}✦ swanson-db-rls-migrations {3}✦ tdd {3}✦ durable-progress {3}✦ diagnosing-bugs {3}✦ swanson-e2e$/,
+    /^ {5}✦ swanson-frontend {3}✦ swanson-core-architecture {3}✦ swanson-verify {3}✦ swanson-recreation-intelligence$/,
+    /^ {5}✦ swanson-shared-packages {3}✦ swanson-checkout-holds {3}✦ swanson-deploy$/,
     /^ {4}Running the examples to paste real output into the README · Skill$/,
     /^ {2}└─● Explore · uses of paginate /,
     /^ {6}Looking for calls to paginate in src\/ · Grep$/,
+    BOTTOM,
     /^\+1 agent · Panel$/,
   ])
-  expectWrapped(tagLines(rows, /part 2 · README/), MANY, 120)
-  for (const l of rows) expect(l.length).toBeLessThanOrEqual(120)
+  // The box takes 4 columns of the line the tags fill.
+  expectWrapped(tagLines(rows, /part 2 · README/), MANY, 120 - 4)
+  for (const l of drawn) expect(l.length).toBeLessThanOrEqual(120)
   await wide.unmount()
   // Under 100 columns the narrow band keeps every tag too, on lines as wide as its room.
   const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
-  const small = await lines(narrow, 80)
+  const drawnSmall = await lines(narrow, 80)
+  const small = inside(drawnSmall)
   expectLines(small, [
     /^GearBox /,
     /^─+$/,
     /^● main /,
     /^ {2}Waiting for the 2 parts/,
+    TOP,
+    head(CREW_TITLE, '3 at work'),
     /^├─● part 1 {2}/,
     /^│ {4}✦ tdd {3}✦ swanson-e2e$/,
     /^│ {3}Grouping orders by customer and adding the totals$/,
@@ -1233,10 +1291,11 @@ test('a long list of skills wraps between tags onto as many lines as it needs, n
     /^ {5}✦ swanson-checkout-holds {3}✦ swanson-deploy$/,
     /^ {4}Running the examples to paste real output into the README$/,
     /^ {2}└─● Explore {3}/, // an agent's own agent is one line in the narrow band
+    BOTTOM,
     /^\+1 agent · Panel$/,
   ])
-  expectWrapped(tagLines(small, /part 2 {2}/), MANY, 80)
-  for (const l of small) expect(l.length).toBeLessThanOrEqual(80)
+  expectWrapped(tagLines(small, /part 2 {2}/), MANY, 80 - 4)
+  for (const l of drawnSmall) expect(l.length).toBeLessThanOrEqual(80)
   await narrow.unmount()
 })
 
@@ -1245,7 +1304,7 @@ test('an agent with no skills gets no extra line: the band is as it was', CREW, 
   const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /✦/ })).toBeUndefined()
   expect((await lines(ui, 120)).filter(l => l.includes('✦'))).toHaveLength(0)
-  expect(await lines(ui, 120)).toHaveLength(11) // the header, the rule, main's two lines, and each agent's two
+  expect(await lines(ui, 120)).toHaveLength(14) // the header, the rule, main's two lines, the box's three (edges and title), and each agent's two
   await ui.unmount()
 })
 
@@ -1253,16 +1312,16 @@ test('an agent’s skill lines count against the band’s rows: the finished age
   await crew($, on)
   const shown = async () => {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-    const rows = await lines(ui, 120)
+    const rows = inside(await lines(ui, 120))
     await ui.unmount()
     return rows
   }
-  // Main's two lines are not counted. 2 + 2 + 2 for the live agents and 1 for the review: 7 of the 8 rows.
-  expect(await shown()).toHaveLength(11)
+  // Main's two lines are not counted. 2 + 2 + 2 for the live agents, 3 for their box and 1 for the review: 10 of the 11 rows.
+  expect(await shown()).toHaveLength(14)
   expect((await shown()).some(l => /review money\.ts/.test(l))).toBe(true)
-  // One line of skills (3 + 2 + 2) leaves the review its one row; the twelve skills, in three lines (5 + 2 + 2), leave it none.
+  // One line of skills (3 + 2 + 2, and the box) leaves the review its one row; the twelve skills, in three lines (5 + 2 + 2), leave it none.
   await load($, 'a-t1', 'tdd')
-  expect(await shown()).toHaveLength(12)
+  expect(await shown()).toHaveLength(15)
   expect((await shown()).some(l => /review money\.ts/.test(l))).toBe(true)
   await load($, 'a-t1', ...MANY)
   const full = await shown()
@@ -1348,7 +1407,7 @@ test('the panel lists every skill an agent loaded, in a skills: line after its f
   await load($, 'a-t3', 'code-review') // the review has ended
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE_AT(110), surface })
-    const all = (await lines(ui, 110)).filter(l => !/^\s*$/.test(l))
+    const all = inside(await lines(ui, 110)).filter(l => !/^\s*$/.test(l))
     const at = all.findIndex(l => /^│ {3}files: /.test(l))
     expect(all[at + 1]).toBe('│   skills: tdd · swanson-e2e')
     const two = all.find(l => /skills: swanson-db/.test(l))
@@ -1394,7 +1453,7 @@ test('Stop is on every agent at work and on nothing else (main, a finished agent
   // The wide band: [ ■ ] at the end of the identity line, after the stats; the narrow band's too.
   const wide = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
   expect(await stopKeys(wide)).toEqual(keys)
-  const rows = await lines(wide, 120)
+  const rows = inside(await lines(wide, 120))
   expect(rows.filter(l => l.endsWith(' [ ■ ]'))).toHaveLength(3)
   expect(rows.some(l => /^└─◌ part 4 · billing/.test(l))).toBe(true) // queued: drawn, but nothing to stop
   expect(rows.find(l => /^└─✓ part 3/.test(l))).not.toContain('■')
@@ -1403,12 +1462,12 @@ test('Stop is on every agent at work and on nothing else (main, a finished agent
   await wide.unmount()
   const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
   expect(await stopKeys(narrow)).toEqual(keys)
-  expect((await lines(narrow, 80)).filter(l => l.endsWith(' Ns [ ■ ]'))).toHaveLength(3)
+  expect(inside(await lines(narrow, 80)).filter(l => l.endsWith(' Ns [ ■ ]'))).toHaveLength(3)
   await narrow.unmount()
   // The panel: at the end of each live agent's identity line.
   const pane = await $.ui.mount({ ...PANE_AT(100), surface: 'terminal' })
   expect(await stopKeys(pane)).toEqual(keys)
-  const block = (await lines(pane, 100)).filter(l => /^[│├└─ ]*[●◐✓✗◌] /.test(l))
+  const block = inside(await lines(pane, 100)).filter(l => /^[│├└─ ]*[●◐✓✗◌] /.test(l))
   expect(block.filter(l => l.endsWith(' [ ■ ]')).map(l => l.replace(/^[│├└─ ]*/, '').split(' ')[1])).toEqual(['part', 'part', 'Explore'])
   expect(block.find(l => /^└─✓ part 3/.test(l))).not.toContain('■')
   await pane.unmount()
@@ -1445,8 +1504,8 @@ test('a press on Stop calls TaskStop on that agent, with the press as consent; t
   expect(sent[0].consent).toBe('The user pressed Stop in the gearbox readout to stop part 1 · customers (a-t1).')
   expect(c.calls.filter((e: any) => e.tool === 'TaskStop')).toHaveLength(0) // answered by the TaskStop hook, no other
   // Every surface shows it stopping in the place of the button; the other agents keep theirs.
-  expect((await lines(wide, 120))[4]).toMatch(/^├─● part 1 · customers +sonnet·medium +main +2 req +Ns +stopping…$/)
-  expect((await lines(narrow, 80))[4]).toMatch(/^├─● part 1 +sonnet·medium +Ns +…$/)
+  expect(inside(await lines(wide, 120))[6]).toMatch(/^├─● part 1 · customers +sonnet·medium +main +2 req +Ns +stopping…$/)
+  expect(inside(await lines(narrow, 80))[6]).toMatch(/^├─● part 1 +sonnet·medium +Ns +…$/)
   expect(await desk.find({ type: 'Text', text: 'stopping…' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: 'stopping…' })).toBeDefined()
   for (const ui of [wide, narrow, desk, pane]) {
@@ -1458,10 +1517,11 @@ test('a press on Stop calls TaskStop on that agent, with the press as consent; t
   // Pressed once: the engine says it ended (killed) at the next look, and the row is the existing ✗ … stopped.
   agents['a-t1'] = 'killed'
   await c.clock.advance(3000)
-  expect((await lines(wide, 120))[4]).toMatch(/^├─✗ part 1 · customers +sonnet·medium +main +stopped +2 req +Ns$/)
-  expect((await lines(narrow, 80))[4]).toMatch(/^├─✗ part 1 · customers · stopped$/)
-  expect(await show(pane, 100)).toMatch(/^├─✗ part 1 · customers +sonnet·medium +chosen… +2 req · Ns · 62\.0k in \/ 4\.2k out · \$0\.17$/m)
-  expect(await show(pane, 100)).toMatch(/^│ +stopped hh:mm:ss$/m)
+  expect(inside(await lines(wide, 120))[6]).toMatch(/^├─✗ part 1 · customers +sonnet·medium +main +stopped +2 req +Ns$/)
+  expect(inside(await lines(narrow, 80))[6]).toMatch(/^├─✗ part 1 · customers · stopped$/)
+  const panel = inside((await show(pane, 100)).split('\n')).join('\n')
+  expect(panel).toMatch(/^├─✗ part 1 · customers +sonnet·medium +ch[a-z ]*… +2 req · Ns · 62\.0k in \/ 4\.2k out · \$0\.17$/m)
+  expect(panel).toMatch(/^│ +stopped hh:mm:ss$/m)
   expect(await stopKeys(wide)).toEqual(['stop-a-t2', 'stop-a-e1'])
   for (const ui of [wide, narrow, desk, pane]) await ui.unmount()
 })
@@ -1505,7 +1565,7 @@ for (const [how, door, why] of OUT_OF_REACH) {
     const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
     await ui.press({ key: 'stop-a-t1' })
     // Marked stopping at once, whichever way it goes.
-    expect((await lines(ui, 120))[4]).toMatch(/^├─● part 1 · customers .* stopping…$/)
+    expect(inside(await lines(ui, 120))[6]).toMatch(/^├─● part 1 · customers .* stopping…$/)
     // Its tool calls are refused with the reason; the other agents' and main's go on.
     const refused = await $.tool.call({ tool: 'Read', file_path: '/w/app/src/orders.ts', agentId: 'a-t1' })
     expect(JSON.stringify(refused)).toContain('the person stopped this agent')
@@ -1522,7 +1582,7 @@ for (const [how, door, why] of OUT_OF_REACH) {
     expect(c.settled()).toBe(before + 1)
     // The loop finishes on it: stopped, with no report of its own (the made-up answer is not one).
     await complete($, 'a-t1', end.answer)
-    expect((await lines(ui, 120))[4]).toMatch(/^├─✗ part 1 · customers +sonnet·medium +main +stopped +2 req +Ns$/)
+    expect(inside(await lines(ui, 120))[6]).toMatch(/^├─✗ part 1 · customers +sonnet·medium +main +stopped +2 req +Ns$/)
     expect(await show(ui, 120)).not.toContain('incomplete')
     // The log says how, and why TaskStop was not used.
     const stops = events(log).filter(e => e.ev === 'stop')
@@ -1544,10 +1604,10 @@ test('stopping an agent stops every agent it started too, the agent first; the a
   expect(sent[0].consent).toBe('The user pressed Stop in the gearbox readout to stop part 2 · README (a-t2) and the agents it started.')
   expect(sent[1].consent).toBe('The user pressed Stop in the gearbox readout to stop Explore · uses of paginate (a-e1), which part 2 · README (a-t2) started.')
   // Both say stopping; part 1 keeps its button.
-  const rows = await lines(ui, 120)
-  expect(rows[4]).toMatch(/\[ ■ \]$/)
-  expect(rows[6]).toMatch(/^├─● part 2 · README .* stopping…$/)
-  expect(rows[8]).toMatch(/^│ └─● Explore · uses of paginate .* stopping…$/)
+  const rows = inside(await lines(ui, 120))
+  expect(rows[6]).toMatch(/\[ ■ \]$/)
+  expect(rows[8]).toMatch(/^├─● part 2 · README .* stopping…$/)
+  expect(rows[10]).toMatch(/^│ └─● Explore · uses of paginate .* stopping…$/)
   expect(await stopKeys(ui)).toEqual(['stop-a-t1'])
   // The log has one stop per agent: the first with the agents that stopped along with it, those with whose stop they came.
   expect(events(log).filter(e => e.ev === 'stop')).toEqual([
@@ -1558,7 +1618,7 @@ test('stopping an agent stops every agent it started too, the agent first; the a
   agents['a-t2'] = 'killed'
   agents['a-e1'] = 'killed'
   await c.clock.advance(3000)
-  expect((await lines(ui, 120)).filter(l => /✗/.test(l)).map(l => l.replace(/^[│├└─ ]*/, '').split(/ {2,}/)[0])).toEqual(['✗ part 2 · README', '✗ Explore · uses of paginate'])
+  expect(inside(await lines(ui, 120)).filter(l => /✗/.test(l)).map(l => l.replace(/^[│├└─ ]*/, '').split(/ {2,}/)[0])).toEqual(['✗ part 2 · README', '✗ Explore · uses of paginate'])
   await ui.unmount()
 })
 
@@ -1690,8 +1750,189 @@ test('an agent the engine already ended along with the one stopped (a foreground
   // The engine's next look settles the rows by what it lists: part 1 done, the Explore stopped, and part 2 (listed as running
   // still) says stopping until the engine ends it.
   await c.clock.advance(3000)
-  const rows = (await lines(ui, 120)).filter(l => /^[│├└─ ]*[✓✗●] /.test(l) && !/^[│├└─ ]*● main/.test(l))
+  const rows = inside(await lines(ui, 120)).filter(l => /^[│├└─ ]*[✓✗●] /.test(l) && !/^[│├└─ ]*● main/.test(l))
   expect(rows.map(l => l.replace(/^[│├└─ ]*/, '').split(/ {2,}/)[0])).toEqual(['✓ part 1 · customers', '● part 2 · README', '✗ Explore · uses of paginate', '✓ part 3 · review money.ts'])
   expect(rows[1]).toMatch(/stopping…$/)
   await ui.unmount()
+})
+
+// ---- demands: a box per request ----
+
+// The crew's request has the three parts; while they run you type another, which the survey titles and an agent takes
+// (a message typed mid-turn is a request of its own): the band draws two boxes.
+const SECOND_TITLE = 'Issue for the failed phase 2 backup'
+const twoRequests = async ($: any, on: any) => {
+  const c = await crew($, on)
+  c.setTitle(SECOND_TITLE)
+  await $.prompt.submit({ text: 'enquanto isso, cria uma issue sobre o backup da fase 2 que falhou', turnId: 't' })
+  await c.start('t5', 'issue · backup failure', 'sonnet')
+  await c.run('t5', 'Writing the issue from the phase 2 backup log', { tool: 'Bash', command: 'cat logs/phase2-backup.log' })
+  return c
+}
+
+test('each request is a box of its own, with its title and how its agents are doing; main stays above the boxes; the finished agents give way to the live ones', CREW, async ($: any, on) => {
+  await twoRequests($, on)
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  const drawn = await lines(ui, 120)
+  expect(fits(drawn, 120)).toBe(true)
+  const rows = inside(drawn)
+  const tops = rows.flatMap((l, i) => (TOP.test(l) ? [i] : []))
+  const bottoms = rows.flatMap((l, i) => (BOTTOM.test(l) ? [i] : []))
+  expect(tops).toHaveLength(2)
+  expect(bottoms).toHaveLength(2)
+  // Main (its row and its note) is above the first box; the boxes follow one another.
+  expect(rows.findIndex(l => /^● main /.test(l))).toBeLessThan(tops[0]!)
+  expect(rows.slice(0, tops[0]!).every(l => !/[╭╰]/.test(l))).toBe(true)
+  expect(tops[1]).toBe(bottoms[0]! + 1)
+  // The first box: the crew's request, three of its four agents at work; the finished review gave way to the live agents.
+  expect(rows[tops[0]! + 1]).toMatch(head(CREW_TITLE, SINCE))
+  expect(rows[tops[0]! + 1]).toMatch(/3 of 4 at work · since \d\d:\d\d$/)
+  expect(rows.slice(tops[0]!, bottoms[0]! + 1).filter(l => /^[├└│─ ]*[●✓◐◌] /.test(l)).map(l => l.replace(/^[├└│─ ]*/, '').split(/ {2,}/)[0])).toEqual(['● part 1 · customers', '● part 2 · README', '● Explore · uses of paginate'])
+  // The second: the request typed mid-turn, titled by the survey, its one agent a tree of its own (the guides start fresh).
+  expect(rows[tops[1]! + 1]).toMatch(head(SECOND_TITLE, SINCE))
+  expect(rows[tops[1]! + 1]).toMatch(/1 of 1 at work · since \d\d:\d\d$/)
+  expect(rows[tops[1]! + 2]).toMatch(/^└─● issue · backup failure +sonnet·\w+ +1 req +Ns +\[ ■ \]$/)
+  expect(rows[tops[1]! + 3]).toMatch(/^ {4}Writing the issue from the phase 2 backup log · Bash$/)
+  expect(rows.at(-1)).toBe('+1 agent · Panel') // the finished review, which the live agents left no room for
+  expect(await ui.find({ type: 'Text', text: /part 3/ })).toBeUndefined()
+  await ui.unmount()
+  // The narrow band's boxes say how many are at work, and only that.
+  const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  expect(fits(await lines(narrow, 80), 80)).toBe(true)
+  const small = inside(await lines(narrow, 80))
+  expect(small.filter(l => TOP.test(l))).toHaveLength(2)
+  expect(small.some(l => head(CREW_TITLE, '3 at work').test(l))).toBe(true)
+  expect(small.some(l => head(SECOND_TITLE, '1 at work').test(l))).toBe(true)
+  await narrow.unmount()
+})
+
+test('a box takes 4 columns of the band: no row is wider than the box at any width from 60 up, with Stop and “stopping…” at the end of an identity line', CREW_LOGGED, async ($: any, on) => {
+  taskStop(on)
+  fakeDisk(on)
+  const agents = listing(on)
+  await twoRequests($, on)
+  for (const id of [...LIVE, 'a-t5']) agents[id] = 'running'
+  const first = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await first.press({ key: 'stop-a-t2' }) // part 2 and its Explore say stopping…
+  await first.unmount()
+  for (const columns of [60, 61, 70, 80, 99, 100, 101, 110, 118, 120, 140]) {
+    const ui = await $.ui.mount({ ...BAND_AT(columns), surface: 'terminal' })
+    const drawn = await lines(ui, columns)
+    // Every line of a box is exactly the width: the edges, the title and the rows (the identity lines and the notes) inside.
+    expect(fits(drawn, columns)).toBe(true)
+    expect(drawn.filter(l => /^[╭╰]/.test(l))).toHaveLength(4)
+    // The wide band says stopping… in the slot; the narrow band, from 100 columns down, just …
+    expect(drawn.some(l => (columns >= 100 ? /stopping… +│$/ : / Ns +… +│$/).test(l))).toBe(true)
+    // The Stop slot ends the line inside the box, at its own place.
+    expect(drawn.some(l => / \[ ■ \] +│$/.test(l))).toBe(true)
+    expect(drawn.every(l => l.length <= columns)).toBe(true)
+    await ui.unmount()
+  }
+  // Wide: "stopping…" is in the slot; its line fits the box with the 36-column flexible part that is left.
+  const wide = await $.ui.mount({ ...BAND_AT(100), surface: 'terminal' })
+  expect(inside(await lines(wide, 100)).some(l => /^[├└]─● part 2 · README .* stopping…$/.test(l))).toBe(true)
+  await wide.unmount()
+})
+
+test('under 60 columns there is no border: the title, then the rows, each no wider than the terminal; agents with no demand are drawn as before, with no title', CREW, async ($: any, on) => {
+  await twoRequests($, on)
+  for (const columns of [40, 50, 59]) {
+    const ui = await $.ui.mount({ ...BAND_AT(columns), surface: 'terminal' })
+    const drawn = await lines(ui, columns)
+    expect([columns, drawn.filter(l => /[╭╮╰╯]/.test(l) || /│$/.test(l))]).toEqual([columns, []])
+    expect([columns, drawn.filter(l => l.length > columns)]).toEqual([columns, []])
+    expect([columns, drawn.some(l => /^Orders by customer/.test(l))]).toEqual([columns, true])
+    expect([columns, drawn.some(l => /^Issue for the/.test(l))]).toEqual([columns, true])
+    await ui.unmount()
+  }
+})
+
+test('agents the record gives no demand (an older version’s) are drawn as they were: no box, no title', async ($: any, on) => {
+  bench(on)
+  await step($, 'claude-opus-5-5') // no typed prompt: no demand
+  await spawn($, 'deploy', 'haiku')
+  await step($, 'claude-haiku-5-5', { agentId: 'a-deploy', effort: 'low' })
+  const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  const rows = await lines(term, 120)
+  expect(rows.some(l => /[╭╰]/.test(l))).toBe(false)
+  expect(rows.some(l => /^└─● deploy +haiku·low /.test(l))).toBe(true)
+  await term.unmount()
+  const pane = await $.ui.mount({ ...PANE_AT(100), surface: 'terminal' })
+  expect((await lines(pane, 100)).some(l => /[╭╰]/.test(l))).toBe(false)
+  await pane.unmount()
+})
+
+test('a request whose agents all ended keeps its box, “done”, until the next prompt takes the finished agents off', CREW, async ($: any, on) => {
+  await crew($, on)
+  for (const id of ['a-e1', 'a-t2', 'a-t1']) await complete($, id, `${id} finished`)
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  const rows = inside(await lines(ui, 120))
+  expect(rows.some(l => TOP.test(l))).toBe(true)
+  expect(rows.some(l => head(CREW_TITLE, `done · since \\d\\d:\\d\\d`).test(l))).toBe(true)
+  expect(rows.filter(l => /^[├└│─ ]*✓ /.test(l)).length).toBe(4) // the three agents that finished, and the review
+  expect(await ui.find({ type: 'Button', key: 'stop-a-t1' })).toBeUndefined() // nothing at work to stop
+  await ui.unmount()
+  await pause()
+  await $.prompt.submit({ text: 'and now the docs' })
+  const next = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  // The finished agents are off the band (what it draws now is the new request's parts, queued, whose survey is the crew's).
+  const after = await lines(next, 120)
+  expect(after.some(l => /✓/.test(l))).toBe(false)
+  expect(after.filter(l => /◌ part \d/.test(l))).toHaveLength(3)
+  expect(after.some(l => /done · since \d\d:\d\d/.test(l))).toBe(true) // none of the request's agents at work now
+  await next.unmount()
+})
+
+test('the desktop draws each request as a bordered container: a strip with the title (left) and how its agents are doing (right), then their cards, unchanged; main’s card stays outside', CREW, async ($: any, on) => {
+  await twoRequests($, on)
+  for (const surface of ['desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface })
+    const boxes = (await ui.findAll({ type: 'Box' })).map((b: any) => JSON.parse(JSON.stringify(b))).filter((b: any) => String(b.props?.key ?? '').startsWith('demand-'))
+    expect(boxes).toHaveLength(2)
+    const [crewBox, issueBox] = boxes
+    // The container: a dim round border, clipped to it, the strip first and the cards in a column after it.
+    expect(crewBox.props).toMatchObject({ flexDirection: 'column', borderStyle: 'round', borderDimColor: true, overflow: 'hidden' })
+    const [strip, body] = crewBox.children
+    expect(strip.props).toMatchObject({ flexDirection: 'row', paddingX: 'sm' })
+    expect(typeof strip.props.backgroundColor).toBe('string')
+    expect(JSON.stringify(strip)).toContain(CREW_TITLE)
+    expect(JSON.stringify(strip.children[0])).toContain('"weight":"semibold"')
+    expect(JSON.stringify(strip.children.at(-1))).toMatch(/3 of 4 at work · since \d\d:\d\d/)
+    expect(JSON.stringify(strip.children.at(-1))).toContain('"dimColor":true')
+    expect(body.props).toMatchObject({ flexDirection: 'column', rowGap: 'sm', padding: 'sm' })
+    // The cards inside are the cards as they were: the agents of the request (the review finished, still shown here), and the Explore inside its parent's.
+    const cards = (box: any) => [...JSON.stringify(box).matchAll(/"key":"(card-[^"]+)"/g)].map(m => m[1])
+    expect(cards(crewBox)).toEqual(['card-a-t1', 'card-a-t2', 'card-a-e1', 'card-a-t3'])
+    expect(cards(issueBox)).toEqual(['card-a-t5'])
+    expect(JSON.stringify(issueBox.children[0])).toMatch(/1 of 1 at work/)
+    // Main's card and the stop buttons: main outside every box, the stop on each agent at work.
+    expect(JSON.stringify(boxes)).not.toContain('card-main')
+    expect(await ui.find({ key: 'card-main' })).toBeDefined()
+    expect(await stopKeys(ui)).toEqual([...LIVE, 'a-t5'].map(id => `stop-${id}`))
+    await ui.unmount()
+  }
+})
+
+test('the panel draws each request as a box too, below main, with the blocks of its agents inside; under 60 columns it has no border', CREW, async ($: any, on) => {
+  await twoRequests($, on)
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE_AT(110), surface })
+    const drawn = await lines(ui, 110)
+    expect(fits(drawn, 110)).toBe(true)
+    const rows = inside(drawn)
+    const tops = rows.flatMap((l, i) => (TOP.test(l) ? [i] : []))
+    expect(tops).toHaveLength(2)
+    expect(rows.findIndex(l => /^● main /.test(l))).toBeLessThan(tops[0]!)
+    expect(rows[tops[0]! + 1]).toMatch(head(CREW_TITLE, SINCE))
+    expect(rows[tops[1]! + 1]).toMatch(head(SECOND_TITLE, SINCE))
+    // The finished review is in the panel, in the first box, which the band left out.
+    expect(rows.slice(tops[0]!, tops[1]!).some(l => /✓ part 3 · review money\.ts/.test(l))).toBe(true)
+    expect(rows.slice(tops[1]!).some(l => /^└─● issue · backup failure /.test(l))).toBe(true)
+    await ui.unmount()
+  }
+  const narrow = await $.ui.mount({ ...PANE_AT(50), surface: 'terminal' })
+  const small = await lines(narrow, 50)
+  expect(small.some(l => /[╭╮╰╯]/.test(l))).toBe(false)
+  expect(small.some(l => /^Orders by customer/.test(l))).toBe(true)
+  await narrow.unmount()
 })

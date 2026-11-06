@@ -1,4 +1,4 @@
-import type { GearboxFile, GearboxLoop } from '../types'
+import type { GearboxDemand, GearboxFile, GearboxLoop } from '../types'
 import { MODELS, type Model } from './policy'
 
 // What the readouts know of a loop (see GearboxLoop), kept apart from the hooks that fill it and the components that
@@ -224,6 +224,58 @@ export const treeOf = (loops: Record<string, GearboxLoop>, keep: (id: string, l:
   }
   walk('main', 1, [])
   return out
+}
+
+// ---- demands: the request each agent works for ----
+
+// The demand a loop works for: its own, else the one of the loop that started it (an agent an agent started has its
+// parent's). Undefined for a loop that has none (one an older version recorded, or one no prompt started).
+export const demandOf = (loops: Record<string, GearboxLoop>, id: string): GearboxDemand | undefined => {
+  let at: string | undefined = id
+  for (let i = 0; at && at !== 'main' && i < 9; i++) {
+    const l: GearboxLoop | undefined = loops[at]
+    if (!l) return undefined
+    if (l.demand) return l.demand
+    at = l.parent
+  }
+  return undefined
+}
+
+// The agents that work for a demand (a refused call is no agent, nor is a part not yet started).
+const agentsOf = (loops: Record<string, GearboxLoop>, key: string) =>
+  Object.entries(loops).filter(([id, l]) => id !== 'main' && !isQueued(id) && l.failed !== 'refused' && (demandOf(loops, id)?.id ?? '') === key)
+
+// The latest demand some agent works for, for a session that lost its own memory of it (a reload).
+export const latestDemand = (loops: Record<string, GearboxLoop>): GearboxDemand | undefined =>
+  Object.keys(loops)
+    .filter(id => id !== 'main' && !isQueued(id))
+    .map(id => demandOf(loops, id))
+    .reduce<GearboxDemand | undefined>((best, d) => (d && (!best || d.at > best.at) ? d : best), undefined)
+
+// Whether any agent works for the demand: one that started none is only a request, not yet a group.
+export const hasAgents = (loops: Record<string, GearboxLoop>, d: GearboxDemand) => agentsOf(loops, d.id).length > 0
+
+// The agents the readouts draw, in the boxes of their demands: each demand once, the earliest first, with its agents as a
+// tree of its own (the guides start fresh in each), how many of the demand's agents are at work and how many it has in
+// all. Agents with no demand come first, in a group with none.
+export type Group = { demand?: GearboxDemand; nodes: Node[]; live: number; total: number }
+export const groupsOf = (loops: Record<string, GearboxLoop>, shown: ReadonlySet<string>): Group[] => {
+  const keyOf = (id: string) => demandOf(loops, id)?.id ?? ''
+  const found = new Map<string, GearboxDemand | undefined>()
+  for (const id of shown) found.set(keyOf(id), demandOf(loops, id))
+  return [...found]
+    .sort(([ka, a], [kb, b]) => (a?.at ?? -1) - (b?.at ?? -1) || ka.localeCompare(kb))
+    .map(([key, demand]) => {
+      const own = agentsOf(loops, key)
+      return { ...(demand ? { demand } : {}), nodes: treeOf(loops, id => shown.has(id) && keyOf(id) === key), live: own.filter(([, l]) => live(l)).length, total: own.length }
+    })
+}
+
+// A demand's state, right of its title: "2 of 4 at work · since 14:02", or "done · since 14:02"; `short` (the narrow band):
+// "2 at work", or "done".
+export const metaOf = (g: Group, short: boolean): string => {
+  const state = short ? (g.live ? `${g.live} at work` : 'done') : g.live ? `${g.live} of ${g.total} at work` : 'done'
+  return short || !g.demand ? state : `${state} · since ${clock(g.demand.at).slice(0, 5)}`
 }
 
 // A loop still at work: in a turn, or between turns waiting on background work of its own.

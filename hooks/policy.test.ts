@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, KEPT, keptReason, subagentAsk, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODEL, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, NESTED_READ, NESTED_WRITER, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
+import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, KEPT, keptReason, subagentAsk, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODEL, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, NESTED_READ, NESTED_WRITER, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor, cleanTitle, titleFromText } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -929,4 +929,47 @@ test('the fan tool’s answer to an agent of an agent holds nothing back, has no
   // The main conversation's answer is as it was.
   expect(fanReply([...parts])).toContain('refused here')
   expect(fanReply([...parts])).not.toContain('cannot start agents of their own')
+})
+
+// ---- a request's title ----
+
+test('the survey is asked for a title of at most eight words, in English, and the reading keeps it clean; a reply with none is read as before', () => {
+  expect(SURVEY).toContain('- title: a short title for the request, at most 8 words, in English')
+  expect(SURVEY).toContain('"title":"Group orders by customer"')
+  expect(readReading('{"title":"Group orders by customer","reach":"area","depth":1}')).toEqual(reading({ title: 'Group orders by customer' }))
+  // Whitespace folded, quotes and the closing full stop off, at most eight words.
+  expect(readReading('{"title":"  \\"Fix the   totals\\".  ","reach":"area","depth":1}')?.title).toBe('Fix the totals')
+  expect(readReading('{"title":"one two three four five six seven eight nine ten","reach":"area","depth":1}')?.title).toBe('one two three four five six seven eight')
+  // No title, a blank one, one with no letter, or one that is no text: the reading has none (the fallback is the prompt's words).
+  for (const t of ['', '   ', '...', '"--"', '12']) {
+    const r = readReading(`{"title":${JSON.stringify(t)},"reach":"area","depth":1}`)
+    expect(r).toBeDefined()
+    if (t === '12') expect(r?.title).toBe('12')
+    else expect('title' in r!).toBe(false)
+  }
+  expect('title' in readReading('{"reach":"area","depth":1}')!).toBe(false)
+  expect('title' in readReading('{"title":7,"reach":"area","depth":1}')!).toBe(false)
+  // A reply that corrects itself is read by its last object, title included.
+  expect(readReading('{"title":"First","reach":"area","depth":1} no: {"title":"Second","reach":"area","depth":1}')?.title).toBe('Second')
+})
+
+test('a title is cut to eight words and to 80 characters; the fallback is the prompt’s first eight words, code and quotes left out, with … where it goes on', () => {
+  expect(cleanTitle('Orders by customer, and the README output')).toBe('Orders by customer, and the README output')
+  expect(cleanTitle('a b c d e f g h i')).toBe('a b c d e f g h')
+  expect(cleanTitle(`${'x'.repeat(100)} y`)).toBe(`${'x'.repeat(79)}…`)
+  expect(cleanTitle(undefined)).toBeUndefined()
+  expect(cleanTitle(['x'])).toBeUndefined()
+  expect(titleFromText('rename formatMoney to fmtMoney in money.ts')).toBe('rename formatMoney to fmtMoney in money.ts')
+  expect(titleFromText('rename formatMoney to fmtMoney in money.ts and update the docs')).toBe('rename formatMoney to fmtMoney in money.ts and update…')
+  expect(titleFromText('  fix the totals\n\nthen run the tests  ')).toBe('fix the totals then run the tests')
+  expect(titleFromText('why does this fail?\n```\nTypeError: x is not a function\n```')).toBe('why does this fail?')
+  expect(titleFromText('```\nonly code\n```')).toBe('only code') // nothing else to name it by
+  expect(titleFromText('   ')).toBe('Request')
+})
+
+test('a go-ahead keeps the title of the work it approves, else the message’s own', () => {
+  const floor = { care: undefined, reach: undefined }
+  expect(goAhead(reading({ title: 'Add a CSV export' }), reading({ cont: true }), floor)?.title).toBe('Add a CSV export')
+  expect(goAhead(reading(), reading({ title: 'Yes, but skip the docs' }), floor)?.title).toBe('Yes, but skip the docs')
+  expect('title' in goAhead(reading(), reading(), floor)!).toBe(false)
 })

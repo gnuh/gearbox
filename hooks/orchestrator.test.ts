@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NEUTRAL, ORCHESTRATOR, ORCHESTRATOR_EFFORTS, fanOut, fanParts, fanSlot, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
+import { NEUTRAL, ORCHESTRATOR, ORCHESTRATOR_EFFORTS, fanOut, fanParts, fanSlot, keepsRoute, laneResumable, laneStart, lanesFrom, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
 import { RESUME_MS, RESUME_TOKENS, type FanPart, type Gear, type Part, type Phase, type Reading, gearFor, handoffNote, label, plan, route, routeNote } from './policy'
 
 const reading = (r: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...r })
@@ -480,4 +480,27 @@ test('fanSlot: the part a call names by number, else the first not started that 
   expect(fanSlot(parts, new Set(), undefined)).toBe(1)
   expect(fanSlot(parts, new Set([0, 1, 2]), 'part 1: a')).toBe(-1)
   expect(fanSlot([], new Set(), 'part 1')).toBe(-1)
+})
+
+test('lanesFrom: per model, the newest agent the main conversation started; not a fork, a refused or stopped row, a worktree part, an agent of an agent or Fable', () => {
+  const row = (asked: string, extra: object = {}) => ({ label: 'analyze', parent: 'main', asked, state: 'done' as const, steps: 3, since: 100, endedAt: 200, ...extra })
+  const now = 1_000_000
+  const lanes = lanesFrom(
+    {
+      main: { label: 'main', asked: 'opus', state: 'working', steps: 1 },
+      old: row('claude-sonnet-5-5', { endedAt: 300 }),
+      new: row('claude-sonnet-5-5', { endedAt: 900 }),
+      busy: row('claude-opus-5-5', { state: 'working', endedAt: undefined, since: 500 }),
+      fork: row('claude-haiku-5-5', { label: '/review', endedAt: 950 }),
+      refused: row('claude-haiku-5-5', { failed: 'refused', endedAt: 960 }),
+      stopped: row('claude-haiku-5-5', { failed: 'stopped', endedAt: 970 }),
+      part: row('claude-haiku-5-5', { worktree: 'feat/x', endedAt: 980 }),
+      nested: row('claude-haiku-5-5', { parent: 'new', endedAt: 990 }),
+      fable: row('claude-fable-5-5', { endedAt: 995 }),
+    },
+    now,
+  )
+  // An agent at work is as warm as now; one that ended, as its last activity; context is not recorded.
+  expect(lanes).toEqual({ sonnet: { id: 'new', at: 900, tokens: 0 }, opus: { id: 'busy', at: now, tokens: 0 } })
+  expect(lanesFrom({}, now)).toEqual({})
 })

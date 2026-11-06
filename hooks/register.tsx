@@ -1,6 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, AgentStatus, ClassicHookInputs, ElementTable, EngineInterface, RenderElement, ModelEffort, PluginOptions, PromptOrigin, Register, TurnUsage } from 'claude-code'
-import type { GearboxLoop, GearboxReports } from '../types'
+import type { GearboxDemand, GearboxLoop, GearboxReports } from '../types'
 import {
   type CodeEffort,
   type CodeModel,
@@ -35,6 +35,10 @@ import {
   isBrowserTool,
   isChoreCommand,
   isLongCommand,
+  isReadOnlyCommand,
+  type MidAgent,
+  midHeld,
+  midNote,
   LONG_CONTEXT,
   everyday,
   EFFORTS,
@@ -78,15 +82,16 @@ import {
   subagentAsk,
   WORKTREE_FAILED,
   stepDown,
+  titleFromText,
   trimRequest,
   verifyAsk,
   writesNoCode,
 } from './policy'
 import { runHooks } from './classic'
 import { NARROW, type Queued, type StopControl, type Summary, desktopBand, panelBody, terminalBand } from './agents'
-import { NOTE_EVERY_MS, ended, family, gearText, grown, kilo, labelOf, live, noteOf, revived, toolName, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { NOTE_EVERY_MS, demandOf, ended, family, gearText, grown, hasAgents, isQueued, kilo, labelOf, latestDemand, live, noteOf, revived, toolName, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
 import { STOP_ANSWER, STOP_DENIED, STOP_GRACE_MS, agentName, findAgents, stopPlan, stoppableIds } from './stopping'
-import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lanes, fanOut, fanParts, fanSlot, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
+import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lanes, fanOut, fanParts, fanSlot, keepsRoute, laneResumable, laneStart, lanesFrom, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
 import { READERS, REFUSED, SPLIT, type Refusal, briefVerdict, nestedCap, readerGear, settle, whyNoNestedFan } from './nesting'
 
 // US$ per million tokens.
@@ -129,6 +134,37 @@ const patch = ($: EngineInterface, id: string, fn: (l: GearboxLoop | undefined) 
     for (const k of done.slice(0, Math.max(0, Object.keys(next).length - KEEP_LOOPS))) delete next[k]
     return next
   })
+
+// The request the agents that start now work for, which the readouts draw them together under: `now` is the latest typed
+// prompt that is not a nod or a continuation (a nod or a continuation goes on with the demand whose agents it goes on
+// with). `pending`: a message typed mid-turn whose work the rules hand to an agent, or a slash command's, which the next
+// agent that starts takes up (and from then on is the demand in force). A reload loses both: the demand is read back
+// from the readout's record (latestDemand).
+type DemandState = { now?: GearboxDemand; pending?: GearboxDemand }
+
+// The demand a typed prompt belongs to: the one in force when the prompt only goes on with it (`carries`: a nod, a
+// continuation or a go-ahead) and agents work for it already; else a new one, `title` its survey's (else the first words
+// of the prompt). A request that has started no agent is no group yet, so a go-ahead after one starts its own.
+const demandFor = async ($: EngineInterface, st: DemandState, log: (rec: Record<string, unknown>) => void, text: string, o: { carries: boolean; title?: string | undefined }) => {
+  st.pending = undefined
+  const loops = await read($, LOOPS)
+  const current = st.now ?? latestDemand(loops)
+  const keeps = o.carries && current !== undefined && hasAgents(loops, current)
+  const at = Date.now()
+  st.now = keeps ? current : { id: `d${at}`, title: o.title ?? titleFromText(text), at }
+  log({ ev: 'demand', demand: st.now.id, title: st.now.title, ...(keeps ? { carried: true } : {}) })
+}
+
+// The demand an agent that starts, or goes on with new work, is given: a pending one is taken up (from now on the one in
+// force), else the one in force.
+const claimDemand = async ($: EngineInterface, st: DemandState, log: (rec: Record<string, unknown>) => void): Promise<GearboxDemand | undefined> => {
+  if (st.pending) {
+    st.now = st.pending
+    st.pending = undefined
+    log({ ev: 'demand', demand: st.now.id, title: st.now.title, taken: true })
+  }
+  return st.now ?? latestDemand(await read($, LOOPS))
+}
 
 const alive = (loops: Record<string, GearboxLoop>) => Object.entries(loops).filter(([id, l]) => id !== 'main' && live(l))
 // The engine still counts an agent whose turn ended as alive: its turn is not over yet, or it waits on its own work.
@@ -925,6 +961,17 @@ export const register: Register = (on, options) => {
   // message lowers it to that.
   let lanes: Lanes = {}
   const laneEffort = new Map<string, ModelEffort>()
+  // A message the person typed while a turn ran, whose work is owed to an agent (see the mid-turn branch of
+  // prompt.submit): while `midOwed`, with a fixed coding effort, the main conversation may not edit or run what changes
+  // anything until an Agent starts or a SendMessage reaches an agent at work. `midGear`: what the rules give that work,
+  // for the Agent that takes it; `midHandoff`: its label, for the log; `midText`: the person's words, for that
+  // Agent's brief.
+  let midOwed = false
+  let midGear: Gear | undefined
+  let midHandoff = ''
+  let midText = ''
+  // The request the agents that start now work for (see DemandState).
+  const dm: DemandState = {}
   // The models whose lane an agent of this turn took or was sent: any other plain agent of that model started this
   // turn, even in the same message, is a fresh agent for the turn only.
   let laneTaken = new Set<Model>()
@@ -1061,6 +1108,9 @@ export const register: Register = (on, options) => {
     mainMayEdit = false
     lanes = {}
     laneEffort.clear()
+    midOwed = false
+    midGear = undefined
+    dm.now = dm.pending = undefined
     hookState.continued.clear()
     laneTaken = new Set()
     turnReading = undefined
@@ -1169,6 +1219,9 @@ export const register: Register = (on, options) => {
     if (enabled) {
       watchAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
       await syncAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
+      // The lanes lived in memory and are gone; the agents the loops record are the lanes again.
+      lanes = lanesFrom(await read($, LOOPS), Date.now())
+      if (Object.keys(lanes).length) logEvent({ ev: 'lanes', rebuilt: Object.fromEntries(Object.entries(lanes).map(([m, l]) => [m, l!.id])) })
     }
     if (logMode !== 'off') logEvent({ ...(await sessionFacts($, options)), settings: current() })
     return next(e)
@@ -1283,16 +1336,76 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.turnId) return next(e) // typed into a running turn, which keeps its gear
+    // Typed into a running turn, which keeps its gear: a new request all the same. It is read like a prompt typed now.
+    // When the rules hand it off, the main conversation gets a note naming the agents at work and the three ways to give
+    // it on (a message to the agent whose work it is; a plain agent beside them; one in a worktree when it touches files
+    // an agent edits), and, with a fixed coding effort, may not do the work itself until an agent has it. What the rules
+    // keep here (an answer, a small edit) is left to the main conversation. This never blocks the prompt.
+    if (e.turnId) {
+      let note: string | undefined
+      if (enabled && !e.command && !e.isMeta && typedByPerson(e.origin) && orchestrating()) {
+        try {
+          const loops = await read($, LOOPS)
+          const agents: MidAgent[] = alive(loops)
+            .filter(([id]) => !isQueued(id))
+            .map(([id, l]) => ({ id, label: labelOf(l), model: family(l.asked) ?? l.asked, edits: (l.files ?? []).filter(f => f.kind !== 'read').map(f => f.path) }))
+          logEvent({ ev: 'prompt', kind: 'typed', mid: true, chars: e.text.length, ...(logMode === 'full' ? { text: e.text.slice(0, 200) } : {}), agents: agents.length })
+          // A nod adds nothing to read.
+          if (!NOD.test(e.text.trim())) {
+            const started = Date.now()
+            const s = await survey($, { request: e.text, earlier: await recentAsks($), previous })
+            logEvent({ ev: 'survey', mid: true, ms: Date.now() - started, reply: s.reply, reading: s.reading ?? null })
+            const kept = turnGear ? label(turnGear) : 'unchanged'
+            const r = s.reading && { ...s.reading, ask: verifyAsk(s.reading.ask, e.text) }
+            const code = pinnedModel(codeModel)
+            const h = r ? orchestratorPlan(r, gearFor(r, standing, code), orchMain(), orchAgents, standing, code, false, chooses(), navigator).handoff : undefined
+            if (r && !h) {
+              // The rules keep it here, as for a prompt typed now: a small edit may be made by the main conversation itself.
+              if (r.mode === 'code') mainMayEdit = true
+              logEvent({ ev: 'gear', mid: true, gear: kept, why: `survey: ${readingWhy(r)}; kept here` })
+            } else {
+              const hold = !chooses() && !!h
+              // Its own request when an agent is to take it: the next agent that starts takes up its demand, and its
+              // title is the survey's, like a prompt's. A message that only goes on with the work under way is no new one.
+              if (h && r && !r.cont && !r.ahead) {
+                const at = Date.now()
+                dm.pending = { id: `d${at}`, title: r.title ?? titleFromText(e.text), at }
+                logEvent({ ev: 'demand', mid: true, pending: dm.pending.id, title: dm.pending.title })
+              }
+              if (hold && h) {
+                midOwed = true
+                midGear = h.gear
+                midHandoff = handoffLabel(h)
+                midText = e.text
+              }
+              if (chooses() && (!advised || advised.handed)) advised = { handoff: `mid · ${h ? handoffLabel(h) : 'unread'}`, handed: false }
+              logEvent({ ev: 'gear', mid: true, gear: kept, why: r ? `survey: ${readingWhy(r)}` : 'survey unreadable', ...(h ? { handoff: handoffLabel(h) } : {}), hold, agents: agents.length })
+              note = midNote(agents, { holds: hold, ...(h ? { gear: h.gear } : {}), ...(r ? { why: readingWhy(r) } : { unread: true }), orchestrated: true })
+            }
+          }
+        } catch (err) {
+          $.ui.log(`gearbox: a message typed mid-turn was not read: ${err}`, { to: 'debug' })
+        }
+      }
+      return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
+    }
     // A slash command or skill owns its turn's effort (its frontmatter, or Claude Code's own): no leftover gear.
     if (enabled && e.command && typedByPerson(e.origin)) {
       turnGear = turnHandoff = turnRoute = turnStep = turnWant = turnReading = advised = undefined
       mainSet = false
       handedOff = new Set()
       laneTaken = new Set()
+      midOwed = false
+      midGear = undefined
       skillCalls = []
       ownEffort = `/${e.command.name}`
       logEvent({ ev: 'prompt', kind: 'command', command: e.command.name, gear: 'its own effort' })
+      // The agents a command's turn starts work for it (its title the command and what follows); gearbox's own commands start none.
+      dm.pending = undefined
+      if (e.command.name !== 'gearbox') {
+        const at = Date.now()
+        dm.pending = { id: `d${at}`, title: titleFromText(`/${e.command.name} ${e.command.args}`), at }
+      }
       await startTurnTally($)
       await setWhy($, [`/${e.command.name}`, 'sets its own effort'])
       return next(e)
@@ -1307,8 +1420,8 @@ export const register: Register = (on, options) => {
       if (enabled && !e.command) logEvent({ ev: 'prompt', kind: e.origin?.kind ?? 'meta', keeps: turnGear ? label(turnGear) : 'no gear' })
       return next(e)
     }
-    // A deep hand-off the last turn's model never started: what to count before tuning when work goes up.
-    if (turnHandoff?.kind === 'deep' && !handedOff.has(-1)) logEvent({ ev: 'skipped', handoff: handoffLabel(turnHandoff) })
+    // A deep or lane hand-off the last turn's model never started: what to count before tuning when work goes up.
+    if ((turnHandoff?.kind === 'deep' || turnHandoff?.kind === 'lane') && !handedOff.has(-1)) logEvent({ ev: 'skipped', handoff: handoffLabel(turnHandoff) })
     // A fan-out some of whose agents the last turn's model never started.
     if (turnHandoff?.kind === 'fan' && fanOwed()) logEvent({ ev: 'skipped', handoff: handoffLabel(turnHandoff), owed: fanOwed() })
     // A hand-off planned but never started is not deep work under way (the main model may have answered itself):
@@ -1322,6 +1435,8 @@ export const register: Register = (on, options) => {
     mainSet = false
     handedOff = new Set()
     laneTaken = new Set()
+    midOwed = false
+    midGear = undefined
     spawningLanes.clear()
     begun.clear()
     spawnMeta.clear()
@@ -1366,6 +1481,7 @@ export const register: Register = (on, options) => {
     if (!orchestrated && !shifting && !fixed) {
       logEvent({ ev: 'gear', gear: 'untouched', why: 'the session runs a model gearbox does not know' })
       await setWhy($, ['untouched', 'unknown model'])
+      await demandFor($, dm, logEvent, e.text, { carries: NOD.test(e.text.trim()) })
       return next(e)
     }
     const base = fixed ?? floor
@@ -1382,9 +1498,12 @@ export const register: Register = (on, options) => {
     // yet past a fresh brief's), else in a fresh one on the same gear: never quietly back on this model.
     // With the orchestrator on, the agent is the model's lane; Fable's work is never a lane, always a fresh agent.
     const orchGear = orchMain()
-    const sameAgent = (g: Gear) =>
+    const atWork = await read($, LOOPS)
+    // `idle`: the message is a separate request, not a nod, a continuation or a go-ahead with the lane's work, so a lane
+    // still at work keeps its own and the request becomes a new agent (as seatParts does for a fan-out's parts).
+    const sameAgent = (g: Gear, idle = false) =>
       orchestrated && g.model !== 'fable'
-        ? laneResumable(lanes[g.model], Date.now()) ? { resume: lanes[g.model]!.id } : {}
+        ? laneResumable(lanes[g.model], Date.now()) && !(idle && live(atWork[lanes[g.model]!.id])) ? { resume: lanes[g.model]!.id } : {}
         : resumable(deepAgent, Date.now()) && deepAgent.gear.model === g.model ? { resume: deepAgent.id } : {}
     const goesOn = lastDeep
     // Deep work goes on in its agent for code, a question or a review; a commit, a long command or a browser check
@@ -1449,7 +1568,7 @@ export const register: Register = (on, options) => {
         // runs one, so its plan is steer mode's, on its own model.)
         if (subagent && p.handoff && (advises(p.handoff) || p.handoff.kind === 'aside')) p = { main: { model: fixed ?? upFor(want), effort: want.effort } }
         // More of the same work: back to the agent that holds it. Unrelated work starts clean.
-        if ((p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane') && !r.aside) p = { ...p, handoff: { ...p.handoff, ...sameAgent(p.handoff.gear) } }
+        if ((p.handoff?.kind === 'deep' || p.handoff?.kind === 'lane') && !r.aside) p = { ...p, handoff: { ...p.handoff, ...sameAgent(p.handoff.gear, !goes) } }
         if (orchestrated && r.parts.length) {
           const groups = fanOut(r.parts, orchAgents)
           logEvent({ ev: 'fan', parts: r.parts, cap: orchAgents, kept: p.handoff?.kind === 'fan' ? (p.handoff.parts?.length ?? 0) : 0, merged: groups.filter(g => g.length > 1).map(g => g.map(pt => pt.what).join(' + ')) })
@@ -1504,6 +1623,9 @@ export const register: Register = (on, options) => {
     }
     const r = work ?? msg
     turnReading = r && { ...r, ask: verifyAsk(r.ask, e.text) }
+    // Its demand: a nod, a go-ahead or a continuation goes on with the demand whose agents it goes on with; anything else
+    // is a request of its own, titled by the survey.
+    await demandFor($, dm, logEvent, e.text, { carries: (nod || !!msg?.ahead || !!msg?.cont) && !msg?.aside, title: r?.title })
     // Carrying on does not swallow independent parts: a continuation the plan would split fans out instead.
     const splits = !!turnReading && orchestrated && orchestratorPlan(turnReading, gearFor(turnReading, standing, code), orchGear, orchAgents, standing, code, false, chooses(), navigator).handoff?.kind === 'fan'
     // With the coding effort on `auto`, an answer that needs no deep look, or a guess, is the main conversation's own:
@@ -1741,6 +1863,8 @@ export const register: Register = (on, options) => {
       // model's lane, a part's only when the plan gave it the lane. It starts at the top effort, but its requests run
       // at the job's: that is the effort the readouts show, from the moment it starts.
       const job = !e.parentAgentId && !e.resume ? claimSpawn(e.tool_use_id) : undefined
+      // The request it works for: the one in force (a lane given new work moves to it); an agent an agent started has its parent's.
+      const works = e.parentAgentId ? demandOf(await read($, LOOPS), e.parentAgentId) : await claimDemand($, dm, logEvent)
       await patch($, started.agentId, l => ({
         steps: 0,
         asked: started.model,
@@ -1750,11 +1874,18 @@ export const register: Register = (on, options) => {
         state: 'working',
         label: e.description,
         parent: e.parentAgentId ?? 'main',
+        ...(works ? { demand: works } : {}),
         ...(meta?.effortBy ? { effortBy: meta.effortBy } : {}),
         ...(meta?.isolated && !l?.worktree ? { worktree: 'worktree' } : {}),
       }))
       await showStatus($, turnHandoff, stepLabel())
       watchAgents($, agentWatch, () => showStatus($, turnHandoff, stepLabel()))
+      // A message typed mid-turn is handed on once an agent starts, or starts again (a resume): nothing is held then.
+      if (midOwed && !e.parentAgentId) {
+        midOwed = false
+        midGear = undefined
+        logEvent({ ev: 'handed', mid: true, via: 'Agent', agent: started.agentId })
+      }
       // The agent a deep or handed-up step started: follow-ups go back to it.
       const deep = !e.parentAgentId && !e.resume && spawningDeep !== undefined && (spawningDeep.useId === undefined || spawningDeep.useId === e.tool_use_id)
       if (deep) {
@@ -1807,6 +1938,39 @@ export const register: Register = (on, options) => {
     const sent = await next(e)
     const r = (sent as { result?: { agentId?: string; worktreePath?: string; worktreeBranch?: string } }).result
     if (enabled && !failed(sent) && typeof r === 'object' && r?.agentId && (r.worktreePath || r.worktreeBranch)) await patch($, r.agentId, l => l && withWorktree(l, { path: r.worktreePath, branch: r.worktreeBranch }))
+    return sent
+  })
+
+  // A message that reaches any agent at work hands work on, whoever the agent is: a lane, the deep agent, or one no lane
+  // remembers (a plugin reload loses the lanes in memory and the readout's record keeps the agents). It is the turn's
+  // hand-off, and it lifts the hold of a message typed mid-turn. Lanes and the deep agent are counted below, where their
+  // effort is set as well.
+  on('tool.call', { tool: 'SendMessage' }, async ($, e, next) => {
+    const sent = await next(e)
+    if (!enabled || e.agentId || failed(sent)) return sent
+    const to = String((e as { to?: unknown }).to ?? '')
+    const loops = await read($, LOOPS)
+    const named = findAgents(loops, to)
+    const id = to !== 'main' && live(loops[to]) ? to : named.length === 1 ? named[0] : undefined
+    // A message to an agent that has reported is a lane given new work: it goes to the demand in force (the same one when
+    // the work goes on, a new one when it is a new request).
+    const resumed = !id && to !== 'main' && loops[to]?.state === 'done' && loops[to].parent === 'main' ? loops[to] : undefined
+    if (resumed) {
+      const given = await claimDemand($, dm, logEvent)
+      if (given && resumed.demand?.id !== given.id) await patch($, to, l => l && { ...l, demand: given })
+    }
+    if (!id) return sent
+    // It is for the work of an agent at work: the demand a mid-turn message opened is no new request.
+    dm.pending = undefined
+    if (midOwed) {
+      midOwed = false
+      midGear = undefined
+      logEvent({ ev: 'handed', mid: true, via: 'SendMessage', agent: id })
+    }
+    if (!laneOf(id) && deepAgent?.id !== id && (turnHandoff?.kind === 'deep' || turnHandoff?.kind === 'lane') && !handedOff.has(-1)) {
+      handedOff.add(-1)
+      logEvent({ ev: 'resume', agent: id })
+    }
     return sent
   })
 
@@ -1882,7 +2046,8 @@ export const register: Register = (on, options) => {
         const why = REFUSED[refusal]
         // No agent starts, so it gets a row of its own, ended: the person sees what was refused.
         const [label, asked] = [String(e.description ?? 'agent'), String(e.subagent_type ?? 'agent')]
-        await patch($, `refused:${e.tool_use_id ?? Date.now()}`, () => ended({ label, parent: caller, asked, state: 'done', steps: 0 }, Date.now(), { failed: 'refused', result: why }))
+        const demandOfCaller = demandOf(await read($, LOOPS), caller)
+        await patch($, `refused:${e.tool_use_id ?? Date.now()}`, () => ended({ label, parent: caller, ...(demandOfCaller ? { demand: demandOfCaller } : {}), asked, state: 'done', steps: 0 }, Date.now(), { failed: 'refused', result: why }))
         return { deny: `gearbox: ${why}` }
       }
       // With the coding effort on `auto` the call's model and effort win here as for any plain agent, within bounds.
@@ -1995,6 +2160,12 @@ export const register: Register = (on, options) => {
     if (orchestrating() && e.tool === 'Agent' && plain && !h && turnHandoff?.kind !== 'fan' && (chooses() || named !== 'fable')) {
       let job: Gear = { model: named ?? 'sonnet', effort: everyday(standing) }
       let d: Decided | undefined
+      // The agent a message typed mid-turn is handed to runs on the gear the rules gave that work, with the person's words.
+      const mid = !chooses() ? midGear : undefined
+      if (mid) {
+        job = mid
+        midGear = undefined
+      }
       if (chooses()) {
         const read = await jobGear($, String(e.prompt ?? e.description ?? ''), standing, pinnedModel(codeModel))
         d = await decide($, e, { model: read?.model ?? 'sonnet', effort: read?.effort ?? everyday(standing) }, { review: !!read?.reviews, asked: turnReading?.ask.model, code: codeModel })
@@ -2004,14 +2175,15 @@ export const register: Register = (on, options) => {
       const first = model !== 'fable' && !laneTaken.has(model)
       if (first) laneTaken.add(model)
       const key = expectSpawn(e.tool_use_id, { gear: job, lane: first })
-      logEvent({ ev: 'agent', type: 'general-purpose', asked, set: label(job), lane: laneStart(job.effort), why: first ? 'a lane without a hand-off' : model === 'fable' ? 'Fable, never a lane' : `beside the ${model} lane, for this turn only`, ...(d ? d.log : {}) })
+      logEvent({ ev: 'agent', type: 'general-purpose', asked, set: label(job), lane: laneStart(job.effort), why: first ? 'a lane without a hand-off' : model === 'fable' ? 'Fable, never a lane' : `beside the ${model} lane, for this turn only`, ...(mid ? { mid: true } : {}), ...(d ? d.log : {}) })
       expectMeta(e.tool_use_id, { effortBy: d?.effortBy ?? 'rules' })
-      const sent = await next({ ...e, model, effort: laneStart(job.effort) })
+      const sent = await next({ ...e, model, effort: laneStart(job.effort), ...(mid ? { prompt: `${e.prompt ?? ''}${ownBrief(await personSaid($, midText))}` } : {}) })
       // Failed before its agent started: the model's lane is still free, and a retry is its first.
       if (unstarted(sent, e.tool_use_id)) {
         if (e.tool_use_id) spawnMeta.delete(e.tool_use_id)
         spawningLanes.delete(key)
         if (first) laneTaken.delete(model)
+        if (mid) midGear = mid
       }
       return sent
     }
@@ -2101,6 +2273,16 @@ export const register: Register = (on, options) => {
     // Hand-offs are held to their agents only with a fixed coding effort. With `auto` the hand-off was advice, and the
     // main conversation, which has read the work, may do it itself.
     const holds = !chooses()
+    // A message typed mid-turn is owed to an agent: no edit and no command that changes anything until one has it. Reads
+    // and what is not code (see writesNoCode) stay allowed.
+    if (midOwed && holds) {
+      const edits = /^(Edit|Write|MultiEdit|NotebookEdit)$/.test(tool) && !(await notCode())
+      const shell = /^(Bash|PowerShell)$/.test(tool) && !isReadOnlyCommand(String((e as any).command ?? ''))
+      if (edits || shell) {
+        logEvent({ ev: 'strict', tool, mode: 'mid', refused: true })
+        return { deny: midHeld(alive(await read($, LOOPS)).length) }
+      }
+    }
     // The orchestrator does not write code: a change goes to a lane, except the one-spot edit its plan kept here.
     if (orchestrating() && holds && !mainMayEdit && !deepPending() && /^(Edit|Write|MultiEdit|NotebookEdit)$/.test(tool) && !(await notCode())) {
       logEvent({ ev: 'strict', tool, mode: 'orchestrator', refused: true })
@@ -2111,7 +2293,7 @@ export const register: Register = (on, options) => {
     }
     // Deep work is the stronger model's. Until its agent starts, the main model may read a little to write
     // the brief, but not edit, run commands or keep reading: a note alone was ignored (bench/escalation, layer B).
-    if (holds && deepPending() && !BRIEFING_TOOLS.test(tool)) {
+    if (holds && deepPending() && !BRIEFING_TOOLS.test(tool) && !(await notCode())) {
       if (!looksUp(tool, String((e as any).command ?? '')) || ++deepReads > BRIEF_READS) {
         const g = handoffGear()
         const owed = fanOwed()
@@ -2177,6 +2359,7 @@ export const register: Register = (on, options) => {
       // A subagent's turn can end with the agent still alive, waiting on background work it started: it is done
       // only once the engine says so.
       const waits = e.agentId ? held((await listAgents($))?.find(a => a.id === e.agentId)?.status) : false
+      if (!e.agentId) dm.pending = undefined
       const at = Date.now()
       await patch($, e.agentId ?? 'main', l => {
         if (!l) return l
@@ -2206,7 +2389,12 @@ export const register: Register = (on, options) => {
         logEvent({ ev: 'kept', handoff: advised.handoff, ...(reason ? { reason } : {}), ...(e.isAborted ? { aborted: true } : {}) })
       }
       advised = undefined
-      logEvent({ ev: 'turn', ms: e.durationMs, aborted: e.isAborted })
+      // Work the person asked for mid-turn that no agent was given: the turn ends without it, so nothing is held on.
+      if (midOwed) logEvent({ ev: 'skipped', mid: true, handoff: midHandoff })
+      const owed = midOwed || deepPending()
+      midOwed = false
+      midGear = undefined
+      logEvent({ ev: 'turn', ms: e.durationMs, aborted: e.isAborted, ...(owed ? { owed: true } : {}) })
       await flushLog($, log)
     }
     return next(e)
@@ -2280,6 +2468,8 @@ export const register: Register = (on, options) => {
       // so does one whose request goes at another model or effort than the line shows.
       let woke = false
       let regeared = false
+      const before = e.agentId ? (await read($, LOOPS))[e.agentId] : undefined
+      const given = e.agentId && !before?.demand && (before?.parent ?? 'main') === 'main' ? await claimDemand($, dm, logEvent) : undefined
       await patch($, id, l => {
         woke = l?.state === 'waiting'
         // An agent that ends and is sent on starts clean. The main conversation's effort is set afresh each request; an
@@ -2292,6 +2482,7 @@ export const register: Register = (on, options) => {
           since: Date.now(),
           steps: 0,
           ...(e.agentId ? row : main),
+          ...(given ? { demand: given } : {}),
           asked: s.model,
           ...(s.effort !== undefined ? { effort: String(s.effort) } : {}),
           ...(effortBy ? { effortBy } : {}),
@@ -2397,6 +2588,8 @@ export const register: Register = (on, options) => {
     const turn = await read($, TURN)
     const usd = await sessionCost($)
     const subs = nested(loops)
+    // The request in force: the parts of a fan-out not yet started belong to it.
+    const inForce = dm.now ?? latestDemand(loops)
     const thisTurn = usd !== undefined && turn.costAtStart !== undefined ? usd - turn.costAtStart : undefined
     const turnCosts = thisTurn !== undefined ? [...turn.costs, thisTurn] : turn.costs
     const avg = turnCosts.length ? turnCosts.reduce((a, b) => a + b, 0) / turnCosts.length : undefined
@@ -2406,6 +2599,7 @@ export const register: Register = (on, options) => {
       // Parts the main conversation owes only while something is under way.
       queued: loops.main?.state === 'working' || subs.length ? queuedParts() : [],
       ...(turn.at !== undefined ? { since: turn.at } : {}),
+      ...(inForce ? { demand: inForce } : {}),
       now: Date.now(),
       subs,
       requests: Object.entries(turn.requests),
@@ -2528,6 +2722,7 @@ export const register: Register = (on, options) => {
     const loops = await read($, LOOPS)
     if (!Object.keys(loops).length) return <Text dimColor>No model calls yet. Rows appear as the session works.</Text>
     const subs = alive(loops)
-    return panelBody({ Box, Text }, loops, loops.main?.state === 'working' || subs.length ? queuedParts() : [], { now: Date.now(), cwd: await $.session.cwd().catch(() => undefined), handoff: turnHandoff !== undefined, mono: e.surface !== 'terminal', columns: e.props.bodyColumns, stop: stopControl($, Button, stopDeps(() => showStatus($, turnHandoff, stepLabel()))) })
+    const inForce = dm.now ?? latestDemand(loops)
+    return panelBody({ Box, Text }, loops, loops.main?.state === 'working' || subs.length ? queuedParts() : [], { now: Date.now(), cwd: await $.session.cwd().catch(() => undefined), handoff: turnHandoff !== undefined, mono: e.surface !== 'terminal', columns: e.props.bodyColumns, ...(inForce ? { demand: inForce } : {}), stop: stopControl($, Button, stopDeps(() => showStatus($, turnHandoff, stepLabel()))) })
   })
 }

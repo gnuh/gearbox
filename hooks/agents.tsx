@@ -1,10 +1,11 @@
 import type { ElementTable, RenderElement } from 'claude-code'
-import type { GearboxLoop } from '../types'
-import { type Node, QUEUED, bars, clock, family, fit, gearText, hue, isQueued, kilo, labelOf, live, money, nowOf, ran, shortPath, swapped, tagsOf, treeOf } from './loops'
+import type { GearboxDemand, GearboxLoop } from '../types'
+import { type Group, type Node, QUEUED, bars, clock, demandOf, family, fit, gearText, groupsOf, hue, isQueued, kilo, labelOf, live, metaOf, money, nowOf, ran, shortPath, swapped, tagsOf, treeOf } from './loops'
 import { stoppable } from './stopping'
 
 // How the readouts draw the agents running: the band above the prompt (a tree of text in the terminal, a card each in
-// the desktop app) and the panel. Both read the same loops; only the drawing differs.
+// the desktop app) and the panel. Both read the same loops; only the drawing differs. The agents of one demand (the
+// request they were started for) are drawn together, in a box with the request's title on its first line.
 
 type Els = Pick<ElementTable, 'Box' | 'Text'>
 
@@ -19,37 +20,54 @@ const FAILED = '#E5646E'
 
 // At most this many live agents are drawn; the rest are counted ("+N agents · Panel").
 const MAX_LIVE = 4
-// The terminal band's lines for what hangs under main: with its header, rule and main's two lines, about twelve.
-const BAND_ROOM = 8
+// The terminal band's lines for what hangs under main, one demand's box not counted: with its header, rule and main's
+// two lines, about twelve. A box costs GROUP_ROWS more (its edges and its title), a demand with no border one (its title).
+const BAND_ROOM = 8 + 3
+const GROUP_ROWS = 3
 // How many cards beyond the live ones (finished, queued) the desktop draws.
 const EXTRA_CARDS = 4
 // A terminal narrower than this draws the narrow band.
 export const NARROW = 100
+// A terminal narrower than this draws no box around a demand's agents: its title, then the rows.
+export const BORDER_MIN = 60
+// A box takes 4 columns of its width: the two edges and the padding inside them.
+const BOX = 4
 
 // A fan-out part whose agent has not started: drawn as a loop of its own, under main (id `queued:<n>`).
 export type Queued = { label: string; model: string; effort: string }
-const withQueued = (loops: Record<string, GearboxLoop>, queued: readonly Queued[]): Record<string, GearboxLoop> => ({
+// `demand`: the one they belong to (the turn's).
+const withQueued = (loops: Record<string, GearboxLoop>, queued: readonly Queued[], demand?: GearboxDemand): Record<string, GearboxLoop> => ({
   ...loops,
-  ...Object.fromEntries(queued.map((q, i) => [`${QUEUED}${i}`, { label: q.label, parent: 'main', asked: q.model, effort: q.effort, state: 'idle', steps: 0 } satisfies GearboxLoop])),
+  ...Object.fromEntries(queued.map((q, i) => [`${QUEUED}${i}`, { label: q.label, parent: 'main', ...(demand ? { demand } : {}), asked: q.model, effort: q.effort, state: 'idle', steps: 0 } satisfies GearboxLoop])),
 })
 
 // A finished agent the turn's prompt has not passed yet.
 const recent = (l: GearboxLoop, since?: number) => l.state === 'done' && l.endedAt !== undefined && (since === undefined || l.endedAt >= since)
 
-type Chosen = { nodes: Node[]; hidden: number }
+type Chosen = { nodes: Node[]; shown: Set<string>; hidden: number }
 
 // The agents to draw: up to MAX_LIVE live ones, then, while `room` lasts (each costing `cost`), the finished ones of this
-// turn and the queued parts, nested as they began. `hidden` counts those left out.
-const choose = (all: Record<string, GearboxLoop>, o: { since?: number; room: number; cost: (n: Node) => number }): Chosen => {
+// turn and the queued parts, nested as they began. `hidden` counts those left out. `group`: what the first agent of a
+// demand costs besides (its box's edges and title).
+const choose = (all: Record<string, GearboxLoop>, o: { since?: number; room: number; cost: (n: Node) => number; group?: number }): Chosen => {
   const order = treeOf(all, (id, l) => id !== 'main' && (isQueued(id) || live(l) || recent(l, o.since)))
-  const shown = new Set(order.filter(n => live(n.loop)).slice(0, MAX_LIVE).map(n => n.id))
-  let room = o.room - order.filter(n => shown.has(n.id)).reduce((sum, n) => sum + o.cost(n), 0)
+  const key = (n: Node) => demandOf(all, n.id)?.id ?? ''
+  const boxed = new Set<string>()
+  const extra = (n: Node) => (key(n) && !boxed.has(key(n)) ? (o.group ?? 0) : 0)
+  const lives = order.filter(n => live(n.loop)).slice(0, MAX_LIVE)
+  const shown = new Set(lives.map(n => n.id))
+  let room = o.room
+  for (const n of lives) {
+    room -= o.cost(n) + extra(n)
+    boxed.add(key(n))
+  }
   for (const n of order)
-    if (!shown.has(n.id) && !live(n.loop) && o.cost(n) <= room) {
+    if (!shown.has(n.id) && !live(n.loop) && o.cost(n) + extra(n) <= room) {
       shown.add(n.id)
-      room -= o.cost(n)
+      room -= o.cost(n) + extra(n)
+      boxed.add(key(n))
     }
-  return { nodes: treeOf(all, id => shown.has(id)), hidden: order.length - shown.size }
+  return { nodes: treeOf(all, id => shown.has(id)), shown, hidden: order.length - shown.size }
 }
 
 // The band at 100 columns and up, and under 100.
@@ -208,12 +226,19 @@ const noteFit = (head: string, tail: string, room: number): [string, string] =>
 // They stand where the note does (`cont`), so the room is what the note has.
 const tagsFor = (n: Node, skills: readonly string[], columns: number) => tagsOf(skills, Math.max(0, columns - contOf(n).length))
 
-// The identity line, the skills (tags, as many lines as they need) and the note line of each row, in a terminal `columns` wide.
-// `wide`: gear, who chose the effort, worktree, requests and time; `narrow`: gear and time, a finished agent in one line.
-const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number, stop?: StopControl) => {
-  // With an agent to stop the identity lines end in the Stop slot; the narrow band's label gives up what the slot takes.
+// The fixed columns of the identity lines of `rows`, in a terminal `columns` wide: the label's width and the room the Stop
+// slot takes. With an agent to stop the lines end in the slot; the narrow band's label gives up what the slot takes.
+type Align = { labelW: number; slot: number }
+const alignOf = (rows: Row[], shape: Shape, columns: number, stop?: StopControl): Align => {
   const slot = stop && rows.some(r => r.stop) ? (shape === 'narrow' ? STOP_W_NARROW : STOP_W) : 0
-  const labelW = labelWidth(rows, shape === 'narrow' ? Math.max(10, Math.min(26, slot ? columns - NARROW_FIXED : 26)) : 32)
+  return { slot, labelW: labelWidth(rows, shape === 'narrow' ? Math.max(10, Math.min(26, slot ? columns - NARROW_FIXED : 26)) : 32) }
+}
+
+// The identity line, the skills (tags, as many lines as they need) and the note line of each row, in a terminal `columns` wide
+// (a demand's box: what is inside it). `wide`: gear, who chose the effort, worktree, requests and time; `narrow`: gear and
+// time, a finished agent in one line. `align`: the fixed columns, shared by the rows of several boxes so they line up.
+const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number, stop?: StopControl, align: Align = alignOf(rows, shape, columns, stop)) => {
+  const { labelW, slot } = align
   return rows.map(r => {
     const folded = shape === 'narrow' && r.node.loop.state === 'done'
     const mark = (
@@ -295,6 +320,43 @@ const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number
   })
 }
 
+// The first line of a demand: its title (bold, cut where the line ends) and, right of it, how its agents are doing.
+const groupHead = ({ Box, Text }: Els, g: Group, short: boolean, key: string, mono: object = {}) => (
+  <Box key={`${key}-head`} flexDirection="row" columnGap={2}>
+    <Box flexGrow={1} flexShrink={1}>
+      <Text weight="bold" wrap="truncate" {...mono}>
+        {g.demand?.title ?? ''}
+      </Text>
+    </Box>
+    <Box flexShrink={0}>
+      <Text dimColor {...mono}>
+        {metaOf(g, short)}
+      </Text>
+    </Box>
+  </Box>
+)
+
+// A demand in the terminal: a box with a dim round border, its title on the first line and its rows under it (Ink draws the
+// edges, and the padding keeps the rows 4 columns inside the width). Where the terminal is too narrow for the edges
+// (`bordered` false) it is the title and the rows. Agents with no demand are the rows alone.
+const groupBox = (t: Els, g: Group, rows: RenderElement[], o: { bordered: boolean; short: boolean; mono?: object }) => {
+  const { Box } = t
+  if (!g.demand) return <Box key="demand-none" flexDirection="column">{rows}</Box>
+  const key = `demand-${g.demand.id}`
+  const head = groupHead(t, g, o.short, key, o.mono)
+  return o.bordered ? (
+    <Box key={key} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+      {head}
+      {rows}
+    </Box>
+  ) : (
+    <Box key={key} flexDirection="column">
+      {head}
+      {rows}
+    </Box>
+  )
+}
+
 const more = ({ Text }: Pick<ElementTable, 'Text'>, n: number) => (n > 0 ? <Text dimColor>{`+${n} agent${n === 1 ? '' : 's'} · Panel`}</Text> : null)
 
 // ---- the band above the prompt ----
@@ -304,6 +366,7 @@ export type Summary = {
   loops: Record<string, GearboxLoop>
   queued: readonly Queued[]
   since?: number // when this turn began
+  demand?: GearboxDemand // the request in force, which the parts not yet started belong to
   now: number
   subs: [string, GearboxLoop][] // the live subagents
   requests: [string, number][] // this turn's, per model
@@ -325,8 +388,17 @@ export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: numbe
   const narrow = o.columns < NARROW
   const shape: Shape = narrow ? 'narrow' : 'wide'
   const main = s.loops.main
-  const chosen = choose(withQueued(s.loops, s.queued), { ...(s.since !== undefined ? { since: s.since } : {}), room: BAND_ROOM, cost: n => (live(n.loop) ? (narrow && n.depth >= 2 ? 1 : 2) : 1) + tagsFor(n, n.loop.skills ?? [], o.columns).length })
-  const rows = [...(main ? [mainRowOf(main, s.subs.length, s.now)] : []), ...chosen.nodes.map(n => rowOf(n, s.now, shape))]
+  // Each demand's agents are inside a box, 4 columns narrower than the band (none where the band is too narrow for the edges).
+  const bordered = o.columns >= BORDER_MIN
+  const inner = bordered ? o.columns - BOX : o.columns
+  const all = withQueued(s.loops, s.queued, s.demand)
+  const chosen = choose(all, { ...(s.since !== undefined ? { since: s.since } : {}), room: BAND_ROOM, group: bordered ? GROUP_ROWS : 1, cost: n => (live(n.loop) ? (narrow && n.depth >= 2 ? 1 : 2) : 1) + tagsFor(n, n.loop.skills ?? [], inner).length })
+  const groups = groupsOf(all, chosen.shown).map(g => ({ g, rows: g.nodes.map(n => rowOf(n, s.now, shape)) }))
+  const every = groups.flatMap(x => x.rows)
+  // The columns are the same in every box, and main's row, which stands outside them, keeps its gear where theirs is.
+  const align = alignOf(every, shape, inner, o.stop)
+  const mainRow = main ? mainRowOf(main, s.subs.length, s.now) : undefined
+  const body = groups.map(({ g, rows }) => groupBox({ Box, Text }, g, treeRows({ Box, Text }, rows, shape, inner, o.stop, align), { bordered, short: narrow }))
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={narrow ? 1 : 2} alignItems="center">
@@ -351,7 +423,9 @@ export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: numbe
       <Text dimColor wrap="truncate">
         {'─'.repeat(Math.max(1, o.columns))}
       </Text>
-      {rows.length ? treeRows({ Box, Text }, rows, shape, o.columns, o.stop) : <Text dimColor>waiting for a prompt</Text>}
+      {mainRow ? treeRows({ Box, Text }, [mainRow], shape, o.columns, undefined, { labelW: align.labelW + (bordered && groups.some(x => x.g.demand) ? BOX / 2 : 0), slot: 0 }) : null}
+      {body}
+      {mainRow || body.length ? null : <Text dimColor>waiting for a prompt</Text>}
       {more({ Text }, chosen.hidden)}
     </Box>
   )
@@ -367,6 +441,10 @@ const pill = ({ Box, Text }: Els, text: string, color?: string, key?: string) =>
     </Text>
   </Box>
 )
+
+// The strip a demand's title stands on, in the desktop's box: the grey of its text at a fifth of its strength, so it tints
+// the surface's own ground in a light or a dark theme.
+const STRIP = '#7C859233'
 
 type Tree = { node: Node; kids: Tree[] }
 // The nodes in order, as a tree.
@@ -458,16 +536,19 @@ const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?
 export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: RenderElement; stop?: StopControl }) => {
   const { Box, Text } = t
   const main = s.loops.main
-  const all = withQueued(s.loops, s.queued)
+  const all = withQueued(s.loops, s.queued, s.demand)
   const chosen = choose(all, { ...(s.since !== undefined ? { since: s.since } : {}), room: EXTRA_CARDS, cost: n => (live(n.loop) ? 0 : 1) })
   const rows = new Map(chosen.nodes.map(n => [n.id, rowOf(n, s.now, 'wide')]))
-  const cards = (trees: Tree[], parent: string): RenderElement[] =>
+  const cards = (trees: Tree[]): RenderElement[] =>
     trees.map(({ node, kids }) => {
       const l = node.loop
-      const owner = parent === 'main' ? undefined : all[parent]
+      // Who started it, where that is an agent (a card a demand's box holds may be one an agent of another demand started).
+      const owner = l.parent && l.parent !== 'main' && l.parent !== node.id ? all[l.parent] : undefined
       const before = l.state === 'done' ? undefined : l.notes?.at(-2)?.text
-      return card(t, rows.get(node.id)!, cards(kids, node.id), { ...(owner ? { role: `started by ${labelOf(owner).split(' · ')[0]}` } : {}), ...(before ? { before } : {}), ...(o.stop ? { stop: o.stop } : {}) })
+      return card(t, rows.get(node.id)!, cards(kids), { ...(owner ? { role: `started by ${labelOf(owner).split(' · ')[0]}` } : {}), ...(before ? { before } : {}), ...(o.stop ? { stop: o.stop } : {}) })
     })
+  // Each demand is a bordered container: a strip with its title (left) and how its agents are doing (right), then the cards.
+  const groups = groupsOf(all, chosen.shown).map(g => ({ g, trees: nest(g.nodes) }))
   const done = Object.values(s.loops).filter(l => recent(l, s.since)).length
   const works = main?.state === 'working'
   const metric = (k: string, v: string, sub: string, color?: string, extra?: string) => (
@@ -498,7 +579,6 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
   ]
   // A narrow window keeps now, agents and cost.
   const shown = o.columns < 60 ? [columns[0]!, columns[1]!, columns[3]!] : columns
-  const trees = nest(chosen.nodes)
   return (
     <Box flexDirection="column" rowGap="sm">
       <Box flexDirection="row" columnGap={1} alignItems="center">
@@ -510,11 +590,28 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
         {shown}
       </Box>
       {main ? card(t, mainRowOf(main, s.subs.length, s.now), [], { role: 'main session', ...(works && main.notes?.at(-2) ? { before: main.notes.at(-2)!.text } : {}) }) : null}
-      {trees.length ? (
-        <Box flexDirection="column" paddingLeft="sm">
-          {cards(trees, 'main')}
-        </Box>
-      ) : null}
+      {groups.map(({ g, trees }) =>
+        g.demand ? (
+          <Box key={`demand-${g.demand.id}`} flexDirection="column" borderStyle="round" borderDimColor overflow="hidden">
+            <Box flexDirection="row" columnGap="md" alignItems="center" paddingX="sm" paddingY="xs" backgroundColor={STRIP}>
+              <Box flexShrink={1}>
+                <Text weight="semibold">{g.demand.title}</Text>
+              </Box>
+              <Box flexGrow={1} />
+              <Text dimColor size="caption">
+                {metaOf(g, false)}
+              </Text>
+            </Box>
+            <Box flexDirection="column" rowGap="sm" padding="sm">
+              {cards(trees)}
+            </Box>
+          </Box>
+        ) : (
+          <Box key="demand-none" flexDirection="column" paddingLeft="sm">
+            {cards(trees)}
+          </Box>
+        ),
+      )}
       {more({ Text }, chosen.hidden)}
     </Box>
   )
@@ -522,20 +619,25 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
 
 // ---- the panel: a block per agent ----
 
-// Every loop of the session, finished ones included, nested under the loop that started it: its identity, what it has
-// cost, its last notes (the latest first, the earlier dimmed), the files it touched and its worktree.
-export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>, queued: readonly Queued[], o: { now: number; cwd?: string; handoff: boolean; mono: boolean; columns?: number; stop?: StopControl }) => {
+// Every loop of the session, finished ones included: main first, then each demand in a box (as the band draws it) holding
+// its agents nested under the loop that started them: its identity, what it has cost, its last notes (the latest first,
+// the earlier dimmed), the files it touched and its worktree.
+export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>, queued: readonly Queued[], o: { now: number; cwd?: string; handoff: boolean; mono: boolean; columns?: number; stop?: StopControl; demand?: GearboxDemand }) => {
   const m = o.mono ? { mono: true as const } : {}
-  const all = withQueued(loops, queued)
+  const all = withQueued(loops, queued, o.demand)
   const main = loops.main
-  const agents = treeOf(all, id => id !== 'main')
-  const running = agents.filter(n => live(n.loop)).length
-  const nodes: Node[] = [...(main ? [{ id: 'main', loop: main, depth: 0, last: true, trail: [] } satisfies Node] : []), ...agents]
-  const rows = nodes.map(n => (n.id === 'main' ? mainRowOf(main!, running, o.now) : rowOf(n, o.now, 'wide')))
-  const labelW = labelWidth(rows, 34)
-  const blocks = nodes.map((n, k) => {
+  // The boxes take 4 columns of the pane's width (none where it is too narrow for the edges).
+  const bordered = o.columns === undefined || o.columns >= BORDER_MIN
+  const inner = o.columns === undefined ? undefined : bordered ? o.columns - BOX : o.columns
+  const groups = groupsOf(all, new Set(Object.keys(all).filter(id => id !== 'main')))
+  const running = Object.entries(all).filter(([id, l]) => id !== 'main' && live(l)).length
+  const mainNode: Node[] = main ? [{ id: 'main', loop: main, depth: 0, last: true, trail: [] }] : []
+  const nodes: Node[] = [...mainNode, ...groups.flatMap(g => g.nodes)]
+  const rows = new Map(nodes.map(n => [n.id, n.id === 'main' ? mainRowOf(main!, running, o.now) : rowOf(n, o.now, 'wide')] as const))
+  const labelW = labelWidth([...rows.values()], 34)
+  const block = (n: Node): RenderElement[] => {
     const l = n.loop
-    const r = rows[k]!
+    const r = rows.get(n.id)!
     const cont = contOf(n)
     const line = (key: string, child: RenderElement) => (
       <Box key={`${n.id}-${key}`} flexDirection="row">
@@ -610,7 +712,7 @@ export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>
       ...(notes.length
         ? notes.map((nt, i) => {
             // Cut at a word where the pane's width is known: the clock takes ten characters of the line.
-            const [head, tool] = noteFit(nt.text, nt.tool ? ` · ${nt.tool}` : '', o.columns === undefined ? Infinity : Math.max(0, o.columns - cont.length - 10))
+            const [head, tool] = noteFit(nt.text, nt.tool ? ` · ${nt.tool}` : '', inner === undefined ? Infinity : Math.max(0, inner - cont.length - 10))
             return line(
               `note-${i}`,
               <Text wrap="truncate" {...m}>
@@ -642,14 +744,19 @@ export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>
         : []),
       ...skills,
     ]
-  })
+  }
+  // A blank line sets blocks apart (and boxes), but an agent's own agents go on under it.
+  const gap = (n: Node) => <Text key={`gap-${n.id}`}>{' '}</Text>
   return (
     <Box flexDirection="column">
       <Text dimColor wrap="truncate" {...m}>
         {[`${running} running`, `${nodes.filter(n => n.loop.state === 'done').length} done`, queued.length ? `${queued.length} queued` : ''].filter(Boolean).join(' · ')}
       </Text>
-      {/* a blank line sets blocks apart, but an agent's own agents go on under it */}
-      {blocks.flatMap((b, k) => [...(nodes[k]!.depth <= 1 ? [<Text key={`gap-${k}`}>{' '}</Text>] : []), ...b])}
+      {mainNode.flatMap(block)}
+      {groups.flatMap(g => {
+        const blocks = g.nodes.flatMap((n, i) => [...(n.depth <= 1 && (!g.demand || i) ? [gap(n)] : []), ...block(n)])
+        return g.demand ? [<Text key={`gap-${g.demand.id}`}>{' '}</Text>, groupBox({ Box, Text }, g, blocks, { bordered, short: false, mono: m })] : blocks
+      })}
     </Box>
   )
 }

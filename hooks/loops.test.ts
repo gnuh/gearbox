@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import type { GearboxLoop } from '../types'
-import { FILES_KEPT, NOTES_KEPT, SKILLS_KEPT, ended, fit, grown, noteOf, revived, shortPath, tagsOf, treeOf, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import type { GearboxDemand, GearboxLoop } from '../types'
+import { FILES_KEPT, NOTES_KEPT, SKILLS_KEPT, demandOf, ended, groupsOf, hasAgents, latestDemand, metaOf, fit, grown, noteOf, revived, shortPath, tagsOf, treeOf, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
 
 const loop = (extra: Partial<GearboxLoop> = {}): GearboxLoop => ({ label: 'agent', asked: 'sonnet', state: 'working', steps: 0, ...extra })
 
@@ -213,4 +213,75 @@ test('the tree nests each loop under the one that started it, with the guides ea
     ['b', 1, true, ''],
   ])
   expect(treeOf(loops, () => false)).toEqual([])
+})
+
+// ---- demands ----
+
+const D1: GearboxDemand = { id: 'd1', title: 'Orders by customer', at: Date.UTC(2026, 0, 1, 14, 2) }
+const D2: GearboxDemand = { id: 'd2', title: 'Issue for the backup', at: Date.UTC(2026, 0, 1, 14, 6) }
+
+// The crew: three parts and an Explore under the second for the first demand, one agent for the second.
+const crew = (): Record<string, GearboxLoop> => ({
+  main: loop({ label: 'main' }),
+  p1: loop({ label: 'part 1', parent: 'main', demand: D1 }),
+  p2: loop({ label: 'part 2', parent: 'main', demand: D1 }),
+  e1: loop({ label: 'Explore', parent: 'p2' }), // no demand of its own: its parent's
+  p3: loop({ label: 'part 3', parent: 'main', demand: D1, state: 'done', endedAt: 5 }),
+  i1: loop({ label: 'issue', parent: 'main', demand: D2 }),
+})
+
+test('a loop works for its own demand, else the one of the loop that started it, else none', () => {
+  const loops = crew()
+  expect(demandOf(loops, 'p1')).toEqual(D1)
+  expect(demandOf(loops, 'e1')).toEqual(D1)
+  expect(demandOf({ ...loops, x: loop({ parent: 'e1' }) }, 'x')).toEqual(D1) // two levels down
+  expect(demandOf(loops, 'main')).toBeUndefined()
+  expect(demandOf({ a: loop({ parent: 'main' }) }, 'a')).toBeUndefined() // one an older version recorded
+  expect(demandOf({ a: loop({ parent: 'b' }), b: loop({ parent: 'a' }) }, 'a')).toBeUndefined() // a loop of parents ends
+  expect(demandOf(loops, 'nobody')).toBeUndefined()
+})
+
+test('the latest demand an agent works for is the one with the latest start; a demand with no agent is no group', () => {
+  expect(latestDemand(crew())).toEqual(D2)
+  expect(latestDemand({ main: loop({ label: 'main' }) })).toBeUndefined()
+  expect(hasAgents(crew(), D1)).toBe(true)
+  expect(hasAgents(crew(), { id: 'd9', title: 'x', at: 1 })).toBe(false)
+  // A part not yet started and a refused call are no agent of the demand.
+  const loops = { ...crew(), 'queued:0': loop({ parent: 'main', demand: { id: 'd3', title: 'x', at: 9 }, state: 'idle' }), 'refused:1': loop({ parent: 'p1', demand: { id: 'd4', title: 'y', at: 9 }, failed: 'refused', state: 'done' }) }
+  expect(hasAgents(loops, { id: 'd3', title: 'x', at: 9 })).toBe(false)
+  expect(hasAgents(loops, { id: 'd4', title: 'y', at: 9 })).toBe(false)
+})
+
+test('the agents shown are grouped by demand, the earliest first, each group a tree of its own with fresh guides, and counted for the group', () => {
+  const loops = crew()
+  const groups = groupsOf(loops, new Set(['p1', 'p2', 'e1', 'p3', 'i1']))
+  expect(groups.map(g => g.demand?.id)).toEqual(['d1', 'd2'])
+  // The guides start fresh in each box: the issue is the only one of its box, so it closes it.
+  expect(groups[0]!.nodes.map(n => `${n.id}:${n.depth}:${n.last}`)).toEqual(['p1:1:false', 'p2:1:false', 'e1:2:true', 'p3:1:true'])
+  expect(groups[1]!.nodes.map(n => `${n.id}:${n.depth}:${n.last}`)).toEqual(['i1:1:true'])
+  // How many of the demand's agents are at work, and how many it has: the finished one and the nested one count in the second.
+  expect(groups.map(g => [g.live, g.total])).toEqual([[3, 4], [1, 1]])
+  // Only the agents shown are drawn, but the counts are the demand's own.
+  const some = groupsOf(loops, new Set(['p1', 'i1']))
+  expect(some[0]!.nodes.map(n => n.id)).toEqual(['p1'])
+  expect(some.map(g => [g.live, g.total])).toEqual([[3, 4], [1, 1]])
+  // A demand none of whose agents is shown is no group; agents with no demand come first, with no demand.
+  expect(groupsOf(loops, new Set(['i1'])).map(g => g.demand?.id)).toEqual(['d2'])
+  const mixed = groupsOf({ ...loops, old: loop({ parent: 'main' }) }, new Set(['old', 'i1', 'p1']))
+  expect(mixed.map(g => g.demand?.id)).toEqual([undefined, 'd1', 'd2'])
+  // An agent whose parent works for another demand stands at the top of its own box.
+  const moved = groupsOf({ ...crew(), p2: loop({ label: 'part 2', parent: 'main', demand: D2 }) }, new Set(['p1', 'p2', 'e1']))
+  expect(moved.find(g => g.demand?.id === 'd2')!.nodes.map(n => `${n.id}:${n.depth}`)).toEqual(['p2:1', 'e1:2'])
+})
+
+test('a demand’s state is the agents at work of its agents and since when; short, how many are at work or that it is done', () => {
+  const [one, two] = groupsOf(crew(), new Set(['p1', 'p2', 'e1', 'p3', 'i1']))
+  expect(metaOf(one!, false)).toMatch(/^3 of 4 at work · since \d\d:\d\d$/)
+  expect(metaOf(one!, true)).toBe('3 at work')
+  expect(metaOf(two!, false)).toMatch(/^1 of 1 at work · since \d\d:\d\d$/)
+  const finished = groupsOf({ ...crew(), i1: loop({ parent: 'main', demand: D2, state: 'done', endedAt: 9 }) }, new Set(['i1']))[0]!
+  expect(metaOf(finished, false)).toMatch(/^done · since \d\d:\d\d$/)
+  expect(metaOf(finished, true)).toBe('done')
+  // A group with no demand has no time to say.
+  expect(metaOf({ nodes: [], live: 2, total: 2 }, false)).toBe('2 of 2 at work')
 })
