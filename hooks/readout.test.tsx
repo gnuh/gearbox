@@ -1412,11 +1412,12 @@ test('Stop is on every agent at work and on nothing else (main, a finished agent
   expect(block.filter(l => l.endsWith(' [ ■ ]')).map(l => l.replace(/^[│├└─ ]*/, '').split(' ')[1])).toEqual(['part', 'part', 'Explore'])
   expect(block.find(l => /^└─✓ part 3/.test(l))).not.toContain('■')
   await pane.unmount()
-  // The desktop: a button in the card's header row after "N req · Ns", the icon alone, named for the agent.
+  // The desktop: a button in the card's header row after "N req · Ns", the icon alone.
   const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
   expect(await stopKeys(desk)).toEqual(keys)
   const button = (await desk.find({ key: 'stop-a-t1' }))!
-  expect(button.props.label).toBe('Stop part 1 · customers')
+  expect(button.props).toEqual({ key: 'stop-a-t1', label: '■', variant: 'secondary' }) // the mark and nothing else: no name, tooltip or title
+  expect(button.children).toEqual([])
   expect(button.text).toBe('■')
   const header = (await desk.find({ key: 'card-a-t1' }))!.children[1].children[0]
   expect(header.children.at(-1).props.key).toBe('stop-a-t1')
