@@ -9,7 +9,7 @@ A Claude Code mod that picks the model and effort for every prompt and sends too
 - **The right gear per prompt.** A quick Sonnet call describes the request, and gearbox's rules turn that into a model and an effort.
 - **Cheap agents for tool-heavy work.** Browser checks go to a navigator, builds and long commands to Haiku, and git chores to Haiku once the conversation is long.
 - **An orchestrator, on by default.** The main conversation stays on Opus and plans, briefs and reviews. Code goes to a long-lived agent, and independent parts run in parallel, up to 6 at once. A message you type while agents work is read as a new request: it goes to the agent whose work it is, or to a new agent beside them, and the main conversation does not do it itself.
-- **A live readout.** The band above the prompt shows every agent's model and effort as it works, with the agents of each request you made in a box of their own under a short title, and a Stop button on each agent ends it (and the agents it started) without touching the others.
+- **A live readout.** The band above the prompt shows every agent's model and effort as it works, the dot of an agent at work pulsing, and the agents of each request you made in a box of their own under a short title, which turns grey once all its agents are done. A Stop button on each agent ends it (and the agents it started) without touching the others.
 
 ## Savings
 
@@ -61,6 +61,7 @@ Work as usual. The commands you will use:
 | `model auto\|sonnet\|opus\|fable` (coding model) | `sonnet` |
 | `effort medium\|high\|xhigh\|auto` (coding effort) | `xhigh` |
 | `navigator sonnet\|haiku` | `sonnet` |
+| `pulse on\|off` (the working dot fades in and out) | `on` |
 | `log off\|on\|full` | `off` |
 
 Hand-offs are always strict and your own hooks always run for subagents. Neither is a setting.

@@ -256,9 +256,10 @@ export const latestDemand = (loops: Record<string, GearboxLoop>): GearboxDemand 
 export const hasAgents = (loops: Record<string, GearboxLoop>, d: GearboxDemand) => agentsOf(loops, d.id).length > 0
 
 // The agents the readouts draw, in the boxes of their demands: each demand once, the earliest first, with its agents as a
-// tree of its own (the guides start fresh in each), how many of the demand's agents are at work and how many it has in
-// all. Agents with no demand come first, in a group with none.
-export type Group = { demand?: GearboxDemand; nodes: Node[]; live: number; total: number }
+// tree of its own (the guides start fresh in each), how many of the demand's agents are at work, how many it has in all
+// and how many of its parts are queued (not started, so no agent yet; counted among all the loops, drawn or not). Agents
+// with no demand come first, in a group with none.
+export type Group = { demand?: GearboxDemand; nodes: Node[]; live: number; total: number; queued: number }
 export const groupsOf = (loops: Record<string, GearboxLoop>, shown: ReadonlySet<string>): Group[] => {
   const keyOf = (id: string) => demandOf(loops, id)?.id ?? ''
   const found = new Map<string, GearboxDemand | undefined>()
@@ -267,19 +268,26 @@ export const groupsOf = (loops: Record<string, GearboxLoop>, shown: ReadonlySet<
     .sort(([ka, a], [kb, b]) => (a?.at ?? -1) - (b?.at ?? -1) || ka.localeCompare(kb))
     .map(([key, demand]) => {
       const own = agentsOf(loops, key)
-      return { ...(demand ? { demand } : {}), nodes: treeOf(loops, id => shown.has(id) && keyOf(id) === key), live: own.filter(([, l]) => live(l)).length, total: own.length }
+      const queued = Object.keys(loops).filter(id => isQueued(id) && keyOf(id) === key).length
+      return { ...(demand ? { demand } : {}), nodes: treeOf(loops, id => shown.has(id) && keyOf(id) === key), live: own.filter(([, l]) => live(l)).length, total: own.length, queued }
     })
 }
 
-// A demand's state, right of its title: "2 of 4 at work · since 14:02", or "done · since 14:02"; `short` (the narrow band):
-// "2 at work", or "done".
+// Whether a demand is finished: none of its agents is at work and none of its parts waits to start. A queued part is an
+// idle loop, so "nothing at work" alone would call a demand finished while the main conversation still owes agents to it.
+export const finished = (g: Group): boolean => g.live === 0 && g.queued === 0
+
+// A demand's state, right of its title: "2 of 4 at work · since 14:02", "2 queued · since 14:02" (nothing at work, parts
+// waiting) or "done · since 14:02"; `short` (the narrow band): "2 at work", "2 queued" or "done".
 export const metaOf = (g: Group, short: boolean): string => {
-  const state = short ? (g.live ? `${g.live} at work` : 'done') : g.live ? `${g.live} of ${g.total} at work` : 'done'
+  const state = finished(g) ? 'done' : g.live ? (short ? `${g.live} at work` : `${g.live} of ${g.total} at work`) : `${g.queued} queued`
   return short || !g.demand ? state : `${state} · since ${clock(g.demand.at).slice(0, 5)}`
 }
 
 // A loop still at work: in a turn, or between turns waiting on background work of its own.
 export const live = (l?: GearboxLoop) => l?.state === 'working' || l?.state === 'waiting'
+// Whether any loop, main included, is in a turn: the ● that pulses is on the screen, and the run times are moving.
+export const working = (loops: Record<string, GearboxLoop>): boolean => Object.values(loops).some(l => l.state === 'working')
 
 // A fan-out part whose agent has not started is drawn as a loop of its own, under main (id `queued:<n>`); it is no agent yet.
 export const QUEUED = 'queued:'
