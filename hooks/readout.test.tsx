@@ -711,21 +711,29 @@ test('the panel gives each agent its last three notes, the files it touched, its
   }
 })
 
-test('an agent of the main conversation may start agents that read, on Sonnet at low (Haiku when it asks); none that change code, and none deeper', async ($: any, on) => {
+test('an agent of the main conversation may start agents that read, on Sonnet at low (Haiku when it asks), work that is not code, and one agent at a time that writes code; none deeper', async ($: any, on) => {
   const { calls, prompts } = bench(on)
   mock.clock(on)
+  // Every brief an agent's agent is given reads as code, here.
+  on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ reach: 'area', depth: 1, mode: 'code' }), usage: USAGE } }) as never)
   await step($, 'claude-opus-5-5')
   await spawn($, 'lane', 'sonnet')
-  // Its brief says what it may start.
-  expect(prompts[0]).toContain('you may start Explore agents to do reading for you')
+  // Its brief says what it may start, and what the review of its agents needs.
+  expect(prompts[0]).toContain('you may start agents of your own, one level deep')
+  expect(prompts[0]).toContain('Explore agents do reading for you')
   const ask = (agentId: string, extra: object) => $.tool.call({ tool: 'Agent', prompt: 'find where refunds are computed', description: 'scout', agentId, ...extra })
   await ask('a-lane', { subagent_type: 'Explore' })
   expect(calls.at(-1)).toMatchObject({ tool: 'Agent', subagent_type: 'Explore', model: 'sonnet', effort: 'low' })
   await ask('a-lane', { subagent_type: 'Explore', model: 'haiku' })
   expect(calls.at(-1)).toMatchObject({ model: 'haiku', effort: 'low' })
+  // One plain agent that writes code starts, on the gear its brief calls for; a second, while it is at work, is refused.
+  const writer = await ask('a-lane', { subagent_type: 'general-purpose', description: 'stream the importer', tool_use_id: 'w1' })
+  expect(writer.deny).toBeUndefined()
+  expect(calls.at(-1)).toMatchObject({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'xhigh' })
   const n = calls.length
-  const writer = await ask('a-lane', { subagent_type: 'general-purpose' })
-  expect(writer.deny).toContain('only agents that read')
+  const second = await ask('a-lane', { subagent_type: 'general-purpose', description: 'stream the exporter', tool_use_id: 'w2' })
+  expect(second.deny).toContain('still running')
+  expect(calls.length).toBe(n)
   // The reader it started gets no such line, and may start none of its own.
   await $.agent.spawn({ tool_use_id: 'scout', prompt: 'p', description: 'scout', subagentType: 'Explore', model: 'sonnet', parentAgentId: 'a-lane', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-sonnet-5-5', background: false, fork: false })
   expect(prompts.at(-1)).toBe('p')
@@ -736,6 +744,51 @@ test('an agent of the main conversation may start agents that read, on Sonnet at
   await ask('a-fork', { subagent_type: 'general-purpose', model: 'opus' })
   expect(calls.at(-1)).toMatchObject({ subagent_type: 'general-purpose', model: 'opus' })
   expect(calls.at(-1).effort).toBeUndefined()
+})
+
+test('the parts an agent splits its own work into show under it in the band and the panel, the files they change on the agent too; a writer refused shows as a ✗ row under it', CREW, async ($: any, on) => {
+  const b = bench(on, 'claude-opus-5-5', () => [], e => `a-${e.tool_use_id}`)
+  b.kv.set('consent', false)
+  mock.clock(on)
+  on('session.cwd', () => ({ value: '/w/app' }))
+  on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ reach: 'area', depth: 1, mode: 'code' }), usage: USAGE } }) as never)
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'lane', 'sonnet')
+  const split = await $.tool.call({ tool: 'mcp__gearbox__fan', agentId: 'a-lane', parts: [{ what: 'orders', mode: 'code', depth: 1, files: ['services/orders'] }, { what: 'billing', mode: 'code', depth: 1, files: ['services/billing'] }] })
+  expect(String(split.result)).toContain('2 independent parts')
+  const under = async (n: number, what: string) => {
+    await $.tool.call({ tool: 'Agent', tool_use_id: `p${n}`, description: `part ${n}: ${what}`, prompt: 'p', agentId: 'a-lane' })
+    await spawnUnder($, `part ${n}: ${what}`, 'sonnet', 'a-lane', `p${n}`, 'general-purpose')
+  }
+  await under(1, 'orders')
+  await under(2, 'billing')
+  b.writes('Paging the orders list')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-p1', effort: 'high' })
+  await $.tool.call({ tool: 'Edit', file_path: '/w/app/src/orders.ts', agentId: 'a-p1' })
+  // A writer past the split is refused while the parts write; it shows beside them, under the agent that asked.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'w9', description: 'one more', prompt: 'p', agentId: 'a-lane' })
+  for (const surface of SURFACES) {
+    const term = await $.ui.mount({ ...BAND_AT(120), surface })
+    if (surface === 'terminal') {
+      const drawn = (await lines(term, 120)).join('\n')
+      expect(drawn).toMatch(/^● main /m)
+      expect(drawn).toMatch(/^└─● lane +sonnet/m)
+      expect(drawn).toMatch(/^ {2}├─● part 1 · orders +sonnet·high/m)
+      expect(drawn).toMatch(/^ {2}├─● part 2 · billing +sonnet/m)
+      expect(drawn).toMatch(/^ {2}└─✗ one more/m)
+    } else {
+      expect(await term.find({ type: 'Text', text: /part 1 · orders/ })).toBeDefined()
+      expect(await term.find({ type: 'Text', text: /part 2 · billing/ })).toBeDefined()
+    }
+    await term.unmount()
+  }
+  const pane = await $.ui.mount({ ...PANE_AT(110), surface: 'terminal' })
+  const text = await show(pane, 110)
+  expect(text).toMatch(/^└─● lane /m)
+  expect(text).toMatch(/^ {2}├─● part 1 · orders /m)
+  // The file part 1 edited is on the agent that started it as well: its review has the list to run git diff on.
+  expect(text.match(/files: src\/orders\.ts \(edited\)/g)).toHaveLength(2)
+  await pane.unmount()
 })
 
 test('an agent’s report shows under its notification, or under its call when it ran in the foreground', async ($: any, on) => {
