@@ -60,9 +60,10 @@ export const SURVEY = `You describe a request that a person sent to a coding ass
 The input is JSON: "request" is the new message, "earlier" lists the person's recent messages (may be empty), "previous" is how the last turn was run (may be null), "reply" is the assistant's last reply (may be null). When "approved" is true, "request" is not a message but the work the assistant proposed or has left to do, which the person has just approved: describe that work as if the person had asked for it in those words; its mode is what the work does (code when it changes files).
 
 Reply with exactly one JSON object and nothing else: no notes, no corrections, no other keys. For example:
-{"reach":"area","care":"routine","depth":1,"mode":"code","aside":false,"ahead":false,"cont":false,"ask":{},"sure":true,"phases":[],"parts":[]}
+{"title":"Group orders by customer","reach":"area","care":"routine","depth":1,"mode":"code","aside":false,"ahead":false,"cont":false,"ask":{},"sure":true,"phases":[],"parts":[]}
 
 The keys and the values each may take:
+- title: a short title for the request, at most 8 words, in English whatever language the request is written in, naming the job as a short phrase ("Orders by customer, and the README output"). No quotes and no final full stop. When "approved" is true, title the work that was approved.
 - reach: how much of the project the work must understand. One of: point (one spot: a question, a lookup, a rename, a one-line edit); area (one feature or a few related files: build a feature, fix a contained bug, write tests, explain code); system (many files, a change to a shared module much of the project depends on, or a bug whose location is unknown); frontier (open-ended: designing a system, research, inventing an algorithm).
 - care: costly if a mistake could cost money or security or lose data (payments, billing, auth, permissions, secrets, audit trails, deleting or migrating data, database schema changes), else routine.
 - depth: how much careful reasoning correctness needs, a number. 0 mechanical, 1 ordinary, 2 subtle (concurrency, time zones, money arithmetic, cache or state invalidation, changing error or async behavior), 3 exceptionally hard.
@@ -77,6 +78,7 @@ The keys and the values each may take:
 `
 
 export type Reading = {
+  title?: string // a few words naming the request, for the readouts' group of its agents (see cleanTitle); absent when the survey gave none
   reach: 'point' | 'area' | 'system' | 'frontier'
   care: 'routine' | 'costly'
   depth: 0 | 1 | 2 | 3
@@ -157,7 +159,9 @@ export const readReading = (reply: string): Reading | undefined => {
 const toReading = (o: any): Reading | undefined => {
   if (!o || !REACHES.includes(o.reach) || ![0, 1, 2, 3].includes(o.depth)) return undefined
   const ask = o.ask && typeof o.ask === 'object' ? o.ask : {}
+  const title = cleanTitle(o.title)
   return {
+    ...(title ? { title } : {}),
     reach: o.reach,
     care: o.care === 'costly' ? 'costly' : 'routine',
     depth: o.depth,
@@ -231,6 +235,29 @@ export const isSkillFork = (a: { name?: string; description?: string }, skill: s
 
 // The person's own words: fenced and inline code and quoted lines are dropped.
 export const ownWords = (text: string) => text.replace(/```[\s\S]*?```|`[^`\n]*`/g, ' ').replace(/^\s*>.*$/gm, ' ')
+
+// A request's title as the readouts show it: the survey's words with whitespace folded, quotes, markers and a closing
+// full stop off, at most TITLE_WORDS words and TITLE_CHARS characters. Undefined where it is no text with a letter or a digit.
+export const TITLE_WORDS = 8
+const TITLE_CHARS = 80
+export const cleanTitle = (raw: unknown): string | undefined => {
+  if (typeof raw !== 'string') return undefined
+  const words = raw
+    .replace(/^[\s"'`“”‘’*#>\-–—]+|[\s"'`“”‘’.,;:!…]+$/g, '')
+    .split(/\s+/)
+    .filter(Boolean)
+  const title = words.slice(0, TITLE_WORDS).join(' ')
+  if (!/[\p{L}\p{N}]/u.test(title)) return undefined
+  return title.length > TITLE_CHARS ? `${title.slice(0, TITLE_CHARS - 1).trimEnd()}…` : title
+}
+
+// The title a request gets when the survey gave none (unreadable, or no title key): the first words of what the person
+// typed, code and quotes left out, with "…" where it goes on. "Request" for a prompt with no words.
+export const titleFromText = (text: string): string => {
+  const words = (ownWords(text).trim() || text.trim()).split(/\s+/).filter(Boolean)
+  const head = cleanTitle(words.slice(0, TITLE_WORDS).join(' '))
+  return head ? (words.length > TITLE_WORDS ? `${head}…` : head) : 'Request'
+}
 
 const SPOKEN: Record<Model | ModelEffort, RegExp> = {
   haiku: /\bhaiku\b/i,
@@ -722,7 +749,9 @@ export const goAhead = (work: Reading | undefined, own: Reading | undefined, flo
   // Unread but for its sure signs: a go-ahead after a proposal is usually the go-ahead to write it.
   const base: Reading = work ?? { reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [] }
   const reaches = [base.reach, own?.reach, floor.reach].filter((x): x is Reading['reach'] => !!x)
+  const title = work?.title ?? own?.title
   return {
+    ...(title ? { title } : {}),
     reach: reaches.reduce((a, b) => upTo(REACHES as Reading['reach'][], a, b)),
     care: [base.care, own?.care, floor.care].includes('costly') ? 'costly' : 'routine',
     depth: Math.max(base.depth, own?.depth ?? 0) as Reading['depth'],
@@ -826,6 +855,34 @@ ${judge ? `3. Start ${PLAIN} with model "${judge.model}" and effort "${judge.eff
         : `gearbox handoff, deep work: start ${PLAIN} with model "${gear.model}" and ${effort} and ${BRIEF}, and say what to hand back. Send follow-ups to that same agent with SendMessage. ${RELAY}${coded}`
   }
 }
+
+// A message the person typed while a turn was running, read as a request of its own. The agents at work now, as the
+// readout knows them: their id, what they were asked to do, their model and the files they edit.
+export type MidAgent = { id: string; label: string; model: string; edits: readonly string[] }
+// `holds`: a fixed coding effort, so the main conversation is held to the hand-off until an agent has the work; with
+// `auto` the note is advice whose default is to hand off. `gear`: what the rules give the new work, for the agent that
+// takes it. `why`: the reading the note comes from; `unread`: the survey could not be read.
+export const midNote = (agents: readonly MidAgent[], o: { holds: boolean; gear?: Gear; why?: string; orchestrated?: boolean; unread?: boolean }): string => {
+  const work = agents.length ? `Agents at work now:\n${agents.map(a => `- ${a.id} · ${a.label} · ${a.model}${a.edits.length ? ` · editing ${a.edits.join(', ')}` : ''}`).join('\n')}` : 'No agent is at work now.'
+  const read = o.unread ? ' gearbox could not read what it asks for.' : o.why ? ` gearbox reads it as ${o.why}.` : ''
+  const gear = o.gear ? (o.holds ? ` gearbox sets the model and effort of the agent you start (${o.gear.model} at ${o.gear.effort}).` : ` gearbox suggests ${o.gear.model} at ${o.gear.effort}; ${NAMED}.`) : ''
+  const rule = agents.length
+    ? [
+        `(a) It is about the work one of these agents is doing: send it the person's message, with anything decided here since and ${SKILLS}, by SendMessage to that agent (load SendMessage with ToolSearch first if it is not loaded).`,
+        `(b) It is new work, and no file one of these agents edits is in it: start ${PLAIN} now, in parallel, with ${BRIEF}.`,
+        `(c) It is new work on files one of these agents is editing: start ${PLAIN} with isolation "worktree", so the two cannot collide, with ${BRIEF}; merge its branch when it comes back.`,
+      ].join('\n')
+    : `Start ${PLAIN} for it now, with ${BRIEF}.`
+  const after = o.holds
+    ? 'Until an Agent has started or a SendMessage has reached an agent at work, edits and commands that change anything are refused here; reading, and a note or mockup for the person outside the repository, stay allowed.'
+    : `${prefers(!!o.orchestrated, 'agents')}. Hand it off. ${KEEP}`
+  return `gearbox, a message typed while this turn is running: the person sent it over the work under way, so read it as a new request, not as a part of what you are doing.${read}\n${work}\n${agents.length ? 'Decide which it is, and do it before anything else:\n' : ''}${rule}\nDo not do the new work in this conversation.${gear} ${after} ${REPORTED}`
+}
+
+// What the main conversation is told when it tries to edit or run what changes anything while a message typed mid-turn
+// is still owed to an agent. `agents`: how many are at work.
+export const midHeld = (agents: number): string =>
+  `gearbox: the person sent a new message while this turn was running, and its work is for an agent, not for this conversation. Start ${PLAIN} for it (with isolation "worktree" if it edits files an agent at work is editing)${agents ? ', or SendMessage to the agent at work whose work it is' : ''}; then go on. Until then edits and commands that change anything are refused here; reading, and a note or mockup for the person outside the repository, stay allowed.`
 
 // Claude Code makes an agent's worktree (isolation "worktree") only when the session's folder is a git repository. Where
 // gearbox cannot tell it is one, nothing asks for the isolation and each part that edits makes its own worktree, in

@@ -1163,12 +1163,13 @@ test('with the log on, a turn records the prompt, the survey, the gear and why, 
   await sayOn($, 'claude-opus-5-5', 'add pagination to the orders list')
   await done($)
   const ev = events(files)
-  expect(ev.map(e => e.ev)).toEqual(['session', 'prompt', 'survey', 'gear', 'step', 'turn'])
+  expect(ev.map(e => e.ev)).toEqual(['session', 'prompt', 'survey', 'demand', 'gear', 'step', 'turn'])
   expect(ev[0]).toMatchObject({ gearbox: '9.9.9', claude: '2.1.311' })
   expect(ev[1]).toMatchObject({ kind: 'typed', chars: 33 })
   expect(ev[1].text).toBeUndefined() // no prompt text unless the log is full
-  expect(ev[3]).toMatchObject({ gear: 'opus·xhigh', why: 'survey: code, area, depth 1' })
-  expect(ev[4]).toMatchObject({ loop: 'main', sent: 'opus·xhigh', engine: 'opus·medium', answered: 'claude-opus-5-5' })
+  expect(ev[3]).toMatchObject({ title: 'add pagination to the orders list' }) // the survey gave no title: the prompt's first words
+  expect(ev[4]).toMatchObject({ gear: 'opus·xhigh', why: 'survey: code, area, depth 1' })
+  expect(ev[5]).toMatchObject({ loop: 'main', sent: 'opus·xhigh', engine: 'opus·medium', answered: 'claude-opus-5-5' })
   const shown = (await $.command.run({ command: 'gearbox', args: 'log' })).text
   expect(shown).toContain(LOG)
   expect(shown).toContain('last decision: opus·xhigh (survey: code, area, depth 1)')
@@ -1253,6 +1254,7 @@ test('orchestrator: deep work goes to a lane that starts at the top effort, runs
   const calls: string[] = []
   on('tool.call', (_: unknown, e: any) => (calls.push(`${e.tool}${e.model ? ` ${e.model}·${e.effort}` : ''}`), { result: '' }))
   on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: 'lane-s' }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
   const high = { model: 'sonnet', effort: 'high' } as const
   await sayOn($, 'claude-opus-5-5', 'why is the quote mapper rounding twice?')
   expect(r.notes[0]).toEqual([handoffNote({ kind: 'lane', gear: high })])
@@ -1262,7 +1264,8 @@ test('orchestrator: deep work goes to a lane that starts at the top effort, runs
   await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
   // The lane's first job is high, though it started at xhigh.
   await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
-  // A nod goes on in the same lane; a new job there runs at its own effort.
+  // The lane reports; a nod goes on in the same lane, and a new job there runs at its own effort.
+  await $.turn.complete({ agentId: 'lane-s', turnId: 'y', answer: 'found it', durationMs: 1, isAborted: false })
   await sayOn($, 'claude-opus-5-5', 'go ahead')
   expect(r.notes[1]).toEqual([handoffNote({ kind: 'lane', gear: high, resume: 'lane-s' })])
   await sayOn($, 'claude-opus-5-5', 'now trace every caller of the mapper too')
@@ -1297,11 +1300,13 @@ test('orchestrator: the main conversation may write a mockup or a note for the p
   expect(await refused('NotebookEdit', '/Users/me/claude-artifacts/x.ipynb')).toBe(true)
 })
 
-test('orchestrator: a mockup is still refused while a hand-off is owed', ORCH, async ($: any, on) => {
+test('orchestrator: a mockup or a note outside the repository is still written while a hand-off is owed; code and a document inside the repository are not', ORCH, async ($: any, on) => {
   rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }], { session: 'claude-opus-5-5' })
   on('tool.call', () => ({ result: '' }))
   await sayOn($, 'claude-opus-5-5', 'why is the quote mapper rounding twice?')
-  expect(JSON.stringify(await $.tool.call({ tool: 'Write', file_path: '/Users/me/claude-artifacts/x.html', content: 'x' }))).toContain('owed to an sonnet agent')
+  const owed = async (file_path: string) => JSON.stringify(await $.tool.call({ tool: 'Write', file_path, content: 'x' })).includes('owed to an sonnet agent')
+  for (const path of ['/Users/me/claude-artifacts/x.html', '/Users/me/vault/GB-33 note.md']) expect(await owed(path)).toBe(false)
+  for (const path of ['/w/app/src/quote.ts', '/w/app/README.md']) expect(await owed(path)).toBe(true)
 })
 
 // The brief the next agent the main conversation starts is given when the person's messages are these: the session holds
@@ -2272,17 +2277,22 @@ test('coding effort auto under the orchestrator: a lane runs each job at the eff
   const sent: string[] = []
   on('tool.call', (_: unknown, e: any) => (e.tool === 'SendMessage' ? sent.push(e.message) : calls.push(`${e.tool} ${e.model}·${e.effort}`), { result: '' }))
   on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: 'lane-s' }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
+  // The lane reports before each separate request: one typed while it is at work becomes an agent of its own.
+  const reported = () => $.turn.complete({ agentId: 'lane-s', turnId: 'y', answer: 'done', durationMs: 1, isAborted: false })
   const high = { model: 'sonnet', effort: 'high' } as const
   await sayOn($, 'claude-opus-5-5', 'add retries to the quote client')
   expect(r.notes[0]).toEqual([handoffNote({ kind: 'lane', gear: high, code: true }, true, true, 'code · area · depth 2', true)])
   await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'retries', prompt: 'p', effort: 'medium' })
   await $.agent.spawn(spawnCall('t1', { model: 'sonnet', parentModel: 'claude-opus-5-5' }))
   await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  await reported()
   // A question: the effort its first line names too (max is xhigh, the top); the line is taken off.
   await sayOn($, 'claude-opus-5-5', 'why does the client retry twice?')
   expect(r.notes[1]).toEqual([handoffNote({ kind: 'lane', gear: high, resume: 'lane-s' }, true, true, 'answer · area · depth 2', true)])
   await $.tool.call({ tool: 'SendMessage', to: 'lane-s', message: 'effort: max\nwhy twice?' })
   await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  await reported()
   // More code: the effort its first line names.
   await sayOn($, 'claude-opus-5-5', 'make it back off exponentially')
   await $.tool.call({ tool: 'SendMessage', to: 'lane-s', message: 'effort: xhigh\nback off exponentially' })
@@ -2291,6 +2301,7 @@ test('coding effort auto under the orchestrator: a lane runs each job at the eff
   expect(sent).toEqual(['why twice?', 'back off exponentially'])
   expect(r.steps.filter(s => s.startsWith('claude-sonnet'))).toEqual(['claude-sonnet-5-5·medium', 'claude-sonnet-5-5·xhigh', 'claude-sonnet-5-5·xhigh'])
   // With none named, gearbox's pick for the job.
+  await reported()
   await sayOn($, 'claude-opus-5-5', 'make it back off exponentially')
   await $.tool.call({ tool: 'SendMessage', to: 'lane-s', message: 'and cap the delay' })
   await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
@@ -3246,4 +3257,386 @@ test('agents of agents: the brief of an agent the main conversation starts says 
   await $.agent.spawn(spawnCall('part', { prompt: 'p', parentAgentId: 'agent-lane' }))
   expect(prompts[0]).toStartWith(`do it${NESTING}`)
   expect(prompts[1]).toBe('p')
+})
+
+// ---- a message typed while a turn runs, lanes at work, and a reload ----
+
+// A prompt typed into a running turn reaches prompt.submit with that turn's id.
+const typedMid = ($: any, text: string) => $.prompt.submit({ text, asUser: true, turnId: 'x' } as any)
+// The agents the main conversation starts, by tool_use_id: `agent-<id>`.
+const agentsAs = (on: any) => on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+const heldMid = async ($: any, call: object) => JSON.stringify(await $.tool.call(call)).includes('new message while this turn was running')
+const EDIT = { tool: 'Edit', file_path: 'src/orders.ts', old_string: 'a', new_string: 'b' }
+
+test('a message typed while a turn runs is read like a new prompt: logged as mid, the main conversation is told the agents at work and the three ways to hand it on, and may not do the work until an agent has it', ORCH, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'point', depth: 0, mode: 'code' }, { reach: 'area', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  const calls: any[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push(e), { result: '' }))
+  agentsAs(on)
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  // A one-spot edit the orchestrator makes itself, and an agent started earlier that is editing quote.ts.
+  await sayOn($, 'claude-opus-5-5', 'rename formatMoney to fmtMoney in money.ts')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet', description: 'quote retries' }))
+  await $.tool.call({ tool: 'Edit', file_path: 'src/quote.ts', old_string: 'a', new_string: 'b', agentId: 'agent-t1' })
+  await typedMid($, 'also add a CSV export to the orders list')
+  expect(r.surveys.at(-1)).toMatchObject({ request: 'also add a CSV export to the orders list' })
+  const note = r.notes.at(-1)![0]!
+  expect(note).toContain('agent-t1 · quote retries · sonnet · editing src/quote.ts')
+  for (const way of ['(a) ', '(b) ', '(c) ']) expect(note).toContain(way)
+  expect(note).toContain('by SendMessage to that agent')
+  expect(note).toContain('start a plain Agent (no subagent_type) with isolation "worktree"')
+  expect(note).toContain('Do not do the new work in this conversation')
+  // The work is the agents': edits and commands that change anything are refused, reading and a note outside the repository are not.
+  expect(await heldMid($, EDIT)).toBe(true)
+  expect(await heldMid($, { tool: 'Bash', command: 'mkdir out && touch out/orders.csv' })).toBe(true)
+  expect(await heldMid($, { tool: 'Bash', command: 'git diff' })).toBe(false)
+  expect(await heldMid($, { tool: 'Write', file_path: '/Users/me/vault/GB-33 export.md', content: 'x' })).toBe(false)
+  expect(await heldMid($, { tool: 'Write', file_path: 'src/orders.csv.ts', content: 'x' })).toBe(true)
+  // An Agent that starts lifts it at once, and the person's words go into its brief.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't2', description: 'csv export', prompt: 'add the export', isolation: 'worktree' })
+  expect(calls.at(-1)).toMatchObject({ tool: 'Agent', model: 'sonnet', effort: 'xhigh', isolation: 'worktree' })
+  expect(calls.at(-1).prompt).toContain('> also add a CSV export to the orders list')
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet' }))
+  expect(await heldMid($, EDIT)).toBe(false)
+  expect(await heldMid($, { tool: 'Bash', command: 'mkdir out' })).toBe(false)
+  await done($)
+  const mid = events(files).filter(e => e.mid)
+  expect(mid.map(e => e.ev)).toEqual(['prompt', 'survey', 'demand', 'gear', 'agent', 'handed'])
+  expect(mid[0]).toMatchObject({ kind: 'typed', agents: 1 })
+  expect(mid[2]).toMatchObject({ mid: true, title: 'also add a CSV export to the orders…' }) // a demand of its own, titled by its first words (8): the survey gave none
+  expect(mid[3]).toMatchObject({ gear: 'sonnet·medium', why: 'survey: code · area · depth 2', handoff: 'lane → sonnet·xhigh', hold: true })
+  expect(mid[5]).toMatchObject({ via: 'Agent', agent: 'agent-t2' })
+  expect(events(files).filter(e => e.ev === 'strict').map(e => e.mode)).toEqual(Array(3).fill('mid'))
+  expect(events(files).at(-1)).toMatchObject({ ev: 'turn' })
+  expect(events(files).at(-1).owed).toBeUndefined()
+})
+
+test('a message typed mid-turn is handed on by a SendMessage that reaches an agent at work, by its id or its name, not one that names nobody or an agent that ended', ORCH, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'point', depth: 0, mode: 'answer' }, { reach: 'area', depth: 2, mode: 'code' }, { reach: 'area', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
+  agentsAs(on)
+  await sayOn($, 'claude-opus-5-5', 'what does formatMoney return?')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet', description: 'quote retries' }))
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet', description: 'price cache' }))
+  await $.turn.complete({ agentId: 'agent-t2', turnId: 'y', answer: 'done', durationMs: 1, isAborted: false })
+  await typedMid($, 'make the retries back off exponentially')
+  expect(r.notes.at(-1)![0]).toContain('agent-t1 · quote retries · sonnet')
+  expect(r.notes.at(-1)![0]).not.toContain('agent-t2') // it has ended
+  await $.tool.call({ tool: 'SendMessage', to: 'nobody', message: 'hi' })
+  await $.tool.call({ tool: 'SendMessage', to: 'agent-t2', message: 'hi' })
+  expect(await heldMid($, EDIT)).toBe(true)
+  await $.tool.call({ tool: 'SendMessage', to: 'quote retries', message: 'back off exponentially' })
+  expect(await heldMid($, EDIT)).toBe(false)
+  // The same by id, for a second message.
+  await typedMid($, 'and cap the delay at ten seconds')
+  expect(await heldMid($, EDIT)).toBe(true)
+  await $.tool.call({ tool: 'SendMessage', to: 'agent-t1', message: 'cap the delay' })
+  expect(await heldMid($, EDIT)).toBe(false)
+})
+
+test('a message typed mid-turn that nobody took ends with the turn: logged as skipped, the turn as owed, and nothing is held on after it', ORCH, async ($: any, on) => {
+  rig(on, [{ reach: 'point', depth: 0, mode: 'answer' }, { reach: 'area', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  on('tool.call', () => ({ result: '' }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'what does formatMoney return?')
+  await typedMid($, 'also add a CSV export to the orders list')
+  expect(await heldMid($, EDIT)).toBe(true)
+  await done($)
+  const turn = events(files).filter(e => e.ev === 'turn')
+  expect(events(files).filter(e => e.ev === 'skipped')).toMatchObject([{ mid: true, handoff: 'lane → sonnet·xhigh' }])
+  expect(turn).toMatchObject([{ owed: true }])
+  expect(await heldMid($, EDIT)).toBe(false)
+})
+
+test('a message typed mid-turn that the rules keep here gets no note and no hold; a nod is not read at all', ORCH, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'point', depth: 0, mode: 'answer' }, { reach: 'point', depth: 0, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  on('tool.call', () => ({ result: '' }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'what does formatMoney return?')
+  await typedMid($, 'and parseMoney?')
+  await typedMid($, 'ok')
+  expect(r.surveys).toHaveLength(2)
+  expect(r.notes.slice(1)).toEqual([[], []])
+  expect(await heldMid($, { tool: 'Bash', command: 'mkdir out' })).toBe(false)
+  await done($)
+  expect(events(files).filter(e => e.mid).map(e => [e.ev, e.why])).toEqual([['prompt', undefined], ['survey', undefined], ['gear', 'survey: answer · point · depth 0; kept here'], ['prompt', undefined]])
+})
+
+test('a message typed mid-turn that is not the person’s, a slash command or a notification is left alone', ORCH, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'point', depth: 0, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  await sayOn($, 'claude-opus-5-5', 'what does formatMoney return?')
+  await $.prompt.submit({ text: 'Agent "check" finished', origin: { kind: 'task-notification' }, turnId: 'x' } as any)
+  await $.prompt.submit({ text: '/graphify .', command: { name: 'graphify', args: '.' }, turnId: 'x' } as any)
+  expect(r.surveys).toHaveLength(1)
+  expect(r.notes.slice(1)).toEqual([[], []])
+})
+
+test('with the coding effort auto a message typed mid-turn is advice, not a hold: the main conversation may still act, and a turn that ignores it is logged as kept', { options: { code_effort: 'auto', orchestrator: true, orchestrator_effort: 'medium' } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'point', depth: 0, mode: 'answer' }, { reach: 'area', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  on('tool.call', () => ({ result: '' }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'what does formatMoney return?')
+  await typedMid($, 'also add a CSV export to the orders list')
+  const note = r.notes.at(-1)![0]!
+  expect(note).toContain("The person turned on gearbox's orchestrator so that work like this goes to agents")
+  expect(note).toContain('Keeping it here:')
+  expect(note).toContain('gearbox suggests sonnet at')
+  expect(note).not.toContain('are refused here')
+  expect(await heldMid($, { tool: 'Bash', command: 'mkdir out' })).toBe(false)
+  await done($)
+  expect(events(files).filter(e => e.ev === 'kept')).toMatchObject([{ handoff: 'mid · lane → sonnet·high' }])
+})
+
+test('orchestrator: a lane at work is not resumed for a separate request, which becomes a new agent; once it has reported, it is', ORCH, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }, { reach: 'area', depth: 2, mode: 'answer' }, { reach: 'area', depth: 2, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: 'lane-s' }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
+  const high = { model: 'sonnet', effort: 'high' } as const
+  await sayOn($, 'claude-opus-5-5', 'why is the quote mapper rounding twice?')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'analyze', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  await stepOnce($, { agentId: 'lane-s', model: 'claude-sonnet-5-5', effort: 'xhigh' })
+  await sayOn($, 'claude-opus-5-5', 'and why does the price service round up?')
+  expect(r.notes[1]).toEqual([handoffNote({ kind: 'lane', gear: high })])
+  await $.turn.complete({ agentId: 'lane-s', turnId: 'y', answer: 'found it', durationMs: 1, isAborted: false })
+  await sayOn($, 'claude-opus-5-5', 'and why does billing truncate?')
+  expect(r.notes[2]).toEqual([handoffNote({ kind: 'lane', gear: high, resume: 'lane-s' })])
+})
+
+test('orchestrator: a lane hand-off the main conversation never started is logged as skipped, and its turn as owed', ORCH, async ($: any, on) => {
+  rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }, { reach: 'point', depth: 0, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  on('tool.call', () => ({ result: '' }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await sayOn($, 'claude-opus-5-5', 'why is the quote mapper rounding twice?')
+  await done($)
+  expect(events(files).map(e => e.ev)).not.toContain('skipped')
+  await sayOn($, 'claude-opus-5-5', 'what does formatMoney return?')
+  await done($)
+  const ev = events(files)
+  expect(ev.filter(e => e.ev === 'skipped')).toEqual([expect.objectContaining({ handoff: 'lane → sonnet·high' })])
+  expect(ev.filter(e => e.ev === 'turn').map(e => e.owed)).toEqual([true, undefined])
+})
+
+test('orchestrator: after a reload loses the lanes, a message to an agent the record keeps at work is the lane hand-off: resume is logged and the notification turn is not held', ORCH, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  const files = disk(on)
+  on('tool.call', () => ({ result: '' }))
+  agentsAs(on)
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  // An agent at work in the record that no lane remembers.
+  await $.agent.spawn(spawnCall('t0', { model: 'sonnet', description: 'quote mapper' }))
+  await sayOn($, 'claude-opus-5-5', 'why is the quote mapper rounding twice?')
+  expect(r.notes[0]).toEqual([handoffNote({ kind: 'lane', gear: { model: 'sonnet', effort: 'high' } })])
+  await $.tool.call({ tool: 'SendMessage', to: 'agent-t0', message: 'why is the mapper rounding twice?' })
+  await done($)
+  expect(events(files).filter(e => e.ev === 'resume')).toMatchObject([{ agent: 'agent-t0' }])
+  // Its report comes back: reading the diff is not held, nor a note for the person outside the repository.
+  await $.prompt.submit({ text: 'Agent "quote mapper" finished', origin: { kind: 'task-notification' } })
+  const held = async (call: object) => JSON.stringify(await $.tool.call(call)).includes('owed')
+  for (let k = 0; k < 5; k++) expect(await held({ tool: 'Bash', command: 'git diff' })).toBe(false)
+  expect(await held({ tool: 'Write', file_path: '/Users/me/vault/GB-33 mapper.md', content: 'x' })).toBe(false)
+  await done($)
+  expect(events(files).filter(e => e.ev === 'turn').map(e => e.owed)).toEqual([undefined, undefined])
+})
+
+test('orchestrator: a session that starts with agents at work in the record takes the newest of each model as its lane again', ORCH, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 2, mode: 'answer' }], { session: 'claude-opus-5-5' })
+  on('tool.register', (_: unknown, e: any) => ({ value: { tool: `mcp__gearbox__${e.name}` } }))
+  on('command.register', () => ({ value: { command: 'gearbox' } }))
+  on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
+  agentsAs(on)
+  await $.agent.spawn(spawnCall('t0', { model: 'sonnet', description: 'quote mapper' }))
+  await $.turn.complete({ agentId: 'agent-t0', turnId: 'y', answer: 'done', durationMs: 1, isAborted: false })
+  // The lanes in memory are gone (a reload): the session starts again, and the record gives the lane back.
+  await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+  await sayOn($, 'claude-opus-5-5', 'why is the quote mapper rounding twice?')
+  expect(r.notes[0]).toEqual([handoffNote({ kind: 'lane', gear: { model: 'sonnet', effort: 'high' }, resume: 'agent-t0' })])
+})
+
+// ---- demands: the request each agent was started for ----
+
+// The demand of each loop, by agent id.
+const demandsOf = (loops: Record<string, any>) => Object.fromEntries(Object.entries(loops).filter(([id]) => id !== 'main').map(([id, l]) => [id, l.demand?.title]))
+
+test('demands: a typed prompt is a demand titled by the survey; the agents it starts work for it, an agent’s own agents for its parent’s; the next request is a demand of its own', ORCH, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(on, [{ title: 'Orders by customer', reach: 'area', depth: 2, mode: 'code' }, { title: 'Issue for the backup', reach: 'area', depth: 1, mode: 'code' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  agentsAs(on)
+  await sayOn($, 'claude-opus-5-5', 'group the orders by customer')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet', description: 'part 1' }))
+  await $.agent.spawn(spawnCall('e1', { model: 'sonnet', subagentType: 'Explore', parentAgentId: 'agent-t1', description: 'Explore' }))
+  const first = loopsOf()['agent-t1'].demand
+  expect(first).toMatchObject({ title: 'Orders by customer', id: expect.stringMatching(/^d\d+$/) })
+  expect(typeof first.at).toBe('number')
+  expect(loopsOf()['agent-e1'].demand).toEqual(first) // the agent t1 started works for t1's request
+  expect(loopsOf().main.demand).toBeUndefined() // main is no agent of a demand
+  await sayOn($, 'claude-opus-5-5', 'open an issue about the failed backup')
+  await $.agent.spawn(spawnCall('i1', { model: 'sonnet', description: 'issue' }))
+  const second = loopsOf()['agent-i1'].demand
+  expect(second.title).toBe('Issue for the backup')
+  expect(second.id).not.toBe(first.id)
+  expect(demandsOf(loopsOf())).toEqual({ 'agent-t1': 'Orders by customer', 'agent-e1': 'Orders by customer', 'agent-i1': 'Issue for the backup' })
+})
+
+test('demands: with no title from the survey, the first eight words of the prompt, and … where it goes on; an unreadable survey does the same', ORCH, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(on, [{ reach: 'area', depth: 1, mode: 'code' }], { session: 'claude-opus-5-5' }) // no title; the next survey has nothing to say
+  on('tool.call', () => ({ result: '' }))
+  agentsAs(on)
+  await sayOn($, 'claude-opus-5-5', 'group the orders by customer and update the README with the real output')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  expect(demandsOf(loopsOf())).toEqual({ 'agent-t1': 'group the orders by customer and update the…' })
+  await sayOn($, 'claude-opus-5-5', 'now the refunds')
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet' }))
+  expect(loopsOf()['agent-t2'].demand.title).toBe('now the refunds')
+  expect(loopsOf()['agent-t2'].demand.id).not.toBe(loopsOf()['agent-t1'].demand.id)
+})
+
+test('demands: a nod, a go-ahead and a continuation go on with the demand whose agents they go on with; a go-ahead after a request that started none opens one titled by the work it approves', ORCH, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  const r = rig(
+    on,
+    [
+      { title: 'Plan the export', reach: 'area', depth: 1, mode: 'answer' },
+      { title: 'Add a CSV export', reach: 'area', depth: 2, mode: 'code' }, // the work the nod approves
+      { title: 'Export of the orders', reach: 'area', depth: 2, mode: 'code' }, // the work the second nod approves: the same, titled otherwise
+      { title: 'Orders paging', reach: 'area', depth: 2, mode: 'code' },
+      { reach: 'area', depth: 1, mode: 'code', cont: true },
+    ],
+    { session: 'claude-opus-5-5' },
+  )
+  on('tool.call', () => ({ result: '' }))
+  agentsAs(on)
+  await sayOn($, 'claude-opus-5-5', 'how would we add an export to the orders list?')
+  r.said.push('Plan: add src/export.ts, a CSV writer, and a button on the orders list. Say go and I will write it.')
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  // The first request started no agent, so it is no group: the work the nod approves is the demand, by its own title.
+  expect(demandsOf(loopsOf())).toEqual({ 'agent-t1': 'Add a CSV export' })
+  const approved = loopsOf()['agent-t1'].demand
+  // Another nod goes on with it now that agents work for it, whatever the work it approves is titled.
+  await sayOn($, 'claude-opus-5-5', 'continue')
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet' }))
+  expect(loopsOf()['agent-t2'].demand).toEqual(approved)
+  // A request of its own, then a continuation of it.
+  await sayOn($, 'claude-opus-5-5', 'page the orders list')
+  await $.agent.spawn(spawnCall('t3', { model: 'sonnet' }))
+  const paging = loopsOf()['agent-t3'].demand
+  expect(paging.title).toBe('Orders paging')
+  await sayOn($, 'claude-opus-5-5', 'and the same for the refunds list')
+  await $.agent.spawn(spawnCall('t4', { model: 'sonnet' }))
+  expect(loopsOf()['agent-t4'].demand).toEqual(paging)
+})
+
+test('demands: an agent that reported and is given a new request moves to its demand, by a new Agent call that resumes it or by a message; one given more of the same work stays', ORCH, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(on, [{ title: 'Orders by customer', reach: 'area', depth: 2, mode: 'code' }, { title: 'Refund report', reach: 'area', depth: 2, mode: 'code' }, { title: 'Tax rounding', reach: 'area', depth: 2, mode: 'code' }, { reach: 'area', depth: 1, mode: 'code', cont: true }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: e.resume?.agentId ?? `agent-${e.tool_use_id}` }))
+  const report = (id: string) => $.turn.complete({ agentId: id, turnId: 'y', answer: 'done', durationMs: 1, isAborted: false })
+  await sayOn($, 'claude-opus-5-5', 'group the orders by customer')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet', description: 'customers' }))
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet', description: 'readme' }))
+  await report('agent-t1')
+  await report('agent-t2')
+  const orders = loopsOf()['agent-t1'].demand
+  // A new request; the lane that holds t1 is resumed for it.
+  await sayOn($, 'claude-opus-5-5', 'now a refund report')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet', description: 'customers', resume: { agentId: 'agent-t1' } }))
+  expect(loopsOf()['agent-t1'].demand.title).toBe('Refund report')
+  expect(loopsOf()['agent-t2'].demand).toEqual(orders) // the agent beside it stays where it was
+  await report('agent-t1')
+  // Another new request; this time the main conversation sends the finished agent a message.
+  await sayOn($, 'claude-opus-5-5', 'and the tax rounding')
+  await $.tool.call({ tool: 'SendMessage', to: 'agent-t2', message: 'round the tax per line' })
+  expect(loopsOf()['agent-t2'].demand.title).toBe('Tax rounding')
+  expect(loopsOf()['agent-t1'].demand.title).toBe('Refund report')
+  await report('agent-t2')
+  // More of the same work (a continuation) is the same demand: the agent resumed stays in it.
+  const tax = loopsOf()['agent-t2'].demand
+  await sayOn($, 'claude-opus-5-5', 'also round the shipping')
+  await $.tool.call({ tool: 'SendMessage', to: 'agent-t2', message: 'and the shipping' })
+  expect(loopsOf()['agent-t2'].demand).toEqual(tax)
+})
+
+test('demands: a message typed mid-turn that an agent takes is a demand of its own, with the title the survey gives it; one the rules keep in main, a nod, or one sent to an agent at work is not', ORCH, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(
+    on,
+    [
+      { title: 'Rename formatMoney', reach: 'point', depth: 0, mode: 'code' },
+      { title: 'CSV export for orders', reach: 'area', depth: 2, mode: 'code' }, // handed to an agent
+      { title: 'Tiny fix', reach: 'point', depth: 0, mode: 'code' }, // kept here
+      { title: 'Back off exponentially', reach: 'area', depth: 2, mode: 'code' }, // handed on by a message to an agent at work
+    ],
+    { session: 'claude-opus-5-5' },
+  )
+  on('tool.call', () => ({ result: '' }))
+  agentsAs(on)
+  await sayOn($, 'claude-opus-5-5', 'rename formatMoney to fmtMoney in money.ts')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet', description: 'quote retries' }))
+  const own = loopsOf()['agent-t1'].demand
+  expect(own.title).toBe('Rename formatMoney')
+  await typedMid($, 'also add a CSV export to the orders list')
+  await typedMid($, 'ok') // a nod adds nothing
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet', description: 'csv export' }))
+  const csv = loopsOf()['agent-t2'].demand
+  expect(csv.title).toBe('CSV export for orders')
+  expect(loopsOf()['agent-t1'].demand).toEqual(own)
+  // A small edit the rules keep in main opens no demand: the next agent works for the one in force.
+  await typedMid($, 'fix the typo in the header')
+  await $.agent.spawn(spawnCall('t3', { model: 'sonnet', description: 'more csv' }))
+  expect(loopsOf()['agent-t3'].demand).toEqual(csv)
+  // A message the main conversation hands to an agent at work is that agent's work: the demand it opened is dropped.
+  await typedMid($, 'make the retries back off exponentially')
+  await $.tool.call({ tool: 'SendMessage', to: 'agent-t1', message: 'back off exponentially' })
+  await $.agent.spawn(spawnCall('t4', { model: 'sonnet', description: 'unrelated' }))
+  expect(loopsOf()['agent-t1'].demand).toEqual(own)
+  expect(loopsOf()['agent-t4'].demand).toEqual(csv)
+})
+
+test('demands: the agents a slash command’s turn starts work for a demand titled by the command; gearbox’s own command opens none; the next prompt drops it', ORCH, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(on, [{ title: 'Orders by customer', reach: 'area', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  agentsAs(on)
+  await sayOn($, 'claude-opus-5-5', 'group the orders by customer')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  await $.prompt.submit({ text: '/gearbox panel', command: { name: 'gearbox', args: 'panel' } })
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet' }))
+  expect(loopsOf()['agent-t2'].demand.title).toBe('Orders by customer')
+  await $.prompt.submit({ text: '/review the diff', command: { name: 'review', args: 'the diff' } })
+  await stepOnce($, { model: 'claude-opus-5-5' })
+  await $.agent.spawn(spawnCall('t3', { model: 'sonnet' }))
+  expect(loopsOf()['agent-t3'].demand.title).toBe('/review the diff')
+  await $.agent.spawn(spawnCall('t4', { model: 'sonnet' }))
+  expect(loopsOf()['agent-t4'].demand.title).toBe('/review the diff')
+})
+
+test('demands: after a reload loses the module’s memory, a nod goes on with the latest demand the record shows', ORCH, async ($: any, on) => {
+  const loopsOf = watchLoops(on)
+  rig(on, [{ title: 'Orders by customer', reach: 'area', depth: 2, mode: 'code' }], { session: 'claude-opus-5-5' })
+  on('tool.register', (_: unknown, e: any) => ({ value: { tool: `mcp__gearbox__${e.name}` } }))
+  on('command.register', () => ({ value: { command: 'gearbox' } }))
+  on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
+  on('tool.call', () => ({ result: '' }))
+  agentsAs(on)
+  await sayOn($, 'claude-opus-5-5', 'group the orders by customer')
+  await $.agent.spawn(spawnCall('t1', { model: 'sonnet' }))
+  const first = loopsOf()['agent-t1'].demand
+  await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+  await sayOn($, 'claude-opus-5-5', 'ok')
+  await $.agent.spawn(spawnCall('t2', { model: 'sonnet' }))
+  expect(loopsOf()['agent-t2'].demand).toEqual(first)
 })

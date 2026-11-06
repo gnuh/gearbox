@@ -2,6 +2,8 @@
 // long-lived subagent per model. A lane starts at the top effort it will need and each message lowers it (bench/lanes:
 // a mod's effort on a resumed agent reaches the API and keeps the cache; lowering takes hold fully, raising only half).
 import type { ModelEffort } from 'claude-code'
+import type { GearboxLoop } from '../types'
+import { family, isQueued, live } from './loops'
 import { BRIEFING, EFFORTS, type FanPart, type Gear, type Handoff, MODELS as LADDER, type Model, type Part, type Plan, type Reading, RESUME_MS, RESUME_TOKENS, type Step, apartEdits, capXhigh, choreGear, driveHandoff, filesReach as scope, gearFor, mechanical, normPath as norm, pathFolder as folder, pins, staysPut, upFor, upTo } from './policy'
 
 // The orchestrator's effort: a level, or `auto`, which sets the main conversation's effort per prompt (see orchestratorPlan).
@@ -60,6 +62,23 @@ export const laneStart = (job: ModelEffort): ModelEffort => upTo(EFFORTS, 'xhigh
 export type Lane = { id: string; at: number; tokens: number }
 export type Lanes = Partial<Record<Model, Lane>>
 export const laneResumable = (l: Lane | undefined, now: number): l is Lane => l !== undefined && now - l.at < RESUME_MS && l.tokens < RESUME_TOKENS
+
+// The lanes a session had, read back from the readout's record, which a plugin reload keeps while the lanes (in memory)
+// are lost: per model, the newest agent the main conversation started that is not a skill's fork, a refused or stopped
+// row, a part in a worktree of its own or Fable's. Its cache is as warm as its last activity (now, for an agent at
+// work); its context is not recorded, so it counts as small.
+export const lanesFrom = (loops: Record<string, GearboxLoop>, now: number): Lanes => {
+  const lanes: Lanes = {}
+  const at = (l: GearboxLoop) => (live(l) ? now : l.endedAt ?? l.since ?? 0)
+  const rows = Object.entries(loops)
+    .filter(([id, l]) => id !== 'main' && !isQueued(id) && l.parent === 'main' && !l.failed && !l.stopping && !l.worktree && !l.label.startsWith('/'))
+    .sort(([, a], [, b]) => at(a) - at(b))
+  for (const [id, l] of rows) {
+    const model = family(l.asked)
+    if (model && model !== 'fable') lanes[model] = { id, at: at(l), tokens: 0 }
+  }
+  return lanes
+}
 
 // Which parts of a fan-out the lanes take. The first part of each model goes to that model's lane when it is worth
 // going back to and idle (`resume`), or its agent becomes the lane when there is none worth going back to (`lane`);
