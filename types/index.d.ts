@@ -23,6 +23,7 @@ export type GearboxLoop = {
   usage?: { in: number; out: number; usd: number } // tokens and list-price dollars its requests used (main: this turn)
   result?: string // the first line of the report it handed back, or why it was refused
   failed?: 'failed' | 'refused' | 'stopped' // how it ended, when not well
+  stopping?: 'task' | 'soft' // the person pressed Stop and it has not ended yet: through the engine's TaskStop, or gearbox's own (it is refused its tool calls, and its next request ends the turn)
   steps: number // requests sent (main: this turn)
   since?: number // when a subagent started (ms), or the turn the main conversation is in, for the band's run time
   endedAt?: number // when it finished (ms)

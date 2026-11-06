@@ -162,7 +162,7 @@ const crew = async ($: any, on: any, o: { owed?: boolean } = {}) => {
   b.kv.set('consent', false)
   b.setUsage({ ...USAGE, input_tokens: 31000, output_tokens: 2100 })
   b.setCost(12.87)
-  mock.clock(on)
+  const clock = mock.clock(on)
   on('session.cwd', () => ({ value: '/w/app' }))
   on('session.messages', () => ({ value: [] }))
   on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ reach: 'area', depth: 2, mode: 'code', parts: o.owed ? CREW_PARTS : CREW_PARTS.slice(0, 3) }), usage: USAGE } }) as never)
@@ -192,7 +192,7 @@ const crew = async ($: any, on: any, o: { owed?: boolean } = {}) => {
   await step($, 'claude-opus-5-5', { agentId: 'a-t3', effort: 'xhigh' })
   await $.turn.complete({ turnId: 't', answer: '**6 findings** (1 medium: a fractional discount loses 1 cent)\n\nDetails below.', durationMs: 10, isAborted: false, agentId: 'a-t3' })
   b.setCost(13.27)
-  return { ...b, start, run }
+  return { ...b, start, run, clock }
 }
 
 test('the panel lists every loop with its model, nested under main', async ($: any, on) => {
@@ -224,15 +224,17 @@ test('the band: a header, main and a row per subagent, above what the mods below
   const term = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
   for (const text of [/^GearBox$/, /^opus·high$/, /^1 agent$/, /^2 req$/, /^\$10\.40$/, /^\/review$/, /engine band/]) expect(await term.find({ type: 'Text', text })).toBeDefined()
   expectLines(await lines(term, 120), [
-    /^GearBox +opus·high · 1 agent · this turn 2 req · \$10\.40 · why \/review +\[ Panel \] +\[ Log \] +\[ Settings \]$/,
+    /^GearBox +opus·high · 1 agent · this turn 2 req · \$10\.40 · why \/review +\[ Panel \] +\[ Settings \]$/,
     /^─+$/,
     /^● main +opus·high +1 req +Ns$/,
     /^ {2}thinking$/,
-    /^└─● deploy +haiku·low +1 req +Ns$/,
+    /^└─● deploy +haiku·low +1 req +Ns +\[ ■ \]$/,
     /^ {4}Bash: \.\/deploy\.sh staging$/,
   ])
   expect(await term.find({ type: 'Text', text: /—|⌀|avg/ })).toBeUndefined() // no dash, and no average of one turn
-  for (const key of ['band-pane', 'band-log', 'band-settings']) expect(await term.find({ key })).toBeDefined()
+  for (const key of ['band-pane', 'band-settings', 'stop-a-deploy']) expect(await term.find({ key })).toBeDefined()
+  expect(await term.find({ key: 'band-log' })).toBeUndefined() // the log is switched in Settings only
+  expect(await term.find({ key: 'stop-main' })).toBeUndefined() // main is not stopped from here: Esc does that
   expect(await term.find({ key: 'band-effort-xhigh' })).toBeUndefined() // the coding effort lives in Settings now
   expect(await term.find({ type: 'Text', text: /^─+$/ })).toBeDefined() // the terminal rules its band
   await term.unmount()
@@ -241,7 +243,8 @@ test('the band: a header, main and a row per subagent, above what the mods below
   for (const text of [/^GearBox$/, /^opus·high$/, /^1 running$/, /^haiku·low$/, /^2 requests$/, /^opus 1 · haiku 1$/, /^\$10\.40/, /this turn \$0\.40/, /^\/review$/, /^sets its own effort$/, /^deploy$/, /^Bash: \.\/deploy\.sh staging$/, /engine band/]) {
     expect(await desk.find({ type: 'Text', text })).toBeDefined()
   }
-  for (const key of ['band-pane', 'band-log', 'band-settings', 'card-main', 'card-a-deploy']) expect(await desk.find({ key })).toBeDefined()
+  for (const key of ['band-pane', 'band-settings', 'card-main', 'card-a-deploy', 'stop-a-deploy']) expect(await desk.find({ key })).toBeDefined()
+  expect(await desk.find({ key: 'band-log' })).toBeUndefined()
   expect(await desk.find({ type: 'Text', text: /^─+$/ })).toBeUndefined()
   await desk.unmount()
   // A second turn brings the bars and the average.
@@ -260,17 +263,17 @@ test('the band draws main and its agents as a tree, two lines each: the identity
   await crew($, on)
   const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
   expectLines(await lines(ui, 120), [
-    /^GearBox +opus·high \(auto\) · 3 agents · this turn 7 req · \$13\.27 · why code · area +\[ Panel \] +\[ Log \] +\[ Settings \]$/,
+    /^GearBox +opus·high \(auto\) · 3 agents · this turn 7 req · \$13\.27 · why code · area +\[ Panel \] +\[ Settings \]$/,
     /^─+$/,
     /^● main +opus·high +1 req +Ns$/,
     /^ {2}Waiting for the 2 parts; part 1 already has green tests · Agent$/,
-    /^├─● part 1 · customers +sonnet·medium +main +2 req +Ns$/,
+    /^├─● part 1 · customers +sonnet·medium +main +2 req +Ns +\[ ■ \]$/,
     /^│ {3}Grouping orders by customer and adding the totals · Write$/,
-    /^├─● part 2 · README +sonnet·medium +main +2 req +Ns$/,
+    /^├─● part 2 · README +sonnet·medium +main +2 req +Ns +\[ ■ \]$/,
     /^│ {3}Running the examples to paste real output into the README · Bash$/,
-    /^│ └─● Explore · uses of paginate +sonnet·low +rules +1 req +Ns$/,
+    /^│ └─● Explore · uses of paginate +sonnet·low +rules +1 req +Ns +\[ ■ \]$/,
     /^│ {5}Looking for calls to paginate in src\/ · Grep$/,
-    /^└─✓ part 3 · review money\.ts +opus·medium +rules +done · 6 findings \(1 medium: a fractional discount… +1 req +Ns$/,
+    /^└─✓ part 3 · review money\.ts +opus·medium +rules +done · 6 findings \(1 medium: a fraction… +1 req +Ns$/,
   ])
   // The tool is its own, dimmed, piece after the note.
   expect(await ui.find({ type: 'Text', text: /^Grouping orders by customer and adding the totals · Write$/ })).toBeDefined()
@@ -282,15 +285,15 @@ test('a terminal under 100 columns draws the narrow band: no tool, no source of 
   await crew($, on)
   const ui = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
   expectLines(await lines(ui, 80), [
-    /^GearBox opus·high \(auto\) · 3 agents · \$13\.27 +\[ Panel \] \[ Log \] \[ Settings \]$/,
+    /^GearBox opus·high \(auto\) · 3 agents · \$13\.27 +\[ Panel \] \[ Settings \]$/,
     /^─+$/,
     /^● main +opus·high +Ns$/,
     /^ {2}Waiting for the 2 parts; part 1 already has green tests$/,
-    /^├─● part 1 +sonnet·medium +Ns$/,
+    /^├─● part 1 +sonnet·medium +Ns \[ ■ \]$/,
     /^│ {3}Grouping orders by customer and adding the totals$/,
-    /^├─● part 2 +sonnet·medium +Ns$/,
+    /^├─● part 2 +sonnet·medium +Ns \[ ■ \]$/,
     /^│ {3}Running the examples to paste real output into the README$/,
-    /^│ └─● Explore +sonnet·low +Ns$/,
+    /^│ └─● Explore +sonnet·low +Ns \[ ■ \]$/,
     /^└─✓ part 3 · review money\.ts · 6 findings .*$/,
   ])
   expect(await ui.find({ type: 'Text', text: /this turn|why|rules|· Write/ })).toBeUndefined()
@@ -313,9 +316,9 @@ test('the band draws four live agents at most and counts the rest; an answer fro
     /^─+$/,
     /^● main /,
     /^ {2}thinking$/,
-    /^├─⚠ c1 +sonnet·low +1 req +Ns$/,
+    /^├─⚠ c1 +sonnet·low +1 req +Ns +\[ ■ \]$/,
     /^│ {3}thinking · answered by haiku$/,
-    /^├─● c2 +sonnet +0 req +Ns$/,
+    /^├─● c2 +sonnet +0 req +Ns +\[ ■ \]$/,
     /^│ {3}thinking$/,
     /^├─● c3 /,
     /^│ {3}thinking$/,
@@ -694,17 +697,17 @@ test('the panel gives each agent its last three notes, the files it touched, its
       /^3 running · 1 done$/,
       /^● main +opus·high +\(auto: hand-off\) +1 req · Ns · \$0\.17$/,
       /^ {2}hh:mm:ss {2}Waiting for the 2 parts; part 1 already has green tests · Agent$/,
-      /^├─● part 1 · customers +sonnet·medium +chosen by main +⎇ part\/customers {2}\/tmp\/gb-wt-customers$/,
+      /^├─● part 1 · customers +sonnet·medium +chosen by main +⎇ part\/customers {2}\/tmp\/gb-wt-custom… +\[ ■ \]$/,
       /^│ {3}5 req · Ns · 155\.0k in \/ 10\.5k out · \$0\.4[12]$/,
       /^│ {3}hh:mm:ss {2}Fixing the totals · Edit$/,
       /^│ {3}hh:mm:ss {2}Testing the grouping · Edit$/,
       /^│ {3}hh:mm:ss {2}Creating the worktree for the part · Bash$/,
       /^│ {3}files: src\/orders\.ts \(edited\) · src\/customers\.ts \(new\)$/,
-      /^├─● part 2 · README +sonnet·medium +chosen by main$/,
+      /^├─● part 2 · README +sonnet·medium +chosen by main +\[ ■ \]$/,
       /^│ {3}2 req · Ns · 62\.0k in \/ 4\.2k out · \$0\.17$/,
       /^│ {3}hh:mm:ss {2}Running the examples to paste real output into the README · Bash$/,
       /^│ {3}hh:mm:ss {2}Starting an Explore for every use of paginate · Agent$/,
-      /^│ └─● Explore · uses of paginate +sonnet·low +by rules$/,
+      /^│ └─● Explore · uses of paginate +sonnet·low +by rules +\[ ■ \]$/,
       /^│ {5}1 req · Ns · 31\.0k in \/ 2\.1k out · \$0\.08$/,
     ])
     await ui.unmount()
@@ -856,7 +859,7 @@ test('the status line counts running subagents, and a fallback is flagged in the
   expect(status.at(-1)).toBe('opus·high ⇢ 1 agent: sonnet')
   await step($, 'claude-sonnet-5-5', { agentId: 'a-check', effort: 'medium', answeredBy: 'claude-haiku-5-5' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await show(ui, 90)).toMatch(/^└─⚠ browser check +sonnet·medium +⚠ answered by haiku$/m)
+  expect(await show(ui, 90)).toMatch(/^└─⚠ browser check +sonnet·medium +⚠ answered by haiku +\[ ■ \]$/m)
   await ui.unmount()
   await complete($, 'a-check')
   expect(status.at(-1)).toBe('opus·high')
@@ -886,7 +889,8 @@ test('the panel lists every loop, finished ones included, with no filter; a pane
     const ui = await $.ui.mount({ ...PANE, surface })
     for (const text of [/main/, /browser check/, /deploy/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
     expect(await show(ui, 90)).toMatch(/^1 running · 1 done$/m)
-    expect(await ui.find({ type: 'Button' })).toBeUndefined() // no Hide finished / Show finished
+    // No Hide finished / Show finished: the only button is the Stop of the agent still at work.
+    expect((await ui.findAll({ type: 'Button' })).map((b: any) => b.key)).toEqual(['stop-a-deploy'])
     await ui.unmount()
   }
   // /gearbox panel still opens it; the old running|all after it opens it all the same, and says it lists everything.
@@ -1108,7 +1112,7 @@ test('an agent’s Skill calls are kept by name, once each, in load order; a cal
   await step($, 'claude-sonnet-5-5', { agentId: 'a-review', effort: 'medium' })
   // No skill yet: the agent's row is as it was, with no line for skills.
   const before = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
-  expectLines(await lines(before, 120), [/^GearBox /, /^─+$/, /^● main /, /^ {2}thinking$/, /^└─● review +sonnet·medium +1 req +Ns$/, /^ {4}thinking$/])
+  expectLines(await lines(before, 120), [/^GearBox /, /^─+$/, /^● main /, /^ {2}thinking$/, /^└─● review +sonnet·medium +1 req +Ns +\[ ■ \]$/, /^ {4}thinking$/])
   await before.unmount()
   await load($, 'a-review', 'tdd', 'swanson-e2e', 'tdd', '/diagnosing-bugs')
   await load($, undefined, 'main-only')
@@ -1118,7 +1122,7 @@ test('an agent’s Skill calls are kept by name, once each, in load order; a cal
     /^─+$/,
     /^● main /,
     /^ {2}Skill: main-only$/, // the main conversation's call reads the same, but no tag is drawn for it
-    /^└─● review +sonnet·medium +1 req +Ns$/,
+    /^└─● review +sonnet·medium +1 req +Ns +\[ ■ \]$/,
     /^ {5}✦ tdd {3}✦ swanson-e2e {3}✦ diagnosing-bugs$/, // between the identity and the note; a skill once, in load order
     /^ {4}Skill: diagnosing-bugs$/,
   ])
@@ -1140,7 +1144,7 @@ test('the terminal band draws an agent’s skills as tags, in lines of their own
     /^─+$/,
     /^● main /,
     /^ {2}Waiting for the 2 parts/,
-    /^├─● part 1 · customers +sonnet·medium +main +2 req +Ns$/,
+    /^├─● part 1 · customers +sonnet·medium +main +2 req +Ns +\[ ■ \]$/,
     /^│ {4}✦ tdd {3}✦ swanson-e2e$/,
     /^│ {3}Grouping orders by customer and adding the totals · Skill$/,
     /^├─● part 2 · README /,
@@ -1357,5 +1361,336 @@ test('the panel lists every skill an agent loaded, in a skills: line after its f
   // The main conversation and the agents with no skill have no such line.
   const ui = await $.ui.mount({ ...PANE_AT(110), surface: 'terminal' })
   expect((await show(ui, 110)).match(/skills:/g)).toHaveLength(3)
+  await ui.unmount()
+})
+
+// ---- Stop: a button on every agent at work ----
+
+// The engine's TaskStop, faked beneath the mod: `tools` is what $.tool.list() answers, `sent` each TaskStop call, and
+// `answer` what the call does (by default the tool's own answer).
+const taskStop = (on: any, o: { tools?: string[]; answer?: (e: any) => unknown } = {}) => {
+  const sent: any[] = []
+  on('tool.list', () => ({ value: (o.tools ?? ['Read', 'Bash', 'TaskStop']).map(name => ({ name, description: '', mcp: false })) }))
+  on('tool.call', { tool: 'TaskStop' }, (_: unknown, e: any) => (sent.push(e), o.answer ? o.answer(e) : { result: { message: 'stopped', task_id: e.task_id, task_type: 'local_agent' }, text: 'stopped' }))
+  return sent
+}
+
+// The result of a request, whose stream is read to its end.
+const stepResult = async ($: any, model: string, extra: object = {}) => {
+  const stream = $.turn.step({ turnId: 't', index: 0, model, effort: 'high', messageCount: 3, ...extra })
+  let next = await stream.next()
+  while (!next.done) next = await stream.next()
+  return next.value
+}
+
+// The live agents of the crew: part 1, part 2 and the Explore it started.
+const LIVE = ['a-t1', 'a-t2', 'a-e1']
+const stopKeys = async (ui: any): Promise<string[]> => (await ui.findAll({ type: 'Button' })).map((b: any) => b.key as string).filter((k: string) => k.startsWith('stop-'))
+
+test('Stop is on every agent at work and on nothing else (main, a finished agent, a queued part), in the wide band, the narrow band, the panel and the desktop card', CREW, async ($: any, on) => {
+  taskStop(on)
+  await crew($, on, { owed: true })
+  const keys = LIVE.map(id => `stop-${id}`)
+  // The wide band: [ ■ ] at the end of the identity line, after the stats; the narrow band's too.
+  const wide = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(await stopKeys(wide)).toEqual(keys)
+  const rows = await lines(wide, 120)
+  expect(rows.filter(l => l.endsWith(' [ ■ ]'))).toHaveLength(3)
+  expect(rows.some(l => /^└─◌ part 4 · billing/.test(l))).toBe(true) // queued: drawn, but nothing to stop
+  expect(rows.find(l => /^└─✓ part 3/.test(l))).not.toContain('■')
+  expect(rows.find(l => /^● main /.test(l))).not.toContain('■')
+  expect(await wide.find({ type: 'Button', text: '■' })).toBeDefined()
+  await wide.unmount()
+  const narrow = await $.ui.mount({ ...BAND_AT(80), surface: 'terminal' })
+  expect(await stopKeys(narrow)).toEqual(keys)
+  expect((await lines(narrow, 80)).filter(l => l.endsWith(' Ns [ ■ ]'))).toHaveLength(3)
+  await narrow.unmount()
+  // The panel: at the end of each live agent's identity line.
+  const pane = await $.ui.mount({ ...PANE_AT(100), surface: 'terminal' })
+  expect(await stopKeys(pane)).toEqual(keys)
+  const block = (await lines(pane, 100)).filter(l => /^[│├└─ ]*[●◐✓✗◌] /.test(l))
+  expect(block.filter(l => l.endsWith(' [ ■ ]')).map(l => l.replace(/^[│├└─ ]*/, '').split(' ')[1])).toEqual(['part', 'part', 'Explore'])
+  expect(block.find(l => /^└─✓ part 3/.test(l))).not.toContain('■')
+  await pane.unmount()
+  // The desktop: a button in the card's header row after "N req · Ns", the icon alone, named for the agent.
+  const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  expect(await stopKeys(desk)).toEqual(keys)
+  const button = (await desk.find({ key: 'stop-a-t1' }))!
+  expect(button.props.label).toBe('Stop part 1 · customers')
+  expect(button.text).toBe('■')
+  const header = (await desk.find({ key: 'card-a-t1' }))!.children[1].children[0]
+  expect(header.children.at(-1).props.key).toBe('stop-a-t1')
+  expect(header.children.at(-2).children[0]).toMatch(/^2 req · \d+s$/)
+  for (const id of ['main', 'a-t3', 'queued:0']) expect(await desk.find({ key: `stop-${id}` })).toBeUndefined()
+  await desk.unmount()
+  const dpane = await $.ui.mount({ ...PANE_AT(100), surface: 'desktop' })
+  expect(await stopKeys(dpane)).toEqual(keys)
+  await dpane.unmount()
+})
+
+test('a press on Stop calls TaskStop on that agent, with the press as consent; the row says stopping… (… in the narrow band) until the engine reports it ended, then ✗ stopped', CREW, async ($: any, on) => {
+  const sent = taskStop(on)
+  const agents = listing(on)
+  const c = await crew($, on)
+  for (const id of LIVE) agents[id] = 'running'
+  const wide = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  const narrow = await $.ui.mount({ ...BAND_AT(80), requestId: 'band-narrow', surface: 'terminal' })
+  const desk = await $.ui.mount({ ...BAND_AT(120), surface: 'desktop' })
+  const pane = await $.ui.mount({ ...PANE_AT(100), surface: 'terminal' })
+  await wide.press({ key: 'stop-a-t1' })
+  // The engine's own tool, on the agent's id, as the person's own press.
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatchObject({ tool: 'TaskStop', task_id: 'a-t1' })
+  expect(sent[0].consent).toBe('The user pressed Stop in the gearbox readout to stop part 1 · customers (a-t1).')
+  expect(c.calls.filter((e: any) => e.tool === 'TaskStop')).toHaveLength(0) // answered by the TaskStop hook, no other
+  // Every surface shows it stopping in the place of the button; the other agents keep theirs.
+  expect((await lines(wide, 120))[4]).toMatch(/^├─● part 1 · customers +sonnet·medium +main +2 req +Ns +stopping…$/)
+  expect((await lines(narrow, 80))[4]).toMatch(/^├─● part 1 +sonnet·medium +Ns +…$/)
+  expect(await desk.find({ type: 'Text', text: 'stopping…' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'stopping…' })).toBeDefined()
+  for (const ui of [wide, narrow, desk, pane]) {
+    expect(await ui.find({ key: 'stop-a-t1' })).toBeUndefined()
+    expect(await stopKeys(ui)).toEqual(['stop-a-t2', 'stop-a-e1'])
+  }
+  // gearbox's own call is no work of the main conversation: its row says nothing of TaskStop.
+  expect(await show(wide, 120)).not.toContain('TaskStop')
+  // Pressed once: the engine says it ended (killed) at the next look, and the row is the existing ✗ … stopped.
+  agents['a-t1'] = 'killed'
+  await c.clock.advance(3000)
+  expect((await lines(wide, 120))[4]).toMatch(/^├─✗ part 1 · customers +sonnet·medium +main +stopped +2 req +Ns$/)
+  expect((await lines(narrow, 80))[4]).toMatch(/^├─✗ part 1 · customers · stopped$/)
+  expect(await show(pane, 100)).toMatch(/^├─✗ part 1 · customers +sonnet·medium +chosen… +2 req · Ns · 62\.0k in \/ 4\.2k out · \$0\.17$/m)
+  expect(await show(pane, 100)).toMatch(/^│ +stopped hh:mm:ss$/m)
+  expect(await stopKeys(wide)).toEqual(['stop-a-t2', 'stop-a-e1'])
+  for (const ui of [wide, narrow, desk, pane]) await ui.unmount()
+})
+
+// A file system, home and session beneath the mod, for the debug log (one file, the session's).
+const LOG_FILE = '/home/tester/.claude/gearbox/logs/s-1.jsonl'
+const fakeDisk = (on: any) => {
+  const files = new Map<string, string>()
+  on('fs.exists', (_: unknown, e: any) => ({ value: files.has(e.path) }))
+  on('fs.write', (_: unknown, e: any) => (files.set(e.path, e.text), { value: undefined }))
+  on('fs.read', (_: unknown, e: any) => ({ value: e.path.endsWith('plugin.json') ? '{"version":"9.9.9"}' : files.get(e.path) ?? '' }))
+  on('env.get', (_: unknown, e: any) => ({ value: e.name === 'HOME' ? '/home/tester' : undefined }))
+  on('session.id', () => ({ value: 's-1' }))
+  on('session.version', () => ({ value: { version: '2.1.311', base: '2.1.311' } }))
+  return files
+}
+const events = (files: Map<string, string>) => (files.get(LOG_FILE) ?? '').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+const CREW_LOGGED = { options: { ...CREW.options, log: 'on' } }
+
+// The ways TaskStop can be out of a mod's reach, each a session of its own.
+const OUT_OF_REACH: [string, { tools?: string[]; answer?: (e: any) => unknown }, RegExp][] = [
+  ['it is not among the tools', { tools: ['Read', 'Bash'] }, /TaskStop is not among the tools/],
+  ['the call is refused', { answer: () => ({ deny: 'TaskStop is not allowed here' }) }, /TaskStop refused: TaskStop is not allowed here/],
+  ['the call reports an error', { answer: () => ({ result: 'No task found with ID', text: 'No task found with ID: a-t1', isError: true }) }, /TaskStop failed: No task found with ID: a-t1/],
+  [
+    'the call throws',
+    {
+      answer: () => {
+        throw new Error('no such task')
+      },
+    },
+    /TaskStop failed/,
+  ],
+]
+
+for (const [how, door, why] of OUT_OF_REACH) {
+  test(`where ${how}, gearbox stops the agent itself: its tool calls are refused, its next request ends the turn without being sent, and the row ends ✗ stopped`, CREW_LOGGED, async ($: any, on) => {
+    taskStop(on, door)
+    const log = fakeDisk(on)
+    const c = await crew($, on)
+    const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+    await ui.press({ key: 'stop-a-t1' })
+    // Marked stopping at once, whichever way it goes.
+    expect((await lines(ui, 120))[4]).toMatch(/^├─● part 1 · customers .* stopping…$/)
+    // Its tool calls are refused with the reason; the other agents' and main's go on.
+    const refused = await $.tool.call({ tool: 'Read', file_path: '/w/app/src/orders.ts', agentId: 'a-t1' })
+    expect(JSON.stringify(refused)).toContain('the person stopped this agent')
+    for (const agentId of ['a-t2', undefined]) expect(JSON.stringify(await $.tool.call({ tool: 'Read', file_path: '/w/app/src/orders.ts', ...(agentId ? { agentId } : {}) }))).not.toContain('the person stopped')
+    // Its next request is not sent: the turn ends on the made-up answer, which tells the agent that started it.
+    const before = c.settled()
+    const end = await stepResult($, 'claude-sonnet-5-5', { agentId: 'a-t1', effort: 'medium' })
+    expect(c.settled()).toBe(before)
+    expect(end).toMatchObject({ turnId: 't', index: 0, toolUses: [], stopReason: 'end_turn', usage: null })
+    expect(end.answer).toMatch(/^The person stopped this agent from gearbox before it finished, so its work is incomplete\./)
+    // Another agent's request is sent as ever.
+    c.writes('still going')
+    expect((await stepResult($, 'claude-sonnet-5-5', { agentId: 'a-t2', effort: 'medium' })).answer).toBe('')
+    expect(c.settled()).toBe(before + 1)
+    // The loop finishes on it: stopped, with no report of its own (the made-up answer is not one).
+    await complete($, 'a-t1', end.answer)
+    expect((await lines(ui, 120))[4]).toMatch(/^├─✗ part 1 · customers +sonnet·medium +main +stopped +2 req +Ns$/)
+    expect(await show(ui, 120)).not.toContain('incomplete')
+    // The log says how, and why TaskStop was not used.
+    const stops = events(log).filter(e => e.ev === 'stop')
+    expect(stops).toEqual([expect.objectContaining({ agent: 'a-t1', via: 'soft', cascade: [] })])
+    expect(stops[0].why).toMatch(why)
+    await ui.unmount()
+  })
+}
+
+test('stopping an agent stops every agent it started too, the agent first; the agents beside it go on', CREW_LOGGED, async ($: any, on) => {
+  const sent = taskStop(on)
+  const log = fakeDisk(on)
+  const agents = listing(on)
+  const c = await crew($, on)
+  for (const id of LIVE) agents[id] = 'running'
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await ui.press({ key: 'stop-a-t2' })
+  expect(sent.map((e: any) => e.task_id)).toEqual(['a-t2', 'a-e1'])
+  expect(sent[0].consent).toBe('The user pressed Stop in the gearbox readout to stop part 2 · README (a-t2) and the agents it started.')
+  expect(sent[1].consent).toBe('The user pressed Stop in the gearbox readout to stop Explore · uses of paginate (a-e1), which part 2 · README (a-t2) started.')
+  // Both say stopping; part 1 keeps its button.
+  const rows = await lines(ui, 120)
+  expect(rows[4]).toMatch(/\[ ■ \]$/)
+  expect(rows[6]).toMatch(/^├─● part 2 · README .* stopping…$/)
+  expect(rows[8]).toMatch(/^│ └─● Explore · uses of paginate .* stopping…$/)
+  expect(await stopKeys(ui)).toEqual(['stop-a-t1'])
+  // The log has one stop per agent: the first with the agents that stopped along with it, those with whose stop they came.
+  expect(events(log).filter(e => e.ev === 'stop')).toEqual([
+    expect.objectContaining({ agent: 'a-t2', via: 'task', cascade: ['a-e1'] }),
+    expect.objectContaining({ agent: 'a-e1', via: 'task', cascade: [], by: 'a-t2' }),
+  ])
+  // The engine ends both; the next look shows ✗ stopped on both.
+  agents['a-t2'] = 'killed'
+  agents['a-e1'] = 'killed'
+  await c.clock.advance(3000)
+  expect((await lines(ui, 120)).filter(l => /✗/.test(l)).map(l => l.replace(/^[│├└─ ]*/, '').split(/ {2,}/)[0])).toEqual(['✗ part 2 · README', '✗ Explore · uses of paginate'])
+  await ui.unmount()
+})
+
+test('where TaskStop is out of reach, the agents an agent started are stopped by gearbox too, and nothing else is', CREW, async ($: any, on) => {
+  taskStop(on, { tools: ['Read'] })
+  await crew($, on)
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await ui.press({ key: 'stop-a-t2' })
+  for (const [agentId, denied] of [['a-t2', true], ['a-e1', true], ['a-t1', false]] as const) {
+    const sent = JSON.stringify(await $.tool.call({ tool: 'Read', file_path: '/w/app/src/orders.ts', agentId }))
+    expect(sent.includes('the person stopped this agent')).toBe(denied)
+  }
+  await ui.unmount()
+})
+
+test('TaskStop that answers yes but leaves the agent running is followed by gearbox’s own stop after ten seconds; an agent that ended by then is left alone', CREW_LOGGED, async ($: any, on) => {
+  const sent = taskStop(on)
+  const log = fakeDisk(on)
+  const agents = listing(on)
+  const c = await crew($, on)
+  for (const id of LIVE) agents[id] = 'running'
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await ui.press({ key: 'stop-a-t1' })
+  await ui.press({ key: 'stop-a-t2' })
+  expect(sent.map((e: any) => e.task_id)).toEqual(['a-t1', 'a-t2', 'a-e1'])
+  // TaskStop said yes to all three; the engine ends a-t1 and a-t2, but not the Explore.
+  agents['a-t1'] = 'killed'
+  agents['a-t2'] = 'killed'
+  await c.clock.advance(3000)
+  const call = (agentId: string) => $.tool.call({ tool: 'Read', file_path: '/w/app/src/orders.ts', agentId }).then((r: unknown) => JSON.stringify(r))
+  expect(await call('a-e1')).not.toContain('the person stopped')
+  await c.clock.advance(7000)
+  expect(await call('a-e1')).toContain('the person stopped this agent')
+  expect(await call('a-t1')).not.toContain('the person stopped') // ended, so no longer one gearbox holds back
+  expect(events(log).filter(e => e.ev === 'stop').map(e => `${e.agent} ${e.via}`)).toEqual(['a-t1 task', 'a-t2 task', 'a-e1 task', 'a-e1 soft'])
+  expect(events(log).at(-1)).toMatchObject({ agent: 'a-e1', via: 'soft', why: 'still running 10s after TaskStop' })
+  await ui.unmount()
+})
+
+test('/gearbox stop all stops every agent at work, once each, and nothing else; /gearbox stop <id or start of its name> stops that agent and the agents it started', CREW_LOGGED, async ($: any, on) => {
+  const sent = taskStop(on)
+  const log = fakeDisk(on)
+  const agents = listing(on)
+  const c = await crew($, on, { owed: true })
+  for (const id of LIVE) agents[id] = 'running'
+  const run = async (args: string) => (await $.command.run({ command: 'gearbox', args })).text as string
+  // Nothing named, or a name no agent at work has, says who is at work; an ambiguous one lists the agents it names.
+  expect(await run('stop')).toBe('stop which? /gearbox stop all, or an agent’s id or the start of its name. At work: part 1 · customers (a-t1), part 2 · README (a-t2), Explore · uses of paginate (a-e1)')
+  expect(await run('stop part 3')).toBe('no agent at work is named "part 3". At work: part 1 · customers (a-t1), part 2 · README (a-t2), Explore · uses of paginate (a-e1)') // it ended
+  expect(await run('stop main')).toContain('no agent at work is named "main"')
+  expect(await run('stop part')).toBe('"part" names 2 agents: part 1 · customers (a-t1), part 2 · README (a-t2). Give more of the name, or its id.')
+  expect(sent).toHaveLength(0)
+  // By the start of its name, case ignored, or by its id: the agent and what it started.
+  expect(await run('stop Part 2')).toBe('stopping part 2 · README, Explore · uses of paginate. ✗ stopped shows once the engine says they ended')
+  expect(sent.map((e: any) => e.task_id)).toEqual(['a-t2', 'a-e1'])
+  expect(sent[0].consent).toBe('The user ran /gearbox stop part 2 to stop part 2 · README (a-t2) and the agents it started.')
+  // Those two are being stopped already: not stopped again.
+  expect(await run('stop part 2')).toBe('part 2 · README (a-t2) is being stopped already')
+  expect(sent).toHaveLength(2)
+  // All: the agents still at work, each once.
+  expect(await run('stop all')).toBe('stopping part 1 · customers. ✗ stopped shows once the engine says it ended')
+  expect(sent.map((e: any) => e.task_id)).toEqual(['a-t2', 'a-e1', 'a-t1'])
+  expect(sent[2].consent).toBe('The user ran /gearbox stop all to stop part 1 · customers (a-t1).')
+  // The queued part (billing) and the finished review were never stopped; the log says how each stopped.
+  expect(events(log).filter(e => e.ev === 'stop').map(e => e.agent)).toEqual(['a-t2', 'a-e1', 'a-t1'])
+  // Nothing is at work once the engine says so.
+  for (const id of LIVE) agents[id] = 'killed'
+  await c.clock.advance(3000)
+  expect(await run('stop all')).toBe('no agents are at work')
+  expect(await run('stop part 1')).toBe('no agents are at work')
+})
+
+test('/gearbox stop all with every agent being stopped already does nothing more', CREW, async ($: any, on) => {
+  const sent = taskStop(on)
+  await crew($, on)
+  const run = async (args: string) => (await $.command.run({ command: 'gearbox', args })).text as string
+  expect(await run('stop all')).toMatch(/^stopping part 1 · customers, part 2 · README, Explore · uses of paginate\./)
+  expect(await run('stop all')).toBe('every agent at work is being stopped already')
+  expect(sent.map((e: any) => e.task_id)).toEqual(['a-t1', 'a-t2', 'a-e1'])
+})
+
+test('/gearbox stop all where TaskStop is out of reach says which agents gearbox ends at their next request; the command lists stop where it names its words', CREW, async ($: any, on) => {
+  taskStop(on, { tools: [] })
+  await crew($, on)
+  const run = async (args: string) => (await $.command.run({ command: 'gearbox', args })).text as string
+  expect(await run('stop all')).toBe(
+    'stopping part 1 · customers, part 2 · README, Explore · uses of paginate. ✗ stopped shows once the engine says they ended. Claude Code’s TaskStop could not be used for part 1 · customers, part 2 · README, Explore · uses of paginate: gearbox ends them at the next request',
+  )
+  const calls = (await Promise.all(LIVE.map((agentId: string) => $.tool.call({ tool: 'Read', file_path: '/w/app/a', agentId })))).map((r: unknown) => JSON.stringify(r))
+  expect(calls.every((c: string) => c.includes('the person stopped this agent'))).toBe(true)
+  expect(await run('nonsense')).toMatch(/^unknown "nonsense"\. Try settings, panel, stop, model,/)
+})
+
+test('the /gearbox command names stop in its description', async ($: any, on) => {
+  bench(on)
+  const described: any[] = []
+  on('tool.register', (_: unknown, e: any) => ({ value: { tool: `mcp__gearbox__${e.name}` } }))
+  on('command.register', (_: unknown, e: any) => (described.push(e), { value: { command: e.name } }))
+  on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+  expect(described.find((c: any) => c.name === 'gearbox').description).toContain('| panel | stop <agent>|all | on | off |')
+})
+
+test('an agent the engine already ended along with the one stopped (a foreground agent takes the agents it started with it) is not stopped again; one that ended before the press is not stopped by gearbox either', CREW_LOGGED, async ($: any, on) => {
+  const agents = listing(on)
+  // The engine's TaskStop of part 2 ends the Explore beneath it too; one for an agent that is gone finds no task.
+  const sent = taskStop(on, {
+    answer: (e: any) => {
+      if (e.task_id === 'a-t2') agents['a-e1'] = 'killed'
+      return agents[e.task_id] === 'completed' ? { result: 'Error: No task found', text: `<tool_use_error>No task found with ID: ${e.task_id}</tool_use_error>`, isError: true } : { result: { message: 'stopped' }, text: 'stopped' }
+    },
+  })
+  const log = fakeDisk(on)
+  const c = await crew($, on)
+  for (const id of LIVE) agents[id] = 'running'
+  const ui = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await ui.press({ key: 'stop-a-t2' })
+  expect(sent.map((e: any) => e.task_id)).toEqual(['a-t2']) // no second call for the Explore: the engine ended it
+  expect(events(log).filter(e => e.ev === 'stop')).toEqual([
+    expect.objectContaining({ agent: 'a-t2', via: 'task', cascade: ['a-e1'] }),
+    expect.objectContaining({ agent: 'a-e1', via: 'task', by: 'a-t2', why: 'ended with a-t2' }),
+  ])
+  // Part 1 finished by itself an instant before the press: the TaskStop finds nothing, and gearbox has nothing to stop.
+  agents['a-t1'] = 'completed'
+  await ui.press({ key: 'stop-a-t1' })
+  expect(sent.map((e: any) => e.task_id)).toEqual(['a-t2', 'a-t1'])
+  expect(events(log).filter(e => e.ev === 'stop').at(-1)).toMatchObject({ agent: 'a-t1', via: 'task', why: 'TaskStop failed: <tool_use_error>No task found with ID: a-t1</tool_use_error>; it had ended' })
+  expect(JSON.stringify(await $.tool.call({ tool: 'Read', file_path: '/w/app/a', agentId: 'a-t1' }))).not.toContain('the person stopped')
+  // The engine's next look settles the rows by what it lists: part 1 done, the Explore stopped, and part 2 (listed as running
+  // still) says stopping until the engine ends it.
+  await c.clock.advance(3000)
+  const rows = (await lines(ui, 120)).filter(l => /^[│├└─ ]*[✓✗●] /.test(l) && !/^[│├└─ ]*● main/.test(l))
+  expect(rows.map(l => l.replace(/^[│├└─ ]*/, '').split(/ {2,}/)[0])).toEqual(['✓ part 1 · customers', '● part 2 · README', '✗ Explore · uses of paginate', '✓ part 3 · review money.ts'])
+  expect(rows[1]).toMatch(/stopping…$/)
   await ui.unmount()
 })

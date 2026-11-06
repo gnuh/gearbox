@@ -1,11 +1,16 @@
 import type { ElementTable, RenderElement } from 'claude-code'
 import type { GearboxLoop } from '../types'
-import { type Node, bars, clock, family, fit, gearText, hue, kilo, live, money, nowOf, ran, shortPath, swapped, tagsOf, treeOf } from './loops'
+import { type Node, QUEUED, bars, clock, family, fit, gearText, hue, isQueued, kilo, labelOf, live, money, nowOf, ran, shortPath, swapped, tagsOf, treeOf } from './loops'
+import { stoppable } from './stopping'
 
 // How the readouts draw the agents running: the band above the prompt (a tree of text in the terminal, a card each in
 // the desktop app) and the panel. Both read the same loops; only the drawing differs.
 
 type Els = Pick<ElementTable, 'Box' | 'Text'>
+
+// What draws and answers the Stop of an agent: the surface's Button, and what a press on agent `id` does. Without it
+// (nothing to stop with) no row has one.
+export type StopControl = { Button: ElementTable['Button']; press: (id: string) => void }
 
 // The colours of the states: ● and ✓ green, ◐ and ⚠ amber, ✗ red, ◌ dim.
 const FINISHED = '#4FBF6A'
@@ -23,8 +28,6 @@ export const NARROW = 100
 
 // A fan-out part whose agent has not started: drawn as a loop of its own, under main (id `queued:<n>`).
 export type Queued = { label: string; model: string; effort: string }
-const QUEUED = 'queued:'
-const isQueued = (id: string) => id.startsWith(QUEUED)
 const withQueued = (loops: Record<string, GearboxLoop>, queued: readonly Queued[]): Record<string, GearboxLoop> => ({
   ...loops,
   ...Object.fromEntries(queued.map((q, i) => [`${QUEUED}${i}`, { label: q.label, parent: 'main', asked: q.model, effort: q.effort, state: 'idle', steps: 0 } satisfies GearboxLoop])),
@@ -69,12 +72,11 @@ type Row = {
   note?: NoteLine
   two: boolean // a second line for the note
   skills: string[] // the skills it loaded, in load order (an agent's; main's are not shown)
+  stop?: 'press' | 'wait' // an agent that can be stopped: its button, or "stopping" once pressed
 }
 
 const SRC = { main: 'main', rules: 'rules', auto: 'auto' } as const
 const SOURCE = { main: 'chosen by main', rules: 'by rules', auto: 'auto' } as const
-// "part 1: customers" reads "part 1 · customers".
-const labelOf = (l: GearboxLoop) => l.label.replace(/^(part \d+):\s*/i, '$1 · ')
 
 // How a finished one ended: well ("done"), or not; and the first line of what it handed back. `bare`: just that line
 // where it ended well.
@@ -92,7 +94,16 @@ const rowOf = (n: Node, now: number, shape: Shape): Row => {
   const [glyph, color] = glyphOf(n.id, l)
   // The narrow band names a running agent by its first word or two ("part 1", "Explore"); a finished one in full.
   const label = shape === 'narrow' && l.state !== 'done' ? labelOf(l).split(' · ')[0]! : labelOf(l)
-  const common = { node: n, glyph, ...(color ? { color } : {}), label, gear: gearText(l), skills: l.skills ?? [], ...(isQueued(n.id) ? {} : { tint: hue(l) }) }
+  const common = {
+    node: n,
+    glyph,
+    ...(color ? { color } : {}),
+    label,
+    gear: gearText(l),
+    skills: l.skills ?? [],
+    ...(isQueued(n.id) ? {} : { tint: hue(l) }),
+    ...(stoppable(n.id, l) ? { stop: l.stopping ? ('wait' as const) : ('press' as const) } : {}),
+  }
   if (isQueued(n.id)) return { ...common, dim: true, extra: 'queued', stats: '', two: false }
   if (l.state === 'done') return { ...common, dim: true, ...(l.effortBy ? { src: SRC[l.effortBy] } : {}), extra: ending(l, shape === 'narrow'), stats: statsOf(l, now, false), two: false }
   const said = nowOf(l)
@@ -138,6 +149,43 @@ const mainRowOf = (main: GearboxLoop, agents: number, now: number): Row => {
   }
 }
 
+// ---- Stop: a button on every agent at work, "stopping" once pressed ----
+
+const STOP_MARK = '■'
+const STOP_WAIT = 'stopping…'
+// The room the terminal keeps at the end of an agent's identity line for it: "stopping…" in the wide band, "[ ■ ]" in the
+// narrow one (where "…" stands for "stopping…"). Every line keeps it (empty where there is nothing to stop), so the
+// column before it lines up.
+const STOP_W = STOP_WAIT.length
+const STOP_W_NARROW = '[ ■ ]'.length
+// What a narrow identity line needs besides the label: gear, the time ("12m 05s"), the stop slot and the gaps.
+const NARROW_FIXED = 14 + 7 + STOP_W_NARROW + 4
+
+// A row's Stop: a button with just the mark, or "stopping…" in its place once pressed ("…" in the narrow band). `kind`:
+// the terminal's wide and narrow band and the panel, or a desktop card, whose button is named for the agent.
+const stopSlot = ({ Text }: Pick<ElementTable, 'Text'>, c: StopControl, r: Row, kind: 'wide' | 'narrow' | 'desktop'): RenderElement | null => {
+  if (!r.stop) return null
+  const { Button } = c
+  const id = r.node.id
+  if (r.stop === 'wait') {
+    if (kind === 'narrow') return <Text dimColor>{'  …'}</Text>
+    return kind === 'desktop' ? (
+      <Text dimColor size="caption">
+        {STOP_WAIT}
+      </Text>
+    ) : (
+      <Text dimColor>{STOP_WAIT}</Text>
+    )
+  }
+  return kind === 'desktop' ? (
+    <Button key={`stop-${id}`} dimColor label={`Stop ${r.label}`} onPress={() => c.press(id)}>
+      {STOP_MARK}
+    </Button>
+  ) : (
+    <Button key={`stop-${id}`} dimColor label={STOP_MARK} onPress={() => c.press(id)} />
+  )
+}
+
 // ---- the text tree: terminal band, panel ----
 
 const guideOf = (n: Node) => (n.depth === 0 ? '' : `${n.trail.map(c => (c ? '│ ' : '  ')).join('')}${n.last ? '└─' : '├─'}`)
@@ -162,8 +210,10 @@ const tagsFor = (n: Node, skills: readonly string[], columns: number) => tagsOf(
 
 // The identity line, the skills (tags, as many lines as they need) and the note line of each row, in a terminal `columns` wide.
 // `wide`: gear, who chose the effort, worktree, requests and time; `narrow`: gear and time, a finished agent in one line.
-const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number) => {
-  const labelW = labelWidth(rows, shape === 'narrow' ? 26 : 32)
+const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number, stop?: StopControl) => {
+  // With an agent to stop the identity lines end in the Stop slot; the narrow band's label gives up what the slot takes.
+  const slot = stop && rows.some(r => r.stop) ? (shape === 'narrow' ? STOP_W_NARROW : STOP_W) : 0
+  const labelW = labelWidth(rows, shape === 'narrow' ? Math.max(10, Math.min(26, slot ? columns - NARROW_FIXED : 26)) : 32)
   return rows.map(r => {
     const folded = shape === 'narrow' && r.node.loop.state === 'done'
     const mark = (
@@ -202,6 +252,11 @@ const treeRows = ({ Box, Text }: Els, rows: Row[], shape: Shape, columns: number
         <Text dimColor tabular>
           {shape === 'narrow' ? (isQueued(r.node.id) ? 'queued' : (r.stats.split('  ')[1] ?? '')) : r.stats}
         </Text>
+        {slot ? (
+          <Box width={slot} flexShrink={0}>
+            {stop ? stopSlot({ Text }, stop, r, shape) : null}
+          </Box>
+        ) : null}
       </Box>
     )
     const cont = contOf(r.node)
@@ -266,7 +321,7 @@ export type Summary = {
 const total = (rs: [string, number][]) => rs.reduce((n, [, c]) => n + c, 0)
 
 // The terminal's band: one header line, a rule, then main and the tree of its agents, two lines each.
-export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: number; actions: RenderElement }) => {
+export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: number; actions: RenderElement; stop?: StopControl }) => {
   const narrow = o.columns < NARROW
   const shape: Shape = narrow ? 'narrow' : 'wide'
   const main = s.loops.main
@@ -296,7 +351,7 @@ export const terminalBand = ({ Box, Text }: Els, s: Summary, o: { columns: numbe
       <Text dimColor wrap="truncate">
         {'─'.repeat(Math.max(1, o.columns))}
       </Text>
-      {rows.length ? treeRows({ Box, Text }, rows, shape, o.columns) : <Text dimColor>waiting for a prompt</Text>}
+      {rows.length ? treeRows({ Box, Text }, rows, shape, o.columns, o.stop) : <Text dimColor>waiting for a prompt</Text>}
       {more({ Text }, chosen.hidden)}
     </Box>
   )
@@ -331,7 +386,7 @@ const nest = (nodes: Node[]): Tree[] => {
 
 // One agent's card: a rail in its model's colour, its identity as a row of chips, a row of chips for the skills it
 // loaded, its note with a tool chip, the note before it, and inside it the cards of the agents it started.
-const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?: string }): RenderElement => {
+const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?: string; stop?: StopControl }): RenderElement => {
   const { Box, Text } = t
   const l = r.node.loop
   const note = r.note
@@ -356,6 +411,7 @@ const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?
           <Text dimColor tabular size="caption">
             {r.stats.replace('  ', ' · ')}
           </Text>
+          {o.stop ? stopSlot(t, o.stop, r, 'desktop') : null}
         </Box>
         {r.skills.length ? (
           <Box flexDirection="row" columnGap="sm" alignItems="center" flexWrap="wrap">
@@ -399,7 +455,7 @@ const card = (t: Els, r: Row, kids: RenderElement[], o: { role?: string; before?
 
 // The desktop's band: GearBox and its actions, a row of metrics (now, agents, this turn, cost, why), then main's card
 // and under it a card for each agent, an agent's own agents inside its card.
-export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: RenderElement }) => {
+export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: RenderElement; stop?: StopControl }) => {
   const { Box, Text } = t
   const main = s.loops.main
   const all = withQueued(s.loops, s.queued)
@@ -410,7 +466,7 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
       const l = node.loop
       const owner = parent === 'main' ? undefined : all[parent]
       const before = l.state === 'done' ? undefined : l.notes?.at(-2)?.text
-      return card(t, rows.get(node.id)!, cards(kids, node.id), { ...(owner ? { role: `started by ${labelOf(owner).split(' · ')[0]}` } : {}), ...(before ? { before } : {}) })
+      return card(t, rows.get(node.id)!, cards(kids, node.id), { ...(owner ? { role: `started by ${labelOf(owner).split(' · ')[0]}` } : {}), ...(before ? { before } : {}), ...(o.stop ? { stop: o.stop } : {}) })
     })
   const done = Object.values(s.loops).filter(l => recent(l, s.since)).length
   const works = main?.state === 'working'
@@ -468,7 +524,7 @@ export const desktopBand = (t: Els, s: Summary, o: { columns: number; actions: R
 
 // Every loop of the session, finished ones included, nested under the loop that started it: its identity, what it has
 // cost, its last notes (the latest first, the earlier dimmed), the files it touched and its worktree.
-export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>, queued: readonly Queued[], o: { now: number; cwd?: string; handoff: boolean; mono: boolean; columns?: number }) => {
+export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>, queued: readonly Queued[], o: { now: number; cwd?: string; handoff: boolean; mono: boolean; columns?: number; stop?: StopControl }) => {
   const m = o.mono ? { mono: true as const } : {}
   const all = withQueued(loops, queued)
   const main = loops.main
@@ -521,6 +577,9 @@ export const panelBody = ({ Box, Text }: Els, loops: Record<string, GearboxLoop>
           <Text dimColor tabular {...m}>
             {(n.id === 'main' ? spend.filter(x => !x.includes(' in / ')) : spend).join(' · ')}
           </Text>
+        ) : null}
+        {o.stop && r.stop ? (
+          <Box flexShrink={0}>{stopSlot({ Text }, o.stop, r, 'wide')}</Box>
         ) : null}
       </Box>
     )

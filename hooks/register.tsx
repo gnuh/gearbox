@@ -83,8 +83,9 @@ import {
   writesNoCode,
 } from './policy'
 import { runHooks } from './classic'
-import { NARROW, type Queued, type Summary, desktopBand, panelBody, terminalBand } from './agents'
-import { NOTE_EVERY_MS, ended, family, gearText, grown, kilo, live, noteOf, revived, toolName, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { NARROW, type Queued, type StopControl, type Summary, desktopBand, panelBody, terminalBand } from './agents'
+import { NOTE_EVERY_MS, ended, family, gearText, grown, kilo, labelOf, live, noteOf, revived, toolName, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { STOP_ANSWER, STOP_DENIED, STOP_GRACE_MS, agentName, findAgents, stopPlan, stoppableIds } from './stopping'
 import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lanes, fanOut, fanParts, fanSlot, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
 import { READERS, REFUSED, SPLIT, type Refusal, briefVerdict, nestedCap, readerGear, settle, whyNoNestedFan } from './nesting'
 
@@ -483,14 +484,15 @@ const syncAgents = async ($: EngineInterface, w: AgentWatch, changed: () => Prom
     moved = true
     await patch($, a.id, r => {
       const row: GearboxLoop = { steps: 0, since: Date.now(), parent: a.parentId ?? 'main', asked: a.type, ...r, label: r?.label && r.label !== 'agent' ? r.label : a.description, state }
-      return state === 'done' ? ended(row, Date.now(), a.status === 'failed' ? { failed: 'failed' } : a.status === 'killed' ? { failed: 'stopped' } : {}) : row
+      // An agent gearbox stopped itself ends in a made-up end of turn, which the engine counts as completed.
+      return state === 'done' ? ended(row, Date.now(), a.status === 'failed' ? { failed: 'failed' } : a.status === 'killed' || row.stopping === 'soft' ? { failed: 'stopped' } : {}) : row
     })
   }
   const listed = new Set(agents.map(a => a.id))
   for (const [id, l] of Object.entries(loops)) {
     if (l.state !== 'waiting' || listed.has(id)) continue
     moved = true
-    await patch($, id, r => (r?.state === 'waiting' ? ended(r, Date.now()) : r))
+    await patch($, id, r => (r?.state === 'waiting' ? ended(r, Date.now(), r.stopping === 'soft' ? { failed: 'stopped' } : {}) : r))
   }
   if (moved) await changed()
   if (!agents.some(a => held(a.status)) && !alive(await read($, LOOPS)).length) {
@@ -501,6 +503,96 @@ const syncAgents = async ($: EngineInterface, w: AgentWatch, changed: () => Prom
 const watchAgents = ($: EngineInterface, w: AgentWatch, changed: () => Promise<void>) => {
   w.timer ??= $.clock.every(WAIT_POLL_MS, () => void syncAgents($, w, changed).catch(() => undefined))
 }
+
+// The debug log turning on at once (a press in the settings, or /gearbox log on|full): it opens with the session's facts
+// and the settings in force and writes what is pending, as a log on from the start does.
+const startedLog = async ($: EngineInterface, o: { options: PluginOptions; settings: Settings; logEvent: (rec: Record<string, unknown>) => void; log: LogState }) => {
+  o.logEvent({ ...(await sessionFacts($, o.options)), settings: o.settings })
+  await flushLog($, o.log)
+}
+
+// ---- Stop ----
+
+// What Stop needs of the session: the debug log, the poll of the engine's list and how to redraw the status line.
+type StopDeps = { logEvent: (rec: Record<string, unknown>) => void; log: LogState; watch: AgentWatch; changed: () => Promise<void> }
+type StopResult = { id: string; label: string; via: 'task' | 'soft' }
+// The task ids of the TaskStop calls gearbox is making, so its own tool.call hook lets those through.
+const stopCalls = new Set<string>()
+// Whether the engine's list says an agent is no longer alive (it ended, or the list no longer has it). Undefined list: unknown.
+const gone = async ($: EngineInterface, id: string): Promise<boolean> => {
+  const list = await listAgents($)
+  return list !== undefined && !list.some(a => a.id === id && held(a.status))
+}
+
+// Stops the agents `ids` and every agent they started. Each is marked `stopping` at once (the readouts show it), then
+// stopped through the engine's own TaskStop; where a mod cannot reach it (not among the tools, or the call fails or is
+// refused) gearbox stops the agent itself: its tool calls are refused and its next request ends the turn. An agent
+// TaskStop said yes to that is still running after STOP_GRACE_MS is stopped by gearbox too. An agent that has ended by
+// then needs neither: the engine stops the agents a foreground agent started along with it (seen in Claude Code 2.1.318),
+// and a TaskStop for one that has just ended answers "No task found". The log gets a `stop` event per agent, `via` how,
+// with the agents that stopped along with it. `how`: what the person did, for TaskStop's consent.
+const stopAgents = async ($: EngineInterface, ids: readonly string[], how: string, d: StopDeps): Promise<StopResult[]> => {
+  const loops = await read($, LOOPS)
+  const plan = stopPlan(loops, ids)
+  if (!plan.length) return []
+  const marked = new Set(plan.map(p => p.id))
+  await update($, LOOPS, all => Object.fromEntries(Object.entries(all).map(([id, l]) => [id, marked.has(id) && live(l) && !l.stopping ? { ...l, stopping: 'task' as const } : l])))
+  const reachable = await $.tool.list().then(
+    list => list.some(t => t.name === 'TaskStop'),
+    () => false,
+  )
+  const done: StopResult[] = []
+  for (const step of plan) {
+    // `why`: what is worth saying in the log; `soft`: TaskStop did not do it.
+    let why = ''
+    let soft = false
+    if (step.by && (await gone($, step.id))) why = `ended with ${step.by}`
+    else {
+      why = reachable ? '' : 'TaskStop is not among the tools'
+      if (reachable) {
+        stopCalls.add(step.id)
+        try {
+          const sent = await $.tool.call({
+            tool: 'TaskStop',
+            task_id: step.id,
+            consent: `The user ${how} to stop ${agentName(loops, step.id)}${step.cascade.length ? ' and the agents it started' : step.by ? `, which ${agentName(loops, step.by)} started` : ''}.`,
+          })
+          if (failed(sent)) why = `TaskStop ${sent.deny !== undefined ? 'refused' : 'failed'}: ${String(sent.deny ?? (sent as { text?: unknown }).text ?? '').slice(0, 200)}`
+        } catch (err) {
+          why = `TaskStop failed: ${String(err).slice(0, 200)}`
+        } finally {
+          stopCalls.delete(step.id)
+        }
+      }
+      // TaskStop did not do it, but the agent is not alive to stop any more: nothing is left for gearbox to do.
+      if (why) {
+        soft = !(await gone($, step.id))
+        if (!soft) why = `${why}; it had ended`
+      }
+    }
+    const via = soft ? 'soft' : 'task'
+    if (soft) await patch($, step.id, l => (l && live(l) ? { ...l, stopping: 'soft' } : l))
+    else
+      $.clock.after(STOP_GRACE_MS, async () => {
+        await syncAgents($, d.watch, d.changed).catch(() => undefined)
+        if ((await read($, LOOPS))[step.id]?.stopping !== 'task') return
+        await patch($, step.id, l => (l && live(l) ? { ...l, stopping: 'soft' } : l))
+        d.logEvent({ ev: 'stop', agent: step.id, via: 'soft', cascade: [], why: `still running ${STOP_GRACE_MS / 1000}s after TaskStop` })
+        await flushLog($, d.log)
+      })
+    d.logEvent({ ev: 'stop', agent: step.id, via, cascade: step.cascade, ...(step.by ? { by: step.by } : {}), ...(why ? { why } : {}) })
+    done.push({ id: step.id, label: loops[step.id] ? labelOf(loops[step.id]!) : step.id, via })
+  }
+  watchAgents($, d.watch, d.changed)
+  await flushLog($, d.log)
+  return done
+}
+
+// The Stop the readouts draw: a press stops that agent and the agents it started.
+const stopControl = ($: EngineInterface, Button: StopControl['Button'], d: StopDeps): StopControl => ({
+  Button,
+  press: id => void stopAgents($, [id], 'pressed Stop in the gearbox readout', d).catch(err => $.ui.log(`stop failed: ${err}`, { to: 'debug' })),
+})
 
 // An agent's report under the row where its end shows, the engine's own drawing kept above it.
 const reportBelow = ({ Box, Text, Markdown }: Pick<ElementTable, 'Box' | 'Text' | 'Markdown'>, own: RenderElement, texts: readonly string[]) => (
@@ -979,6 +1071,9 @@ export const register: Register = (on, options) => {
     notForks.clear()
     advised = subagent = launched = lastMain = undefined
   }
+  // What Stop needs of this session; `changed` redraws the status line once the agents are counted again.
+  const stopDeps = (changed: () => Promise<void>): StopDeps => ({ logEvent, log, watch: agentWatch, changed })
+
   // A reviewing skill the model calls, in any loop: remembered until its fork is known. The Skill tool's answer names
   // a fork's agent, but the fork may send its first request before that answer is back, so it is remembered first.
   const callSkill = async <R,>(e: { skill?: unknown; args?: unknown; tool_use_id?: string }, run: () => Promise<R>): Promise<R> => {
@@ -1063,7 +1158,7 @@ export const register: Register = (on, options) => {
       },
       isDeferred: false,
     })
-    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | log on|off|full | orchestrator auto|on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | on | off | ask on|off | usage]' })
+    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | log on|off|full | orchestrator auto|on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | stop <agent>|all | on | off | ask on|off | usage]' })
     enabled = (await $.store.get('enabled')) !== false
     // What an older version stored for a removed setting is dropped once, so nothing reads or logs it again.
     const { kept: stored, stale } = await storedSettings($)
@@ -1126,17 +1221,39 @@ export const register: Register = (on, options) => {
       const wasLogging = logMode !== 'off'
       await saveSetting($, change)
       apply(await loadSettings($, options))
-      if (!wasLogging && logMode !== 'off') {
-        logEvent({ ...(await sessionFacts($, options)), settings: current() })
-        await flushLog($, log)
-      }
-      return { text: `${settingsText(current(), haikuSession)} (from your next prompt)` }
+      if (!wasLogging && logMode !== 'off') await startedLog($, { options, settings: current(), logEvent, log })
+      return { text: `${settingsText(current(), haikuSession)} (${word === 'log' ? 'applies now' : 'from your next prompt'})` }
     }
     if (Object.hasOwn(REMOVED_WORDS, word)) return { text: REMOVED_WORDS[word]! }
     if (word === 'pane' || word === 'panel') {
       // It lists every loop, finished ones included; an old `running` or `all` after it opens it all the same.
       const { isPlaced } = await $.ui.open({ id: PANE, title: PANE_TITLE })
       return { text: `${isPlaced ? 'pane open' : 'the pane opens once the window has room for it'}${value ? '. It lists every loop, finished ones included: panel running|all is gone' : ''}` }
+    }
+    // /gearbox stop <agent>|all: an agent's id or the start of its name, as the panel and the band name it, or every agent at
+    // work. Each stops with the agents it started. (No numbers: the panel does not number its agents.)
+    if (word === 'stop') {
+      const loops = await read($, LOOPS)
+      const what = arg.slice('stop'.length).trim()
+      const running = stoppableIds(loops)
+      const names = (ids: readonly string[]) => ids.map(id => agentName(loops, id)).join(', ')
+      if (!running.length) return { text: 'no agents are at work' }
+      if (!what) return { text: `stop which? /gearbox stop all, or an agent’s id or the start of its name. At work: ${names(running)}` }
+      // An agent already being stopped is not stopped twice.
+      const ids = (what === 'all' ? running : findAgents(loops, what)).filter(id => what !== 'all' || !loops[id]!.stopping)
+      if (!ids.length) return { text: what === 'all' ? 'every agent at work is being stopped already' : `no agent at work is named "${what}". At work: ${names(running)}` }
+      if (ids.length > 1 && what !== 'all') return { text: `"${what}" names ${ids.length} agents: ${names(ids)}. Give more of the name, or its id.` }
+      if (loops[ids[0]!]!.stopping) return { text: `${agentName(loops, ids[0]!)} is being stopped already` }
+      const stopped = await stopAgents($, ids, what === 'all' ? 'ran /gearbox stop all' : `ran /gearbox stop ${what}`, stopDeps(() => showStatus($, turnHandoff, stepLabel())))
+      const soft = stopped.filter(r => r.via === 'soft')
+      return {
+        text: [
+          `stopping ${stopped.map(r => r.label).join(', ')}. ✗ stopped shows once the engine says ${stopped.length === 1 ? 'it' : 'they'} ended`,
+          soft.length ? `Claude Code’s TaskStop could not be used for ${soft.map(r => r.label).join(', ')}: gearbox ends ${soft.length === 1 ? 'it' : 'them'} at the next request` : '',
+        ]
+          .filter(Boolean)
+          .join('. '),
+      }
     }
     if (arg === 'on' || arg === 'off') {
       enabled = arg === 'on'
@@ -1155,7 +1272,7 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'usage cleared' }
     } else if (arg) {
-      return { text: `unknown "${arg}". Try settings, panel, model, effort, navigator, log, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `unknown "${arg}". Try settings, panel, stop, model, effort, navigator, log, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
@@ -1695,6 +1812,10 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     if (!enabled) return next(e)
+    // The TaskStop gearbox calls itself for a press of Stop goes straight to the engine: it is no loop's work.
+    if (e.tool === 'TaskStop' && !e.agentId && stopCalls.has(String(e.task_id))) return next(e)
+    // An agent gearbox stops itself (TaskStop out of reach) makes no more calls; its next request ends the turn.
+    if (e.agentId && (await read($, LOOPS))[e.agentId]?.stopping === 'soft') return { deny: STOP_DENIED }
     // The main conversation starting or messaging any agent takes up the turn's advice (see `advised`).
     if (!e.agentId && advised && (e.tool === 'Agent' || e.tool === 'SendMessage')) advised.handed = true
     await patch($, e.agentId ?? 'main', l => l && called(l, String(e.tool), e as unknown as Record<string, unknown>, e.agentId !== undefined))
@@ -2060,7 +2181,8 @@ export const register: Register = (on, options) => {
       await patch($, e.agentId ?? 'main', l => {
         if (!l) return l
         // An agent that ended keeps the first line of its report, and how it ended if not well.
-        if (e.agentId && !waits) return ended(l, at, { failed: e.reason === 'refusal' ? 'refused' : e.reason === 'error' ? 'failed' : e.isAborted ? 'stopped' : undefined, result: noteOf(e.answer) })
+        // One gearbox stopped itself ended on a made-up answer: it was stopped, and the answer is no report.
+        if (e.agentId && !waits) return ended(l, at, { failed: e.reason === 'refusal' ? 'refused' : e.reason === 'error' ? 'failed' : e.isAborted || l.stopping === 'soft' ? 'stopped' : undefined, result: l.stopping === 'soft' ? undefined : noteOf(e.answer) })
         const { doing: _, said: __, ...rest } = l
         return { ...rest, state: !e.agentId ? 'idle' : 'waiting' }
       })
@@ -2094,6 +2216,9 @@ export const register: Register = (on, options) => {
   // in the app and gearbox steps aside. Prompts nobody typed run on the floor. Every loop's step is recorded
   // for the readout, in any session, and its usage tallied.
   on('turn.step', async function* ($, e, next) {
+    // An agent gearbox stops itself (TaskStop out of reach): its next request is not sent, the turn ends here with a word
+    // for the agent that started it, and the loop finishes.
+    if (enabled && e.agentId && (await read($, LOOPS))[e.agentId]?.stopping === 'soft') return { turnId: e.turnId, index: e.index, answer: STOP_ANSWER, toolUses: [], stopReason: 'end_turn', usage: null }
     let step = e
     if (!e.agentId) haikuSession = String(e.model).includes('haiku')
     if (!e.agentId && enabled && subagent) {
@@ -2270,16 +2395,11 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const loops = await read($, LOOPS)
     const turn = await read($, TURN)
-    const s = settingsFrom(options, await read($, SETTINGS))
     const usd = await sessionCost($)
     const subs = nested(loops)
     const thisTurn = usd !== undefined && turn.costAtStart !== undefined ? usd - turn.costAtStart : undefined
     const turnCosts = thisTurn !== undefined ? [...turn.costs, thisTurn] : turn.costs
     const avg = turnCosts.length ? turnCosts.reduce((a, b) => a + b, 0) / turnCosts.length : undefined
-    const choose = async (change: Partial<Settings>) => {
-      await saveSetting($, change)
-      apply(await loadSettings($, options))
-    }
     // shortcut: the run time is as of the band's last redraw (any loop's request or tool call); add a clock tick if a long silent tool makes it look stuck.
     const summary: Summary = {
       loops,
@@ -2303,23 +2423,12 @@ export const register: Register = (on, options) => {
     const actions = (
       <Box flexDirection="row" columnGap={e.surface === 'terminal' && e.props.bodyColumns >= NARROW ? 2 : 1}>
         <Button key="band-pane" dimColor label="Panel" onPress={() => void $.ui.open({ id: PANE, title: PANE_TITLE })} />
-        <Button
-          key="band-log"
-          dimColor
-          label={s.log === 'off' ? 'Log' : 'Log ✓'}
-          onPress={async () => {
-            await choose({ log: s.log === 'off' ? 'on' : 'off' })
-            if (s.log === 'off') {
-              logEvent({ ...(await sessionFacts($, options)), settings: current() })
-              await flushLog($, log)
-            }
-          }}
-        />
         <Button key="band-settings" dimColor label="Settings" onPress={() => void $.ui.open({ id: SETTINGS_PANE, title: 'gearbox settings', focus: true, closeOnEscape: true })} />
       </Box>
     )
     // The terminal draws text as a tree; the desktop app a card per agent.
-    const mine = e.surface === 'terminal' ? terminalBand({ Box, Text }, summary, { columns: e.props.bodyColumns, actions }) : desktopBand({ Box, Text }, summary, { columns: e.props.bodyColumns, actions })
+    const stop = stopControl($, Button, stopDeps(() => showStatus($, turnHandoff, stepLabel())))
+    const mine = e.surface === 'terminal' ? terminalBand({ Box, Text }, summary, { columns: e.props.bodyColumns, actions, stop }) : desktopBand({ Box, Text }, summary, { columns: e.props.bodyColumns, actions, stop })
     return below ? (
       <Box flexDirection="column" rowGap={1}>
         {mine}
@@ -2356,6 +2465,9 @@ export const register: Register = (on, options) => {
     // there, so they have the whole width and a row's height is its own.
     const stacked = e.surface !== 'terminal'
     const labelW = stacked ? 0 : Math.max(...settingsSections(s).flatMap(sec => sec.rows.map(([title]) => title.length))) + 2
+    const inForce = current // (the rows below name their own `current`)
+    // The Log row takes effect at once, and says where the log is written.
+    const logCaption = s.log === 'off' ? 'Applies now. Nothing is written.' : `Applies now · ~/.claude/gearbox/logs/${(await $.session.id().catch(() => undefined)) ?? '<session>'}.jsonl`
     return (
       <Box flexDirection="column" rowGap="md">
         {settingsSections(s).map(({ id, title, rows }) => (
@@ -2364,25 +2476,44 @@ export const register: Register = (on, options) => {
               {title}
             </Text>
             <Box flexDirection="column" rowGap="sm" borderStyle="round" borderDimColor paddingX="sm" {...(stacked ? { paddingY: 'sm' } : {})}>
-              {rows.map(([label, word, values, current]) => (
-                <Box flexDirection={stacked ? 'column' : 'row'} columnGap={1} rowGap="xs" alignItems={stacked ? 'flex-start' : 'center'}>
-                  <Text mono>{label.padEnd(labelW)}</Text>
-                  <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-                    {values.map(v => (
-                      <Button
-                        key={`${word}-${v}`}
-                        label={v === current ? `${v} ✓` : v}
-                        variant={v === current ? 'primary' : 'secondary'}
-                        onPress={() => saveSetting($, settingPatch(word, v)!)}
-                      />
-                    ))}
+              {rows.map(([label, word, values, current]) => {
+                const row = (
+                  <Box flexDirection={stacked ? 'column' : 'row'} columnGap={1} rowGap="xs" alignItems={stacked ? 'flex-start' : 'center'}>
+                    <Text mono>{label.padEnd(labelW)}</Text>
+                    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+                      {values.map(v => (
+                        <Button
+                          key={`${word}-${v}`}
+                          label={v === current ? `${v} ✓` : v}
+                          variant={v === current ? 'primary' : 'secondary'}
+                          onPress={async () => {
+                            await saveSetting($, settingPatch(word, v)!)
+                            // The Log row takes hold now, like /gearbox log: the others from the next prompt.
+                            if (word !== 'log') return
+                            const wasLogging = logMode !== 'off'
+                            logMode = (await loadSettings($, options)).log
+                            if (!wasLogging && logMode !== 'off') await startedLog($, { options, settings: inForce(), logEvent, log })
+                          }}
+                        />
+                      ))}
+                    </Box>
                   </Box>
-                </Box>
-              ))}
+                )
+                return word === 'log' ? (
+                  <Box key={`row-${word}`} flexDirection="column">
+                    {row}
+                    <Box paddingLeft={labelW ? labelW + 1 : 0}>
+                      <Text dimColor>{logCaption}</Text>
+                    </Box>
+                  </Box>
+                ) : (
+                  row
+                )
+              })}
             </Box>
           </Box>
         ))}
-        <Text dimColor>The marked value is in use. Changes apply from your next prompt. Esc closes.</Text>
+        <Text dimColor>The marked value is in use. Log applies now; the rest from your next prompt. Esc closes.</Text>
         {s.orchestrator === 'auto' && (
           <Text dimColor>{haiku ? 'Orchestrator auto: off in this Haiku session, which shifts models. Press on to use it here.' : 'Orchestrator auto: on here. A session on Haiku shifts models instead; press on to orchestrate those too.'}</Text>
         )}
@@ -2392,11 +2523,11 @@ export const register: Register = (on, options) => {
 
   // /gearbox panel: every loop of the session, finished ones included, nested under the loop that started it, a block each.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     if (!enabled) return <Text dimColor>gearbox is off. /gearbox on turns it back on.</Text>
     const loops = await read($, LOOPS)
     if (!Object.keys(loops).length) return <Text dimColor>No model calls yet. Rows appear as the session works.</Text>
     const subs = alive(loops)
-    return panelBody({ Box, Text }, loops, loops.main?.state === 'working' || subs.length ? queuedParts() : [], { now: Date.now(), cwd: await $.session.cwd().catch(() => undefined), handoff: turnHandoff !== undefined, mono: e.surface !== 'terminal', columns: e.props.bodyColumns })
+    return panelBody({ Box, Text }, loops, loops.main?.state === 'working' || subs.length ? queuedParts() : [], { now: Date.now(), cwd: await $.session.cwd().catch(() => undefined), handoff: turnHandoff !== undefined, mono: e.surface !== 'terminal', columns: e.props.bodyColumns, stop: stopControl($, Button, stopDeps(() => showStatus($, turnHandoff, stepLabel()))) })
   })
 }
