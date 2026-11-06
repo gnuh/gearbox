@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { GearboxLoop } from '../types'
-import { FILES_KEPT, NOTES_KEPT, SKILLS_KEPT, ended, fit, grown, noteOf, revived, shortPath, tagsOf, treeOf, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { FILES_KEPT, NOTES_KEPT, SKILLS_KEPT, ended, fit, grown, noteOf, revived, shortPath, tagsOf, treeOf, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
 
 const loop = (extra: Partial<GearboxLoop> = {}): GearboxLoop => ({ label: 'agent', asked: 'sonnet', state: 'working', steps: 0, ...extra })
 
@@ -90,6 +90,14 @@ test('files: read, edited, or new; a file Write makes where the loop had not tou
   for (let i = 0; i < 10; i++) l = withFile(l, 'Read', `/w/f${i}.ts`)
   expect(l.files).toHaveLength(FILES_KEPT)
   expect(l.files?.at(-1)?.path).toBe('/w/f9.ts')
+})
+
+test('files an agent of the loop changed join its list as the agent had them, and are never a read', () => {
+  let l = withFile(loop(), 'Read', '/w/a.ts')
+  l = withChange(l, '/w/a.ts', 'edited')
+  l = withChange(l, '/w/n.ts', 'new')
+  l = withChange(l, '/w/n.ts', 'edited') // a new file stays new
+  expect(l.files).toEqual([{ path: '/w/a.ts', kind: 'edited' }, { path: '/w/n.ts', kind: 'new' }])
 })
 
 test('skills: a loop keeps the name of each Skill it calls, once, in the order it first called it', () => {

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, KEPT, keptReason, subagentAsk, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODEL, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
+import { type FanPart, type Part, type Reading, ARTIFACT_MAX, BRIEFING_TOOLS, CHOOSE, CODE_EFFORTS, KEPT, keptReason, subagentAsk, htmlText, readingWhy, referencedFiles, staysPut, CODE_MODEL, CODE_MODELS, DIFF_REVIEW, MAIN_FLOOR, chosenEffort, effortLine, mechanical, standingOf, NOD, RESUME_MS, RESUME_TOKENS, SURVEY, NESTING, NESTED_READ, NESTED_WRITER, notesIn, typedLanguage, ownBrief, pinnedModel, pins, resumable, doesHandoffWork, escalated, fanReply, handoffLabel, handoffNote, isLongCommand, isReadOnlyCommand, isSkillFork, readParts, reviewGear, reviews, workEffort, gearFor, label, mainModel, needsConsent, nextFloor, plan, readReading, route, routeNote, stepDown, trimRequest, verifyAsk, filesReach, goAhead, namedFiles, workFloor } from './policy'
 
 const reading = (o: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...o })
 
@@ -903,4 +903,30 @@ test('what gearbox adds to an agent names the language of its notes on one line,
   expect(NESTING).not.toContain('Write the brief notes')
   expect(NESTING).not.toContain('language')
   expect(`${NESTING}${notesIn('English')}`.split('\n').at(-1)).toEndWith('between steps in English.')
+})
+
+test('the note an agent of the main conversation gets says what it may start: readers, work that is not code, one writer at a time, a split by the fan tool; and what its review needs', () => {
+  for (const said of ['Explore', 'model "haiku"', 'a lookup', 'long command', 'not code', 'one such agent at a time', 'mcp__gearbox__fan', 'part N', 'orchestrator-agents', 'worktree', 'git diff', 'every file', 'cannot start agents of their own']) expect(NESTING).toContain(said)
+  expect(NESTING).not.toContain('may only read')
+})
+
+test('the brief of an agent that reads another agent’s brief, and the line a writer gets, say what each is for', () => {
+  expect(NESTED_READ).toContain('Generated output')
+  expect(NESTED_READ).toContain('not code')
+  expect(NESTED_WRITER).toStartWith('\n\n---\nAdded by gearbox:')
+  expect(NESTED_WRITER).toContain('list every file you changed')
+})
+
+test('the fan tool’s answer to an agent of an agent holds nothing back, has no lane, and says its parts cannot start agents', () => {
+  const sonnet = { model: 'sonnet', effort: 'high' } as const
+  const parts = [{ what: 'orders: add paging', gear: sonnet, edits: true }, { what: 'billing: fix rounding', gear: sonnet, edits: true }, { what: 'review it', gear: { model: 'opus', effort: 'medium' }, edits: false, review: true }] as const
+  const reply = fanReply([...parts], false, true, true)
+  expect(reply).toContain('3 independent parts')
+  expect(reply).toContain('isolation "worktree"')
+  expect(reply).toContain('cannot start agents of their own')
+  expect(reply).not.toContain('refused here')
+  expect(reply).toContain('Wait for every result')
+  // The main conversation's answer is as it was.
+  expect(fanReply([...parts])).toContain('refused here')
+  expect(fanReply([...parts])).not.toContain('cannot start agents of their own')
 })

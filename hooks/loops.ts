@@ -101,15 +101,23 @@ export const withTool = (l: GearboxLoop, tool: string): GearboxLoop => {
 const TOUCHES: Record<string, 'read' | 'edited' | 'write'> = { Read: 'read', Edit: 'edited', MultiEdit: 'edited', Write: 'write' }
 const KIND_RANK: Record<GearboxFile['kind'], number> = { read: 0, edited: 1, new: 2 }
 
+// A file joins the loop's list as `kind`, never as less than the loop had it, and goes last.
+const touched = (l: GearboxLoop, path: string, kind: GearboxFile['kind']): GearboxLoop => {
+  const files = l.files ?? []
+  const was = files.find(f => f.path === path)?.kind
+  return { ...l, files: [...files.filter(f => f.path !== path), { path, kind: was && KIND_RANK[was] > KIND_RANK[kind] ? was : kind }].slice(-FILES_KEPT) }
+}
+
 export const withFile = (l: GearboxLoop, tool: string, path: unknown): GearboxLoop => {
   const how = TOUCHES[tool]
   if (!how || typeof path !== 'string' || !path) return l
-  const files = l.files ?? []
-  const before = files.find(f => f.path === path)
-  const kind: GearboxFile['kind'] = how === 'write' ? (before ? 'edited' : 'new') : how
-  const was = before?.kind
-  return { ...l, files: [...files.filter(f => f.path !== path), { path, kind: was && KIND_RANK[was] > KIND_RANK[kind] ? was : kind }].slice(-FILES_KEPT) }
+  const kind: GearboxFile['kind'] = how === 'write' ? (l.files?.some(f => f.path === path) ? 'edited' : 'new') : how
+  return touched(l, path, kind)
 }
+
+// A file an agent of the loop changed (edited, or created), which the loop lists as that agent had it: the review of
+// what the agent wrote starts from its parent's list.
+export const withChange = (l: GearboxLoop, path: string, kind: 'edited' | 'new'): GearboxLoop => touched(l, path, kind)
 
 // A skill the loop loads joins its list, once, in the order it was first called (a skill called again keeps its place).
 // The Skill tool's name may carry a leading slash. A loop that loads more than SKILLS_KEPT keeps the latest.

@@ -12,7 +12,7 @@ const test: typeof fresh = ((name: string, ...rest: any[]) => {
 
 // The test runtime has timers; the hooks' own environment, whose types these files use, does not.
 declare const setTimeout: (done: (value?: unknown) => void, ms: number) => unknown
-import { type Reading, ARTIFACT_MAX, handoffNote } from './policy'
+import { type Reading, ARTIFACT_MAX, NESTED_READ, NESTING, handoffNote } from './policy'
 
 // The routing rules below are written for a medium coding effort; the default is xhigh.
 const MEDIUM = { options: { code_effort: 'medium' } }
@@ -21,7 +21,7 @@ const ONE = { ...ZERO, input_tokens: 10, output_tokens: 2 }
 
 // `said`: the assistant's replies so far, which a test adds between turns: what a go-ahead approves. `status`: each text
 // gearbox set on the status line.
-type Rig = { steps: string[]; surveys: any[]; readers: string[]; dialogs: string[]; notes: (readonly string[])[]; kv: Map<string, unknown>; said: string[]; status: (string | undefined)[] }
+type Rig = { steps: string[]; surveys: any[]; readers: string[]; systems: string[]; dialogs: string[]; notes: (readonly string[])[]; kv: Map<string, unknown>; said: string[]; status: (string | undefined)[] }
 
 type Reply = { answer?: string; toolUses?: { name: string; input: unknown }[] }
 
@@ -33,7 +33,7 @@ const disks = new WeakMap<object, Map<string, string>>()
 // The session's folder is /w/app/src, inside a git repository at /w/app unless `git: false` (no repository) or
 // `git: 'unknown'` (the engine cannot say what the folder is).
 const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choose?: (labels: string[]) => string; earlier?: string[]; context?: number; replies?: Reply[]; git?: boolean | 'unknown' } = {}): Rig => {
-  const r: Rig = { steps: [], surveys: [], readers: [], dialogs: [], notes: [], kv: new Map(), said: [], status: [] }
+  const r: Rig = { steps: [], surveys: [], readers: [], systems: [], dialogs: [], notes: [], kv: new Map(), said: [], status: [] }
   const queue = [...readings]
   const replies = [...(o.replies ?? [])]
   on('ui.log', () => ({ value: undefined }))
@@ -49,6 +49,7 @@ const rig = (on: any, readings: Partial<Reading>[], o: { session?: string; choos
   on('model.complete', (_: unknown, e: any) => {
     r.surveys.push(JSON.parse(e.prompt))
     r.readers.push(e.model)
+    r.systems.push(e.system)
     const next = queue.shift()
     const text = next ? JSON.stringify({ reach: 'area', depth: 1, ...next }) : 'no idea'
     return { value: { isAnswered: true, text, usage: ZERO } } as never
@@ -1279,7 +1280,7 @@ test('a plain agent’s brief says in which language to write its notes between 
   const brief = await briefer(on)($, 'vamos revisar o cache de cotação', 'não mexe no gateway, só no serviço de preço', 'pode seguir com isso, mas sem tocar nos testes')
   expect(brief).toContain(' Write the brief notes you give between steps in Portuguese.')
   // One line, explicit; the old, unspecific sentence is gone.
-  expect(brief.trimEnd().split('\n').at(-1)).toEndWith('cannot start agents of its own. Write the brief notes you give between steps in Portuguese.')
+  expect(brief.trimEnd().split('\n').at(-1)).toEndWith('cannot start agents of their own. Write the brief notes you give between steps in Portuguese.')
   expect(brief).not.toContain('in the language of the person')
 })
 
@@ -2315,7 +2316,8 @@ const READOUT = { options: { code_effort: 'auto', orchestrator: true, orchestrat
 test('readout: each loop records who set its effort: the main conversation’s call, gearbox’s rules, or the orchestrator’s effort per prompt', READOUT, async ($: any, on) => {
   const loopsOf = watchLoops(on)
   const parts = [EDIT_PARTS[0]!, { what: 'review the retry change', mode: 'review', depth: 1, files: ['services/gateway'] }, EDIT_PARTS[1]!]
-  rig(on, [{ reach: 'area', depth: 2, mode: 'code', parts } as any, { reach: 'area', depth: 1, mode: 'answer' }], { session: 'claude-sonnet-5-5' })
+  // The second reading is the brief of the agent part 1 starts that writes code.
+  rig(on, [{ reach: 'area', depth: 2, mode: 'code', parts } as any, { reach: 'area', depth: 1, mode: 'code' }], { session: 'claude-sonnet-5-5' })
   on('tool.call', () => ({ result: '' }))
   on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
   await sayOn($, 'claude-sonnet-5-5', ASKED)
@@ -2325,19 +2327,23 @@ test('readout: each loop records who set its effort: the main conversation’s c
     await $.tool.call({ tool: 'Agent', tool_use_id: id, description, prompt: 'p', ...(effort ? { effort } : {}) })
     await $.agent.spawn(spawnCall(id, { model: 'sonnet' }))
   }
-  // A reader an agent starts takes gearbox's rule; one it starts that changes code is refused, and shows as a ✗ row.
+  // A reader an agent starts takes gearbox's rule, and so does the agent it starts that writes code (the coding effort is auto:
+  // the call names none, so gearbox's); an agent that was itself started by an agent may start none, and it shows as a ✗ row.
   await $.tool.call({ tool: 'Agent', tool_use_id: 'e1', description: 'scout', prompt: 'p', subagent_type: 'Explore', agentId: 'agent-t1' })
   await $.agent.spawn(spawnCall('e1', { model: 'sonnet', subagentType: 'Explore', parentAgentId: 'agent-t1' }))
-  const refused = await $.tool.call({ tool: 'Agent', tool_use_id: 'w1', description: 'rewrite it', prompt: 'p', subagent_type: 'general-purpose', agentId: 'agent-t1' })
-  expect(JSON.stringify(refused)).toContain('only agents that read')
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'w0', description: 'stream it', prompt: 'p', subagent_type: 'general-purpose', agentId: 'agent-t1' })
+  await $.agent.spawn(spawnCall('w0', { model: 'sonnet', parentAgentId: 'agent-t1' }))
+  const refused = await $.tool.call({ tool: 'Agent', tool_use_id: 'w1', description: 'rewrite it', prompt: 'p', subagent_type: 'general-purpose', agentId: 'agent-e1' })
+  expect(JSON.stringify(refused)).toContain('cannot start agents of its own')
   const loops = loopsOf()
   expect(loops.main).toMatchObject({ effortBy: 'auto' })
   expect(loops['agent-t1']).toMatchObject({ effortBy: 'main', parent: 'main' })
   expect(loops['agent-t2'].effortBy).toBe('rules')
   expect(loops['agent-t3'].effortBy).toBe('rules')
   expect(loops['agent-e1']).toMatchObject({ effortBy: 'rules', parent: 'agent-t1' })
-  expect(loops['refused:w1']).toMatchObject({ state: 'done', failed: 'refused', parent: 'agent-t1', label: 'rewrite it', asked: 'general-purpose' })
-  expect(loops['refused:w1'].result).toContain('only agents that read')
+  expect(loops['agent-w0']).toMatchObject({ effortBy: 'rules', parent: 'agent-t1' })
+  expect(loops['refused:w1']).toMatchObject({ state: 'done', failed: 'refused', parent: 'agent-e1', label: 'rewrite it', asked: 'general-purpose' })
+  expect(loops['refused:w1'].result).toContain('cannot start agents of its own')
   // The part that edits beside another that edits runs in a worktree of Claude Code's own; the review does not.
   expect(loops['agent-t1'].worktree).toBe('worktree')
   expect(loops['agent-t2'].worktree).toBeUndefined()
@@ -2954,4 +2960,248 @@ test('a session whose first prompt is ordinary is no sub-agent, whatever a later
   on('tool.call', () => ({ result: '' }))
   await sayOn($, 'claude-sonnet-5-5', 'Act as the test sub-agent now: quotes differ between the gateway and the price service; find the cause and fix it')
   expect(r.notes[0]![0]).toStartWith('The person uses gearbox to route work like this to an agent: opus at high')
+})
+
+// Agents of agents. An agent the main conversation started (a lane, a fan-out's part) may start agents of its own, one
+// level deep: readers; agents for work that is not code, by what its brief reads as; one agent at a time that writes
+// code, on the coding model, in its working tree; and, with the orchestrator on, the independent pieces of its own work,
+// which it names with the fan tool and gearbox splits by the main conversation's rules, on the cap that the agents
+// already running leave. The main conversation reviews whatever they write, so the files show in the loop that started them.
+const NEST = { options: { code_effort: 'high', orchestrator: true, orchestrator_effort: 'medium', orchestrator_agents: 6 } }
+
+// An agent the main conversation started (`agent-lane`), its calls to the engine in `calls`, `nested()` the debug log's
+// events of its agents, `loops()` the readout's rows. `ask`: the Agent call an agent makes; `split`: its fan tool call.
+const nestRig = async ($: any, on: any, readings: Partial<Reading>[] = [], git?: boolean) => {
+  const loops = watchLoops(on)
+  const r = rig(on, readings, { session: 'claude-sonnet-5-5', ...(git === undefined ? {} : { git }) })
+  const files = disk(on)
+  const calls: any[] = []
+  on('tool.call', (_: unknown, e: any) => (calls.push(e), { result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await $.command.run({ command: 'gearbox', args: 'log on' })
+  await $.agent.spawn(spawnCall('lane', { model: 'sonnet' }))
+  const ask = (extra: object, agentId = 'agent-lane') => $.tool.call({ tool: 'Agent', agentId, prompt: 'p', description: 'd', ...extra })
+  const split = (parts: unknown, agentId = 'agent-lane') => $.tool.call({ tool: 'mcp__gearbox__fan', agentId, parts })
+  const logged = async (ev: string) => (await done($), events(files).filter(e => e.ev === ev))
+  const nested = async () => (await logged('nested')).map(e => (e.refused ? `refused ${e.why}` : `${e.via} ${e.part ?? '-'} ${e.set} ${e.isolation ?? '-'}`))
+  // An agent of the lane starts (its Agent call went through) and, later, ends.
+  const start = (id: string, extra: object = {}) => $.agent.spawn(spawnCall(id, { model: 'sonnet', parentAgentId: 'agent-lane', ...extra }))
+  const end = (id: string) => $.turn.complete({ turnId: 'y', answer: 'done', durationMs: 1, isAborted: false, agentId: `agent-${id}` })
+  return { r, files, calls, loops, ask, split, logged, nested, start, end }
+}
+const agentCalls = (calls: any[]) => calls.filter(c => c.tool === 'Agent')
+const GATEWAY_REVIEW = { what: 'review the retry change', mode: 'review', depth: 1, files: ['services/gateway'] }
+
+test('agents of agents: an agent the main conversation started splits its own work with the fan tool, by the main conversation’s rules; each part gets its gear, and the two that edit each get a worktree', NEST, async ($: any, on) => {
+  const { r, calls, ask, split, logged, nested } = await nestRig($, on, [{ reach: 'area', depth: 1, mode: 'code' }])
+  const reply = String((await split([...EDIT_PARTS, GATEWAY_REVIEW])).result)
+  expect(reply).toContain('3 independent parts')
+  expect(reply).toContain('part 1: orders: add paging: model "sonnet", gearbox runs it at high; edits files, isolation "worktree".')
+  expect(reply).toContain('part 3: review the retry change: model "opus", gearbox runs it at medium; only reads.')
+  expect(reply).toContain('Start all 3 in ONE message')
+  // No hold, no lane: the agent is not held up by the parts it has still to start.
+  expect(reply).not.toContain('refused here')
+  expect(reply).not.toContain('SendMessage')
+  expect(r.surveys).toHaveLength(0) // the pieces are the agent’s; nothing is read
+  // Started in any order, each takes the part its description numbers, else the next one open; none is a lane, none runs in the background.
+  await ask({ tool_use_id: 'n3', description: 'part 3: review', prompt: 'review it' })
+  await ask({ tool_use_id: 'n1', description: 'Part 1: orders', prompt: 'do orders', model: 'haiku', effort: 'low' })
+  await ask({ tool_use_id: 'n2', description: 'billing', prompt: 'do billing' })
+  const started = agentCalls(calls)
+  expect(started.map(gearOf)).toEqual(['opus·medium - false', 'sonnet·high worktree false', 'sonnet·high worktree false'])
+  expect(started[0].prompt).toBe('review it') // an agent of an agent gets its brief as written
+  expect(started[1].prompt).toStartWith('do orders')
+  expect(started[1].prompt).toContain('list every file you changed') // a part that edits is told what the review needs
+  // Two of the parts write code in worktrees: another agent that writes code, outside the split, waits.
+  const extra = await ask({ tool_use_id: 'n4', description: 'one more', prompt: 'rewrite the importer' })
+  expect(extra.deny).toContain('still running')
+  expect(extra.deny).toContain('mcp__gearbox__fan')
+  expect(agentCalls(calls)).toHaveLength(3)
+  expect(await nested()).toEqual(['part 3 opus·medium -', 'part 1 sonnet·high worktree', 'part 2 sonnet·high worktree', 'refused writer'])
+  expect((await logged('fan'))[0]).toMatchObject({ via: 'tool', agent: 'agent-lane', cap: 5, kept: 3, merged: [] })
+})
+
+test('agents of agents: a fan-out in a folder that is no git repository forces no isolation; each part that edits makes its own worktree', NEST, async ($: any, on) => {
+  const { calls, ask, split, nested } = await nestRig($, on, [], false)
+  const reply = String((await split(EDIT_PARTS)).result)
+  expect(reply).toContain('in a worktree of its own')
+  expect(reply).toContain(OWN_WORKTREE)
+  expect(reply).not.toContain('and isolation "worktree"')
+  await ask({ tool_use_id: 'n1', description: 'part 1: orders', prompt: 'p' })
+  await ask({ tool_use_id: 'n2', description: 'part 2: billing', prompt: 'p' })
+  expect(agentCalls(calls).map(gearOf)).toEqual(['sonnet·high - false', 'sonnet·high - false'])
+  expect(await nested()).toEqual(['part 1 sonnet·high own', 'part 2 sonnet·high own'])
+})
+
+test('agents of agents: the cap is orchestrator-agents less the agents running and those promised; parts that collide and depth-0 parts merge as in the main conversation', { options: { ...NEST.options, orchestrator_agents: 4 } }, async ($: any, on) => {
+  const { ask, split, logged, start } = await nestRig($, on)
+  const parts = [
+    { what: 'orders: add paging', mode: 'code', depth: 1, files: ['services/orders/list.ts'] },
+    { what: 'orders: add sorting', mode: 'code', depth: 1, files: ['services/orders/sort.ts'] },
+    GATEWAY_REVIEW,
+    { what: 'billing: rename a const', mode: 'code', depth: 0, files: ['services/billing/money.ts'] },
+    { what: 'explain the schema', mode: 'answer', depth: 1, files: ['db'] },
+  ]
+  // Parts that are not worth agents are told why, as in the main conversation; nothing is promised.
+  const shared = [{ what: 'a', mode: 'code', depth: 1, files: ['svc/x.ts'] }, { what: 'b', mode: 'code', depth: 1, files: ['svc/x.ts'] }]
+  expect(String((await split(shared)).result)).toContain('not worth splitting: the parts edit the same files')
+  // Four agents at most, one of them running (the caller): room for three.
+  const reply = String((await split(parts)).result)
+  expect(reply).toContain('3 independent parts')
+  expect(reply).toContain('part 1: orders: add paging; orders: add sorting:')
+  expect(reply).toContain('part 2: review the retry change; billing: rename a const:')
+  expect((await logged('fan')).at(-1)).toMatchObject({ cap: 3, kept: 3, merged: ['orders: add paging + orders: add sorting', 'review the retry change + billing: rename a const'] })
+  // Another agent of the main conversation starts: it is running, and the three parts the first promised are coming.
+  await $.agent.spawn(spawnCall('other', { model: 'sonnet' }))
+  const crowded = String((await $.tool.call({ tool: 'mcp__gearbox__fan', agentId: 'agent-other', parts: EDIT_PARTS })).result)
+  expect(crowded).toContain('not worth splitting: orchestrator-agents is 4 and 5 agents are running or promised, so there is room for 0 more')
+  expect(crowded).toContain('yourself')
+  // Its parts that start take their place among the running: still no room.
+  for (const n of [1, 2, 3]) {
+    await ask({ tool_use_id: `p${n}`, description: `part ${n}: x`, prompt: 'p' })
+    await start(`p${n}`)
+  }
+  expect(String((await $.tool.call({ tool: 'mcp__gearbox__fan', agentId: 'agent-other', parts: EDIT_PARTS })).result)).toContain('room for 0 more')
+})
+
+test('agents of agents: the fan-out of the main conversation that has parts still to start counts against the cap', { options: { ...NEST.options, orchestrator_agents: 3 } }, async ($: any, on) => {
+  const r = rig(on, [{ reach: 'area', depth: 2, mode: 'code', parts: PARTS } as any], { session: 'claude-sonnet-5-5' })
+  on('tool.call', () => ({ result: '' }))
+  on('agent.spawn', (_: unknown, e: any) => ({ model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await sayOn($, 'claude-sonnet-5-5', ASKED)
+  expect(r.notes[0]).toEqual([FAN_NOTE])
+  // Part 1 starts; parts 2 and 3 are owed: three agents at most, one running, two promised.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 't1', description: 'part 1: review', prompt: 'p' })
+  await $.agent.spawn(spawnCall('t1', { model: 'opus' }))
+  const reply = String((await $.tool.call({ tool: 'mcp__gearbox__fan', agentId: 'agent-t1', parts: EDIT_PARTS })).result)
+  expect(reply).toContain('orchestrator-agents is 3 and 3 agents are running or promised, so there is room for 0 more')
+})
+
+test('agents of agents: a plain Agent for work that is not code starts on the gear its brief reads as, read by Haiku, which is told that generated output is not code', NEST, async ($: any, on) => {
+  const readings: Partial<Reading>[] = [
+    { reach: 'point', depth: 0, mode: 'answer' }, // a lookup
+    { reach: 'area', depth: 1, mode: 'wait' }, // one long command
+    { reach: 'area', depth: 1, mode: 'review' },
+    { reach: 'area', depth: 1, mode: 'answer' }, // writes generated output
+    { reach: 'system', depth: 3, mode: 'answer' },
+    { reach: 'frontier', depth: 3, mode: 'answer' },
+  ]
+  const { r, calls, ask, nested } = await nestRig($, on, readings)
+  const briefs = ['where is the refund total computed?', 'run the full test suite and report what fails', 'review the diff in services/orders', 'read docs/a.md and docs/b.md and write them up as graphify-out/chunk-1.json', 'work out how a quote flows through every service', 'research a new way to price shipping']
+  for (const [i, prompt] of briefs.entries()) await ask({ tool_use_id: `b${i}`, description: 'job', prompt })
+  // A lookup and a long command on Haiku at low; the rest by the reach and depth of the brief, a review on Opus at least,
+  // and nothing nested asks the person: what would need their consent (Fable, an effort above the coding one) steps down.
+  expect(agentCalls(calls).map(gearOf)).toEqual(['haiku·low - -', 'haiku·low - -', 'opus·medium - -', 'sonnet·medium - -', 'opus·high - -', 'opus·high - -'])
+  expect(r.readers).toEqual(Array(6).fill('haiku'))
+  expect(r.surveys[3].request).toContain('graphify-out/chunk-1.json')
+  for (const system of r.systems) expect(system).toEndWith(NESTED_READ)
+  expect(await nested()).toEqual(['brief - haiku·low -', 'brief - haiku·low -', 'brief - opus·medium -', 'brief - sonnet·medium -', 'brief - opus·high -', 'brief - opus·high -'])
+})
+
+test('agents of agents: an agent may start one plain agent that writes code, on the coding model in its working tree; the files it changes show in the loop that started it; a second writer waits until the first ends', { options: { ...NEST.options, code_model: 'sonnet' } }, async ($: any, on) => {
+  const { r, calls, loops, ask, nested, start, end } = await nestRig($, on, [{ reach: 'system', depth: 2, mode: 'code' }, { mode: 'code' }, { mode: 'code' }, { mode: 'code' }])
+  const first = await ask({ tool_use_id: 'w1', description: 'rewrite the importer', prompt: 'rewrite the importer to stream rows' })
+  expect(first.deny).toBeUndefined()
+  // The coding model the person fixed, at the effort the job calls for (the coding effort is the floor); no worktree, no background.
+  expect(gearOf(agentCalls(calls)[0])).toBe('sonnet·high - -')
+  // What it must hand back is added to its brief: the review needs the files.
+  expect(agentCalls(calls)[0].prompt).toStartWith('rewrite the importer to stream rows')
+  expect(agentCalls(calls)[0].prompt).toContain('list every file you changed')
+  // While it is being started, and while it runs, no other agent of this one writes code in the same tree.
+  const second = await ask({ tool_use_id: 'w2', description: 'and the exporter', prompt: 'rewrite the exporter' })
+  expect(second.deny).toContain('still running')
+  expect(second.deny).toContain('mcp__gearbox__fan')
+  await start('w1')
+  expect((await ask({ tool_use_id: 'w3', description: 'and the exporter', prompt: 'rewrite the exporter' })).deny).toContain('still running')
+  // What the writer changes shows on the lane too, so the review has the list to run git diff on; reads do not.
+  await $.tool.call({ tool: 'Read', file_path: '/w/app/src/importer.ts', agentId: 'agent-w1' })
+  await $.tool.call({ tool: 'Edit', file_path: '/w/app/src/importer.ts', old_string: 'a', new_string: 'b', agentId: 'agent-w1' })
+  await $.tool.call({ tool: 'Write', file_path: '/w/app/src/stream.ts', content: 'x', agentId: 'agent-w1' })
+  expect(loops()['agent-w1'].files).toEqual([{ path: '/w/app/src/importer.ts', kind: 'edited' }, { path: '/w/app/src/stream.ts', kind: 'new' }])
+  expect(loops()['agent-lane'].files).toEqual([{ path: '/w/app/src/importer.ts', kind: 'edited' }, { path: '/w/app/src/stream.ts', kind: 'new' }])
+  expect(loops().main?.files).toBeUndefined()
+  // It ends: the next one may start.
+  await end('w1')
+  expect((await ask({ tool_use_id: 'w4', description: 'and the exporter', prompt: 'rewrite the exporter' })).deny).toBeUndefined()
+  expect(agentCalls(calls).map(gearOf)).toEqual(['sonnet·high - -', 'sonnet·high - -'])
+  expect(r.surveys).toHaveLength(4) // each brief was read; the refused ones too
+  expect(await nested()).toEqual(['brief - sonnet·high -', 'refused writer', 'refused writer', 'brief - sonnet·high -'])
+})
+
+test('agents of agents: with the coding effort auto, the model and effort the call names win within bounds for an agent that writes code, as for any plain agent', { options: { ...NEST.options, code_effort: 'auto', code_model: 'auto' } }, async ($: any, on) => {
+  const { calls, ask, nested, start, end } = await nestRig($, on, [{ reach: 'area', depth: 1, mode: 'code' }, { reach: 'area', depth: 1, mode: 'code' }])
+  await ask({ tool_use_id: 'w1', description: 'fix', prompt: 'fix the importer', model: 'opus', effort: 'xhigh' })
+  await start('w1')
+  await end('w1')
+  await ask({ tool_use_id: 'w2', description: 'fix', prompt: 'fix the exporter' })
+  expect(agentCalls(calls).map(gearOf)).toEqual(['opus·xhigh - -', 'sonnet·medium - -'])
+  expect(await nested()).toEqual(['brief - opus·xhigh -', 'brief - sonnet·medium -'])
+})
+
+test('agents of agents: a typed agent that works starts when its brief reads as work that is not code; one that writes code is a plain agent’s job; a reader needs no reading', NEST, async ($: any, on) => {
+  const { r, calls, ask, nested } = await nestRig($, on, [{ mode: 'code' }, { mode: 'answer', reach: 'area', depth: 1 }])
+  const typed = await ask({ tool_use_id: 'c1', description: 'fix', prompt: 'fix the importer', subagent_type: 'coder', model: 'opus' })
+  expect(typed.deny).toContain('plain Agent')
+  await ask({ tool_use_id: 'c2', description: 'explain', prompt: 'explain how the importer retries', subagent_type: 'coder', model: 'opus' })
+  expect(agentCalls(calls).map(c => `${c.subagent_type} ${gearOf(c)}`)).toEqual(['coder sonnet·medium - -'])
+  expect(r.surveys).toHaveLength(2)
+  // Explore and Plan read for the agent on Sonnet at low, Haiku when it asks, and cost no reading.
+  await ask({ tool_use_id: 'x1', description: 'scout', prompt: 'find the importer', subagent_type: 'Explore' })
+  await ask({ tool_use_id: 'x2', description: 'scout', prompt: 'where is it', subagent_type: 'Plan', model: 'haiku' })
+  expect(agentCalls(calls).slice(1).map(c => `${c.subagent_type} ${gearOf(c)}`)).toEqual(['Explore sonnet·low - -', 'Plan haiku·low - -'])
+  expect(r.surveys).toHaveLength(2)
+  expect(await nested()).toEqual(['refused typed', 'brief - sonnet·medium -', 'reader - sonnet·low -', 'reader - haiku·low -'])
+})
+
+test('agents of agents: a browser check, a git chore, or a brief gearbox cannot read is refused, with what to do instead', NEST, async ($: any, on) => {
+  // Two readings; the third brief finds none left, and the survey returns nothing it can read.
+  const { r, calls, ask, nested } = await nestRig($, on, [{ mode: 'commit' }, { mode: 'drive' }])
+  const chore = await ask({ tool_use_id: 'w1', description: 'commit', prompt: 'commit and push' })
+  expect(chore.deny).toStartWith('gearbox: ')
+  expect(chore.deny).toContain('browser check or a git chore')
+  expect((await ask({ tool_use_id: 'w2', description: 'click', prompt: 'click through the orders page' })).deny).toContain('browser check or a git chore')
+  const unread = await ask({ tool_use_id: 'w3', description: 'x', prompt: '???' })
+  expect(unread.deny).toContain('could not tell what this agent is for')
+  expect(agentCalls(calls)).toHaveLength(0)
+  expect(r.surveys).toHaveLength(3)
+  expect(await nested()).toEqual(['refused other', 'refused other', 'refused unread'])
+})
+
+test('agents of agents: one level deep: an agent started by an agent starts nothing and splits nothing; a loop the main conversation did not start runs its agents as before', NEST, async ($: any, on) => {
+  const { r, calls, ask, split, nested, start } = await nestRig($, on)
+  await start('w1')
+  for (const extra of [{ subagent_type: 'Explore' }, { subagent_type: 'general-purpose' }, {}]) expect((await ask({ tool_use_id: 'd', ...extra }, 'agent-w1')).deny).toContain('cannot start agents of its own')
+  expect(JSON.stringify(await split(EDIT_PARTS, 'agent-w1'))).toContain('cannot start agents of its own')
+  expect(agentCalls(calls)).toHaveLength(0)
+  expect(r.surveys).toHaveLength(0)
+  expect(await nested()).toEqual(['refused depth', 'refused depth', 'refused depth'])
+  // A skill's fork or a workflow's agent is no agent the main conversation started: untouched, fan tool aside.
+  await ask({ tool_use_id: 'f1', subagent_type: 'general-purpose', model: 'opus' }, 'agent-fork')
+  expect(agentCalls(calls).at(-1)).toMatchObject({ subagent_type: 'general-purpose', model: 'opus' })
+  expect(agentCalls(calls).at(-1).effort).toBeUndefined()
+  expect(JSON.stringify(await split(EDIT_PARTS, 'agent-fork'))).toContain('only the main conversation and the agents it started')
+})
+
+test('agents of agents: the fan tool tells an agent when the orchestrator is off or one of its agents is writing code, and takes no unusable parts', NEST, async ($: any, on) => {
+  const { ask, split, start } = await nestRig($, on, [{ mode: 'code' }])
+  expect(await split([{ what: 'dance', mode: 'dance', depth: 1 }])).toMatchObject({ isError: true })
+  // An agent of its own is writing code in the working tree: pieces that write code wait for it.
+  await ask({ tool_use_id: 'w1', description: 'rewrite', prompt: 'rewrite the importer' })
+  await start('w1')
+  expect(String((await split(EDIT_PARTS)).result)).toContain('still running')
+  await $.command.run({ command: 'gearbox', args: 'orchestrator off' })
+  const off = JSON.stringify(await split(EDIT_PARTS))
+  expect(off).toContain('the orchestrator is off')
+  expect(off).toContain('not code')
+  expect(off).not.toContain('start agents as you see fit')
+})
+
+test('agents of agents: the brief of an agent the main conversation starts says what it may start; the agents it starts are told nothing of this', NEST, async ($: any, on) => {
+  rig(on, [])
+  const prompts: string[] = []
+  on('agent.spawn', (_: unknown, e: any) => (prompts.push(e.prompt), { model: e.model ?? 'inherit', agentId: `agent-${e.tool_use_id}` }))
+  await $.agent.spawn(spawnCall('lane', { prompt: 'do it' }))
+  await $.agent.spawn(spawnCall('part', { prompt: 'p', parentAgentId: 'agent-lane' }))
+  expect(prompts[0]).toStartWith(`do it${NESTING}`)
+  expect(prompts[1]).toBe('p')
 })

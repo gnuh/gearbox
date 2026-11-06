@@ -22,6 +22,8 @@ import {
   apartEdits,
   looksUp,
   ownBrief,
+  NESTED_READ,
+  NESTED_WRITER,
   NESTING,
   notesIn,
   typedLanguage,
@@ -82,8 +84,9 @@ import {
 } from './policy'
 import { runHooks } from './classic'
 import { NARROW, type Queued, type Summary, desktopBand, panelBody, terminalBand } from './agents'
-import { NOTE_EVERY_MS, ended, family, gearText, grown, kilo, live, noteOf, revived, toolName, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
-import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lanes, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
+import { NOTE_EVERY_MS, ended, family, gearText, grown, kilo, live, noteOf, revived, toolName, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lanes, fanOut, fanParts, fanSlot, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
+import { READERS, REFUSED, SPLIT, type Refusal, briefVerdict, nestedCap, readerGear, settle, whyNoNestedFan } from './nesting'
 
 // US$ per million tokens.
 // shortcut: copied from the claude-api skill's table (cached 2026-10-06); update when prices move.
@@ -113,9 +116,6 @@ const TURN = atom({ plugin: 'gearbox', key: 'turn' } as const, { requests: {}, c
 // The reports agents the main conversation started handed back, drawn under their notification or call.
 const REPORTS = atom({ plugin: 'gearbox', key: 'reports' } as const, {} as GearboxReports, { shape: 'reports-1' })
 const KEEP_REPORTS = 30
-// The agent types that only read: what an agent may start itself.
-const READERS = /^(Explore|Plan)$/
-
 // Re-exported for the readouts' tests and anyone importing them from here.
 export { gearText, noteOf }
 
@@ -286,12 +286,13 @@ const typedIn = async ($: EngineInterface, memo: TypedIn, latest: string): Promi
 // question into a route; Sonnet costs about a second more. A subagent's brief only needs its kind of job: Haiku.
 // The request travels inside JSON, so nothing pasted into it can pose as another field. `approved`: the request is
 // the assistant's proposal, which the person approved, read as the work it lays out. `files`: the text of the files the
-// proposal points to (approvedFiles), after it, so its trim never cuts them.
+// proposal points to (approvedFiles), after it, so its trim never cuts them. `agentBrief`: the request is the brief an agent
+// gives another agent, and the survey is told that generated output is not code.
 type SurveyInput = { request: string; earlier: string[]; previous?: Gear; reply?: string | null; approved?: boolean; files?: string }
-const survey = async ($: EngineInterface, { request, earlier, previous, reply = null, approved = false, files = '' }: SurveyInput, model: 'sonnet' | 'haiku' = 'sonnet') => {
+const survey = async ($: EngineInterface, { request, earlier, previous, reply = null, approved = false, files = '' }: SurveyInput, model: 'sonnet' | 'haiku' = 'sonnet', agentBrief = false) => {
   const r = await $.model.complete({
     model,
-    system: SURVEY,
+    system: agentBrief ? `${SURVEY}\n${NESTED_READ}` : SURVEY,
     prompt: JSON.stringify({
       request: `${trimRequest(request, approved ? PROPOSAL_MAX : undefined)}${files ? `\n\n---\nThe files this proposal points to, as text:${files}` : ''}`,
       earlier,
@@ -311,14 +312,15 @@ const survey = async ($: EngineInterface, { request, earlier, previous, reply = 
 // A subagent's effort by its job, read as a prompt is: browsing and long commands run low, code at the coding
 // effort, questions and searches by depth. Code also takes the coding model the person fixed (`code`), if any; any
 // other job keeps the model its call named. `writes`: the job is code; `reviews`: it is a review. Undefined when the
-// read fails: the call goes as it was.
-type Job = { model?: Model; effort: ModelEffort; writes: boolean; reviews: boolean }
-const jobGear = async ($: EngineInterface, brief: string, standing: ModelEffort, code?: Model): Promise<Job | undefined> => {
-  const { reading: r } = await survey($, { request: brief, earlier: [] }, 'haiku')
+// read fails: the call goes as it was. `mode` and `gear` are the read itself and the gear the rules give it, for an
+// agent another agent starts (`agentBrief`), whose start they decide.
+type Job = { model?: Model; effort: ModelEffort; writes: boolean; reviews: boolean; mode: Reading['mode']; gear: Gear }
+const jobGear = async ($: EngineInterface, brief: string, standing: ModelEffort, code?: Model, agentBrief = false): Promise<Job | undefined> => {
+  const { reading: r } = await survey($, { request: brief, earlier: [] }, 'haiku', agentBrief)
   if (!r) return undefined
-  if (r.mode === 'drive' || r.mode === 'wait') return { effort: 'low', writes: false, reviews: false }
+  if (r.mode === 'drive' || r.mode === 'wait') return { effort: 'low', writes: false, reviews: false, mode: r.mode, gear: { model: 'haiku', effort: 'low' } }
   const g = gearFor({ ...r, ask: {} }, standing, code)
-  return { ...(pins({ ...r, ask: {} }, code) ? { model: g.model } : {}), effort: g.effort, writes: r.mode === 'code', reviews: r.mode === 'review' }
+  return { ...(pins({ ...r, ask: {} }, code) ? { model: g.model } : {}), effort: g.effort, writes: r.mode === 'code', reviews: r.mode === 'review', mode: r.mode, gear: g }
 }
 
 // The files a go-ahead's proposal points to (referencedFiles), as the survey of the work it approves reads them: each
@@ -528,6 +530,45 @@ const seatFan = async ($: EngineInterface, fan: readonly FanPart[], o: { asks: b
   return { kind: 'fan', gear: nodPart(seated)!.gear, parts: seated }
 }
 
+// How an agent stands among the agents of the main conversation: 'first' (the main conversation started it, so it may
+// start agents), 'deeper' (an agent that was started it, so it may start none), or neither: a skill's fork or a
+// workflow's agent, which run their agents as they always did.
+const nestDepth = async ($: EngineInterface, id: string): Promise<'first' | 'deeper' | undefined> => {
+  const started = await read($, REPORTS)
+  const parent = (await read($, LOOPS))[id]?.parent
+  if (parent !== undefined && started[parent] !== undefined) return 'deeper'
+  return started[id] ? 'first' : undefined
+}
+
+// The fan tool of an agent the main conversation started: its own work split by the rules the main conversation's is,
+// on the cap that the agents running now (itself among them) and the parts promised leave under `orchestrator-agents`.
+// Its parts are fresh agents with no lane, nothing is held back from it, and nothing is put to the person: what would
+// need their consent steps down. `fan`: the split to seat, when there is one; the agent's Agent calls then take its
+// parts in turn. `owed`: the main conversation's parts not yet started; `promised`: those of other agents' fan-outs.
+type NestedAsk = { agent: string; input: unknown; agents: number; standing: ModelEffort; code?: Model; owed: number; promised: number; chooses: boolean; noWorktree: boolean; writerBusy: (loops: Record<string, GearboxLoop>) => boolean }
+type NestedAnswer = { text: string; isError?: true; fan?: { parts: FanPart[]; isolate: boolean }; log?: Record<string, unknown> }
+const nestedSplit = async ($: EngineInterface, a: NestedAsk): Promise<NestedAnswer> => {
+  const depth = await nestDepth($, a.agent)
+  if (depth === 'deeper') return { text: `gearbox: ${REFUSED.depth}` }
+  if (!depth) return { text: `gearbox: ${SPLIT.fork}` }
+  const parts = readParts(a.input)
+  if (!parts.length) return { text: 'gearbox: no usable parts: each needs what, a mode (code, answer, review, wait or lookup) and a depth from 0 to 3.', isError: true }
+  const loops = await read($, LOOPS)
+  const running = alive(loops).length
+  const cap = nestedCap(a.agents, running, a.owed + a.promised)
+  const fan = fanParts({ ...NEUTRAL, parts }, cap, a.standing, a.code)
+  const merged = fanOut(parts, cap).filter(g => g.length > 1).map(g => g.map(pt => pt.what).join(' + '))
+  const logged = { ev: 'fan', via: 'tool', agent: a.agent, parts, cap, merged }
+  if (!fan.length) {
+    const why = whyNoNestedFan(parts, cap, a.agents, running + a.owed + a.promised)
+    return { text: `gearbox: not worth splitting: ${why}. Do it as one piece of work yourself.`, log: { ...logged, kept: 0, why } }
+  }
+  if (fan.some(p => p.edits) && a.writerBusy(loops)) return { text: `gearbox: ${SPLIT.writing}`, log: { ...logged, kept: 0, why: 'writer' } }
+  const seated = fan.map(p => ({ ...p, gear: settle(p.gear, !!a.code && p.edits && p.gear.model === a.code, a.standing) }))
+  const isolate = apartEdits(seated) && !a.noWorktree && (await inGitRepo($))
+  return { text: fanReply(seated, a.chooses, isolate, true), fan: { parts: seated, isolate }, log: { ...logged, kept: seated.length, handoff: handoffLabel({ kind: 'fan', gear: seated[0]!.gear, parts: seated }) } }
+}
+
 // The part of a fan-out a nod goes back to: the first a lane takes, else the first.
 const nodPart = (parts: readonly FanPart[]): FanPart | undefined => parts.find(pt => pt.resume || pt.lane) ?? parts[0]
 // Whether the work a nod after a fan-out goes on with writes code.
@@ -576,6 +617,8 @@ export const usageReport = (ledger: Ledger) => {
   return [...lines, `total ≈ $${total.toFixed(2)} at API list prices, subagents included`].join('\n')
 }
 
+// The tools whose file_path an agent changes.
+const CHANGES = new Set(['Edit', 'MultiEdit', 'Write'])
 // Typed agents that only search or plan: work handed up never takes them over.
 const SEARCHERS = /^(Explore|Plan|claude-code-guide|statusline-setup)$/
 
@@ -793,6 +836,12 @@ export const register: Register = (on, options) => {
   // The models whose lane an agent of this turn took or was sent: any other plain agent of that model started this
   // turn, even in the same message, is a fresh agent for the turn only.
   let laneTaken = new Set<Model>()
+  // The fan-outs the agents of the main conversation declared with the fan tool, by the agent: its parts as gearbox split
+  // them, which have started, and whether those that edit start with Claude Code's worktree. The agent's Agent calls take
+  // the parts in turn. `writers`: the agents that write code, by the Agent call that started each, with whose it is and,
+  // once it has started, the agent; a second one outside a fan-out waits until the first has ended.
+  const nestFans = new Map<string, { parts: readonly FanPart[]; handed: Set<number>; isolate: boolean }>()
+  const writers = new Map<string, { caller: string; agent?: string }>()
   // The reading of the turn's prompt, with the asks its words bear out: what the fan tool splits parts on.
   let turnReading: Reading | undefined
   // Agent calls whose agent is about to start, by tool_use_id, so several started in one message each get their
@@ -850,10 +899,7 @@ export const register: Register = (on, options) => {
   const nextHandoff = (description?: string): { gear: Gear; slot: number } | undefined => {
     if (turnHandoff?.kind === 'fan') {
       const parts = turnHandoff.parts ?? []
-      const open = (k: number) => k >= 0 && k < parts.length && !handedOff.has(k)
-      const named = Number(/^\s*part\s+(\d)\b/i.exec(description ?? '')?.[1] ?? 0) - 1
-      const first = parts.findIndex((p, k) => open(k) && !p.resume)
-      const slot = open(named) ? named : first >= 0 ? first : parts.findIndex((_, k) => open(k))
+      const slot = fanSlot(parts, handedOff, description)
       return slot >= 0 ? { gear: parts[slot]!.gear, slot } : undefined
     }
     if (turnRoute) {
@@ -915,6 +961,8 @@ export const register: Register = (on, options) => {
     lastDeepCode = false
     heldDeep = undefined
     spawningLanes.clear()
+    nestFans.clear()
+    writers.clear()
     begun.clear()
     spawnMeta.clear()
     noWorktree = false
@@ -977,7 +1025,7 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'fan',
       description:
-        'gearbox: with the orchestrator on, call this BEFORE starting agents whenever the work you are about to do or hand to a lane splits into independent pieces (separate services, repos, pull requests, investigations, reviews by angle) that do not need each other\'s results and do not edit the same files. Pass the pieces as parts; it answers how many agents to start, with which models, and how. Do not call it for sequential work, where a step needs an earlier one\'s result.',
+        'gearbox: with the orchestrator on, call this BEFORE starting agents whenever the work you are about to do or hand to a lane splits into independent pieces (separate services, repos, pull requests, investigations, reviews by angle) that do not need each other\'s results and do not edit the same files. Pass the pieces as parts; it answers how many agents to start, with which models, and how. Do not call it for sequential work, where a step needs an earlier one\'s result. An agent the main conversation started may call it too, to split its own work among agents of its own: the answer says how many it may start now.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1478,14 +1526,27 @@ export const register: Register = (on, options) => {
     return say(`gearbox: your effort is now ${effort} for the rest of this turn${asked !== effort ? ' (xhigh is the top)' : ''}.`)
   })
 
+  // Whether an agent of `caller`'s that writes code is running or about to start; one that has ended counts no more.
+  const writerBusy = (caller: string, loops: Record<string, GearboxLoop>): boolean => {
+    for (const [key, w] of writers) if (w.agent !== undefined && !live(loops[w.agent])) writers.delete(key)
+    return [...writers.values()].some(w => w.caller === caller)
+  }
+
   // The fan tool: the main conversation names the independent pieces it found, once the work is known, and gearbox
   // splits them as it would a survey's parts, on this turn's reading and the cap now set. Agents of the turn that
-  // have started keep their work: a late call changes nothing.
+  // have started keep their work: a late call changes nothing. An agent it started may name its own (nestedSplit).
   on('tool.call', { tool: 'mcp__gearbox__fan' }, async ($, e) => {
     const say = (text: string) => ({ result: text })
-    if (!enabled || !orchestratorRuns()) return say('gearbox: the orchestrator is off, so gearbox splits nothing here; start agents as you see fit.')
-    if (e.agentId) return say('gearbox: only the main conversation splits work; carry on with your own brief.')
+    if (!enabled || !orchestratorRuns()) return say(e.agentId ? `gearbox: ${SPLIT.off}` : 'gearbox: the orchestrator is off, so gearbox splits nothing here; start agents as you see fit.')
     if (subagent) return say("gearbox: this session is another session's sub-agent (its first prompt says so), so gearbox splits nothing here: do the work you were given yourself.")
+    if (e.agentId) {
+      let promised = 0
+      for (const [id, f] of nestFans) if (id !== e.agentId) promised += f.parts.length - f.handed.size
+      const a = await nestedSplit($, { agent: e.agentId, input: (e as any).input?.parts ?? (e as any).parts, agents: orchAgents, standing, code: pinnedModel(codeModel), owed: fanOwed(), promised, chooses: chooses(), noWorktree, writerBusy: loops => writerBusy(e.agentId!, loops) })
+      if (a.log) logEvent(a.log)
+      if (a.fan) nestFans.set(e.agentId, { parts: a.fan.parts, handed: new Set(), isolate: a.fan.isolate })
+      return a.isError ? { result: a.text, isError: true as const } : say(a.text)
+    }
     const parts = readParts((e as any).input?.parts ?? (e as any).parts)
     if (!parts.length) return { result: 'gearbox: no usable parts: each needs what, a mode (code, answer, review, wait or lookup) and a depth from 0 to 3.', isError: true as const }
     if (handedOff.size) return say("gearbox: this turn's agents have already started, and a split now would reshuffle running work. Let them finish; split the next piece of work when it comes.")
@@ -1553,6 +1614,9 @@ export const register: Register = (on, options) => {
         const id = started.agentId
         await update($, REPORTS, all => Object.fromEntries([...Object.entries(all).filter(([k]) => k !== id), [id, { texts: all[id]?.texts ?? [], useId: e.tool_use_id }]].slice(-KEEP_REPORTS)))
       }
+      // The agent that writes code for another agent is known by its id from here on: it holds the place until it ends.
+      const writer = e.tool_use_id && e.parentAgentId ? writers.get(e.tool_use_id) : undefined
+      if (writer) writer.agent = started.agentId
       // Its first steps may land before this, so keep what they recorded.
       const meta = e.tool_use_id ? spawnMeta.get(e.tool_use_id) : undefined
       if (e.tool_use_id) spawnMeta.delete(e.tool_use_id)
@@ -1634,30 +1698,103 @@ export const register: Register = (on, options) => {
     // The main conversation starting or messaging any agent takes up the turn's advice (see `advised`).
     if (!e.agentId && advised && (e.tool === 'Agent' || e.tool === 'SendMessage')) advised.handed = true
     await patch($, e.agentId ?? 'main', l => l && called(l, String(e.tool), e as unknown as Record<string, unknown>, e.agentId !== undefined))
+    // What an agent of an agent changes is listed on the agent that started it as well: that one reports the files, and
+    // the main conversation reviews them from its list (see NESTING).
+    const changed = e.agentId && CHANGES.has(String(e.tool)) && typeof (e as any).file_path === 'string' ? String((e as any).file_path) : undefined
+    if (e.agentId && changed) {
+      const all = await read($, LOOPS)
+      const parent = all[e.agentId]?.parent
+      const kind = all[e.agentId]?.files?.find(f => f.path === changed)?.kind
+      if (parent && parent !== 'main' && (kind === 'edited' || kind === 'new')) await patch($, parent, l => l && withChange(l, changed, kind))
+    }
     if (e.tool === 'Agent' && e.isolation === 'worktree') expectMeta(e.tool_use_id, { isolated: true })
     // Subagents do the hand-off work; never stand in their way. A reviewing skill one calls is still remembered.
     if (e.agentId && e.tool === 'Agent') {
-      // An agent the main conversation started may start agents that read for it, on Sonnet at low effort (Haiku
-      // when it asks, for a lookup); not ones that change code, and none deeper. Any other loop (a skill's fork, a
-      // workflow's agent) runs its own agents as it always did.
-      const started = await read($, REPORTS)
-      const parent = (await read($, LOOPS))[e.agentId]?.parent
-      const reader = parent !== undefined && started[parent] !== undefined
-      if (!started[e.agentId] && !reader) return next(e)
-      const why = reader
-        ? 'an agent started by another agent cannot start agents of its own. Do this reading yourself.'
-        : READERS.test(String(e.subagent_type ?? ''))
-          ? undefined
-          : 'an agent may start only agents that read (subagent_type "Explore"); make code changes yourself.'
-      logEvent({ ev: 'nested', agent: e.agentId, type: e.subagent_type ?? 'general-purpose', ...(why ? { refused: true } : { set: `${e.model === 'haiku' ? 'haiku' : 'sonnet'}·low` }) })
-      if (why) {
+      // An agent the main conversation started may start agents of its own, one level deep (see nesting.ts): readers
+      // (Sonnet at low effort, Haiku when it asks); the parts of a fan-out it declared with the fan tool; and any other
+      // by what its brief reads as, work that is not code or one plain agent at a time that writes code. An agent started
+      // by one of these starts none. Any other loop (a skill's fork, a workflow's agent) runs its own agents as it always did.
+      const depth = await nestDepth($, e.agentId)
+      if (!depth) return next(e)
+      const [caller, type] = [e.agentId, String(e.subagent_type ?? '')]
+      const plainCall = !type || type === 'general-purpose'
+      const key = e.tool_use_id ?? `\u0000${unnamed++}`
+      const fan = nestFans.get(caller)
+      let refusal: Refusal | undefined
+      let via: 'reader' | 'part' | 'brief' = 'brief'
+      let gear: Gear = { model: 'sonnet', effort: 'low' }
+      let slot = -1
+      let reviews = false
+      let writes = false
+      let mode: string | undefined
+      if (depth === 'deeper') refusal = 'depth'
+      else if (READERS.test(type)) {
+        via = 'reader'
+        gear = readerGear(e.model)
+      } else if (plainCall && fan && (slot = fanSlot(fan.parts, fan.handed, String(e.description ?? ''))) >= 0) {
+        // The part is taken at once, so Agent calls made in one message each take a part of their own.
+        via = 'part'
+        const pt = fan.parts[slot]!
+        fan.handed.add(slot)
+        gear = pt.gear
+        reviews = !!pt.review
+        writes = pt.edits
+        if (writes) writers.set(key, { caller })
+      } else {
+        let job: Job | undefined
+        try {
+          job = await jobGear($, String(e.prompt ?? e.description ?? ''), standing, pinnedModel(codeModel), true)
+        } catch {}
+        const running = await read($, LOOPS)
+        const v = briefVerdict(job && { mode: job.mode, gear: job.gear, pinned: job.model !== undefined }, { plain: plainCall, standing })
+        mode = job?.mode
+        if ('refusal' in v) refusal = v.refusal
+        else {
+          ;({ gear, writes, reviews } = v)
+          // Checked and claimed in one step, so two calls in one message cannot both be the writer.
+          if (writes && writerBusy(caller, running)) refusal = 'writer'
+          else if (writes) writers.set(key, { caller })
+        }
+      }
+      if (refusal) {
+        logEvent({ ev: 'nested', agent: caller, type: type || 'general-purpose', refused: true, why: refusal, ...(mode ? { mode } : {}) })
+        const why = REFUSED[refusal]
         // No agent starts, so it gets a row of its own, ended: the person sees what was refused.
-        const [label, asked, parent] = [String(e.description ?? 'agent'), String(e.subagent_type ?? 'agent'), e.agentId]
-        await patch($, `refused:${e.tool_use_id ?? Date.now()}`, () => ended({ label, parent, asked, state: 'done', steps: 0 }, Date.now(), { failed: 'refused', result: why }))
+        const [label, asked] = [String(e.description ?? 'agent'), String(e.subagent_type ?? 'agent')]
+        await patch($, `refused:${e.tool_use_id ?? Date.now()}`, () => ended({ label, parent: caller, asked, state: 'done', steps: 0 }, Date.now(), { failed: 'refused', result: why }))
         return { deny: `gearbox: ${why}` }
       }
-      expectMeta(e.tool_use_id, { effortBy: 'rules' })
-      return next({ ...e, model: e.model === 'haiku' ? 'haiku' : 'sonnet', effort: 'low' })
+      // With the coding effort on `auto` the call's model and effort win here as for any plain agent, within bounds.
+      const d = via !== 'reader' && chooses() ? await decide($, e, gear, { review: reviews, asked: undefined, code: codeModel }) : undefined
+      if (d) gear = d.gear
+      const apart = via === 'part' && writes && apartEdits(fan?.parts ?? [])
+      const isolated = apart && !!fan?.isolate && !noWorktree
+      logEvent({ ev: 'nested', agent: caller, type: type || 'general-purpose', via, set: label(gear), ...(slot >= 0 ? { part: slot + 1, ...(apart ? { isolation: isolated ? 'worktree' : 'own' } : {}) } : {}), ...(mode ? { mode } : {}), ...(d ? d.log : {}) })
+      expectMeta(e.tool_use_id, { effortBy: d?.effortBy ?? 'rules', ...(isolated ? { isolated: true } : {}) })
+      const call = {
+        ...e,
+        model: gear.model,
+        effort: gear.effort,
+        ...(via === 'part' ? { run_in_background: false, ...(isolated ? { isolation: 'worktree' as const } : {}) } : {}),
+        ...(writes ? { prompt: `${e.prompt ?? ''}${NESTED_WRITER}` } : {}),
+      }
+      // A worktree that was seen to fail is not asked for again, by gearbox or by the call itself.
+      if (noWorktree && call.isolation === 'worktree') delete (call as { isolation?: unknown }).isolation
+      const sent = await next(call)
+      if (!unstarted(sent, e.tool_use_id)) return sent
+      // Failed before its agent started: the part stays open and the writer's place is free, for a retry.
+      if (e.tool_use_id) spawnMeta.delete(e.tool_use_id)
+      if (via === 'part') fan?.handed.delete(slot)
+      writers.delete(key)
+      const why = String(sent.deny ?? sent.text ?? (typeof sent.result === 'string' ? sent.result : ''))
+      logEvent({ ev: 'failed', tool: 'Agent', agent: caller, ...(slot >= 0 ? { part: slot + 1 } : {}), why: why.slice(0, 200) })
+      if (call.isolation === 'worktree' && /worktree/i.test(why)) {
+        noWorktree = true
+        turnIsolate = false
+        for (const f of nestFans.values()) f.isolate = false
+        return { deny: `${why}\n${WORKTREE_FAILED}` }
+      }
+      return sent
     }
     if (e.agentId) return e.tool === 'Skill' ? callSkill(e, () => next(e)) : next(e)
     // A plain Agent call during a hand-off runs on that step's model and effort, whatever the call named; any

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NEUTRAL, ORCHESTRATOR, ORCHESTRATOR_EFFORTS, fanOut, fanParts, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
+import { NEUTRAL, ORCHESTRATOR, ORCHESTRATOR_EFFORTS, fanOut, fanParts, fanSlot, keepsRoute, laneResumable, laneStart, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, seatParts, whyNoFan } from './orchestrator'
 import { RESUME_MS, RESUME_TOKENS, type FanPart, type Gear, type Part, type Phase, type Reading, gearFor, handoffNote, label, plan, route, routeNote } from './policy'
 
 const reading = (r: Partial<Reading> = {}): Reading => ({ reach: 'area', care: 'routine', depth: 1, mode: 'code', aside: false, ahead: false, cont: false, ask: {}, sure: true, phases: [], parts: [], ...r })
@@ -462,4 +462,22 @@ test('with the coding effort auto, the orchestrator advises no hand-off for an a
   // A part that reviews says so, merged or not: it never runs below Opus.
   const parts = [part('fix the handler', 'code', 1, ['src/a']), part('review the diff', 'review', 1, ['src/b'])]
   expect(fanParts(reading({ mode: 'code', parts }), 3, 'medium').map(p => p.review ?? false)).toEqual([false, true])
+})
+
+test('fanSlot: the part a call names by number, else the first not started that no lane takes, else any not started; none when all have', () => {
+  const parts: FanPart[] = [
+    { what: 'a', gear: MAIN, edits: false, resume: 'lane-1' },
+    { what: 'b', gear: MAIN, edits: true },
+    { what: 'c', gear: MAIN, edits: true },
+  ]
+  expect(fanSlot(parts, new Set(), 'part 3: c')).toBe(2)
+  expect(fanSlot(parts, new Set(), 'Part 1: a')).toBe(0)
+  expect(fanSlot(parts, new Set(), 'whatever')).toBe(1) // the first that no lane takes
+  expect(fanSlot(parts, new Set([1]), 'whatever')).toBe(2)
+  expect(fanSlot(parts, new Set([1, 2]), 'whatever')).toBe(0) // only the lane’s part is left
+  expect(fanSlot(parts, new Set([2]), 'part 3: c')).toBe(1) // a number already started: the first open
+  expect(fanSlot(parts, new Set(), 'part 9: x')).toBe(1) // past the parts
+  expect(fanSlot(parts, new Set(), undefined)).toBe(1)
+  expect(fanSlot(parts, new Set([0, 1, 2]), 'part 1: a')).toBe(-1)
+  expect(fanSlot([], new Set(), 'part 1')).toBe(-1)
 })

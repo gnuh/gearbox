@@ -361,9 +361,22 @@ export const DIFF_REVIEW = 'Review the change itself, not only the report: read 
 // With the coding effort on `auto`: the main conversation picks each code agent's effort from what it has read.
 export const CHOOSE = 'The effort is yours to choose from what you have read of the work: medium for a routine change, high for one with edge cases or several files to keep consistent, xhigh for subtle or cross-cutting logic. Pass it as effort on the Agent call; for a follow-up by SendMessage, make the message\'s first line "effort: <level>" (gearbox takes it off). With none, gearbox picks.'
 
-// What an agent the main conversation starts may start itself: agents that read for it, one level deep. Reading in
-// another agent keeps its own context small; code stays with it, where a second hand-off would cost more than it saves.
-export const NESTING = '\n\n---\nAdded by gearbox: you may start Explore agents to do reading for you (gearbox runs them on Sonnet at low effort; pass model "haiku" for a lookup of one fact: where a file or symbol is, a log line). Make code changes yourself: an agent you start may only read, and cannot start agents of its own.'
+// What an agent the main conversation starts may start itself, one level deep: agents that read, agents for work that
+// is not code (gearbox reads the brief and sets the gear), one at a time that writes code, and the independent pieces
+// of its own work side by side, named first with the fan tool. The main conversation reviews whatever they write, so the
+// agent that started them lists the files and checks the diff before it reports. What its agents start themselves is
+// nothing: a second level costs more than it saves.
+export const NESTING =
+  '\n\n---\nAdded by gearbox: you may start agents of your own, one level deep. Explore agents do reading for you (gearbox runs them on Sonnet at low effort; pass model "haiku" for a lookup of one fact: where a file or symbol is, a log line). A plain Agent (no subagent_type) may do work that is not code: a lookup, an answer or a review, one long command (a build, a full test run: Haiku runs it), or writing output that is not code (a report, generated data); gearbox reads its brief and sets its model and effort. It may write code too, one such agent at a time, in your working tree, on the coding model gearbox picks. Pieces of work that need no other piece\'s result and edit no file another edits, code included, run side by side: call mcp__gearbox__fan with the pieces first (it works while gearbox\'s orchestrator is on, and counts the agents already running against orchestrator-agents), then start one plain Agent per piece in ONE message, each described "part N: ..."; two or more that edit each work in a worktree of their own. The main conversation reviews whatever an agent of yours writes: read its diff (git diff) yourself before you report, and list in your report every file it changed, path by path, so the main conversation can run git diff on them. The agents you start cannot start agents of their own.'
+
+// Said to the survey, after SURVEY, when what it reads is the brief of an agent another agent starts: what it writes
+// that no program runs is not code, so a report or a generated file is no code writer's work.
+export const NESTED_READ =
+  'This request is the brief an agent gives another agent, not a message from a person. Generated output (a data file, JSON, a report, a document, notes, an artifact) is not code: an agent that only writes such output has the mode answer. Code is what the project builds or runs (source, configuration, tests).'
+
+// Added to the brief of an agent that writes code for another agent, which the main conversation then reviews.
+export const NESTED_WRITER =
+  '\n\n---\nAdded by gearbox: what you change is reviewed by the main conversation through the agent that started you. In your report list every file you changed, path by path, how you checked it, and anything left open.'
 
 // The language the person writes in, read from their last three typed messages (the latest counts triple) by counting
 // letters and common words each language has: a word two languages share counts for both. Code, links and paths are
@@ -823,18 +836,19 @@ const NO_ISOLATION = `Do not pass isolation "worktree": Claude Code makes it onl
 export const WORKTREE_FAILED = `gearbox: Claude Code could not make this worktree, so gearbox no longer asks for one this session. Start the part again with the same brief and no isolation, adding to the brief: "${OWN_WORKTREE}".`
 
 // The fan tool's answer: each part's agent, and how to start them all at once. `chooses`: the coding effort is `auto`,
-// so each part's model and effort are the main conversation's, and gearbox's are its suggestion.
-export const fanReply = (parts: readonly FanPart[], chooses = false, isolate = true): string => {
+// so each part's model and effort are the main conversation's, and gearbox's are its suggestion. `nested`: the answer is an agent's, whose
+// parts hold nothing back, take no lane, and start no agents of their own.
+export const fanReply = (parts: readonly FanPart[], chooses = false, isolate = true, nested = false): string => {
   const apart = apartEdits(parts)
   const lanes = parts.some(p => p.resume)
   const edits = parts.some(p => p.edits)
   const where = (p: FanPart) => (p.resume ? `SendMessage to "${p.resume}", the ${p.gear.model} lane that holds earlier work` : `model "${p.gear.model}"`)
   const gear = (p: FanPart) => (chooses ? `gearbox suggests ${where(p)} at ${p.gear.effort}${p.review ? ' (a review: Opus at least)' : ''}` : `${where(p)}, gearbox runs it at ${p.gear.effort}`)
   return [
-    `gearbox fan-out: ${parts.length} independent parts, one agent each, running at the same time.`,
+    `gearbox fan-out: ${parts.length} independent parts, one agent each, running at the same time.${nested ? ' They are your agents, one level deep: they cannot start agents of their own.' : ''}`,
     ...parts.map((p, i) => `part ${i + 1}: ${p.what}: ${gear(p)}; ${p.edits ? `edits files${apart ? (isolate ? ', isolation "worktree"' : ', in a worktree of its own') : ', in the working tree'}` : 'only reads'}.`),
     `Start all ${parts.length} in ONE message, now: ${PLAIN} per part with run_in_background false, the description "part N: ..." with its number, ${chooses ? 'the model you choose for it' : 'the model above'}${apart && isolate ? ' and isolation "worktree"' : ''}, and ${BRIEF}, for that part alone: say which files are its own and which the other parts are changing, and what to hand back.${lanes ? ' A part a lane takes goes to it by SendMessage, in that same message.' : ''}${apart && !isolate ? ` ${NO_ISOLATION}` : ''} Do not start one and wait for it before the next.${chooses ? ` ${NAMES}` : ''}`,
-    `${chooses ? 'Wait' : `Until all ${parts.length} have started, edits, commands and more reads are refused here. Then wait`} for every result, review and reconcile them${edits ? ', the diff of each part that edits included' : ''}${apart ? `, merge the worktree branches into ${isolate ? 'the working tree' : 'the repository each was made in'} (git merge or cherry-pick)` : ''}, and run the combined check (tests, build) here, or through a Haiku agent when it is a long command.`,
+    `${chooses || nested ? 'Wait' : `Until all ${parts.length} have started, edits, commands and more reads are refused here. Then wait`} for every result, review and reconcile them${edits ? ', the diff of each part that edits included' : ''}${apart ? `, merge the worktree branches into ${isolate ? 'the working tree' : 'the repository each was made in'} (git merge or cherry-pick)` : ''}, and run the combined check (tests, build) here, or through a Haiku agent when it is a long command.`,
   ].join('\n')
 }
 

@@ -80,6 +80,15 @@ export const seatParts = (parts: readonly FanPart[], lanes: Lanes, now: number, 
   })
 }
 
+// The part of a fan-out an Agent call is for: the one its description numbers ("part 2: ..."), else the first not
+// started that no lane takes, else any not started; -1 when every part has started. `handed`: the parts started.
+export const fanSlot = (parts: readonly FanPart[], handed: ReadonlySet<number>, description?: string): number => {
+  const open = (k: number) => k >= 0 && k < parts.length && !handed.has(k)
+  const named = Number(/^\s*part\s+(\d)\b/i.exec(description ?? '')?.[1] ?? 0) - 1
+  const first = parts.findIndex((p, k) => open(k) && !p.resume)
+  return open(named) ? named : first >= 0 ? first : parts.findIndex((_, k) => open(k))
+}
+
 // Fan-out: how many agents a request's parts go to, decided here from the survey's parts and never more of them.
 // Paths are compared as `norm` gives them; `folder` is the folder a path's work sits in.
 // One path is the other or inside it: "src/api" holds "src/api/orders.ts".
