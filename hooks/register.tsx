@@ -88,8 +88,8 @@ import {
   writesNoCode,
 } from './policy'
 import { runHooks } from './classic'
-import { NARROW, type Queued, type StopControl, type Summary, desktopBand, panelBody, terminalBand } from './agents'
-import { NOTE_EVERY_MS, demandOf, ended, family, gearText, grown, hasAgents, isQueued, kilo, labelOf, latestDemand, live, noteOf, revived, toolName, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, worktreeAdd } from './loops'
+import { NARROW, PULSE_MS, type Queued, type StopControl, type Summary, desktopBand, panelBody, terminalBand } from './agents'
+import { NOTE_EVERY_MS, demandOf, ended, family, gearText, grown, hasAgents, isQueued, kilo, labelOf, latestDemand, live, noteOf, revived, toolName, withChange, withFile, withNote, withSkill, withTool, withUsage, withWorktree, working, worktreeAdd } from './loops'
 import { STOP_ANSWER, STOP_DENIED, STOP_GRACE_MS, agentName, findAgents, stopPlan, stoppableIds } from './stopping'
 import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lanes, fanOut, fanParts, fanSlot, keepsRoute, laneResumable, laneStart, lanesFrom, orchestratorFrom, orchestratorOn, orchestratorPatch, orchestratorPlan, orchestratorRoute, type OrchestratorSettings, seatParts, whyNoFan } from './orchestrator'
 import { READERS, REFUSED, SPLIT, type Refusal, briefVerdict, nestedCap, readerGear, settle, whyNoNestedFan } from './nesting'
@@ -540,6 +540,36 @@ const watchAgents = ($: EngineInterface, w: AgentWatch, changed: () => Promise<v
   w.timer ??= $.clock.every(WAIT_POLL_MS, () => void syncAgents($, w, changed).catch(() => undefined))
 }
 
+// The band and the Panel are drawn from the loops and from the time: the ● of a loop at work takes its shade from the
+// clock, and so do the run times. Only a change of a loop redraws them, and nothing says the time has moved, so while a
+// loop is in a turn they are drawn again on a tick: every PULSE_MS (a step of the pulse) with the pulse on, every
+// second without it (the run time shows whole seconds). With no loop at work there is no timer. The readouts keep it
+// (`keepTick`, in their render hooks) and the timer checks the loops itself, so it ends within a tick of the last one.
+type Tick = { timer?: { cancel: () => void }; ms?: number }
+const CLOCK_MS = 1000
+const stopTick = (t: Tick) => {
+  t.timer?.cancel()
+  t.timer = undefined
+  t.ms = undefined
+}
+const keepTick = ($: EngineInterface, t: Tick, loops: Record<string, GearboxLoop>, pulse: boolean) => {
+  if (!working(loops)) return stopTick(t)
+  const ms = pulse ? PULSE_MS : CLOCK_MS
+  if (t.timer && t.ms === ms) return
+  t.timer?.cancel()
+  t.ms = ms
+  const mine: { cancel: () => void } = $.clock.every(ms, () => {
+    void read($, LOOPS).then(
+      latest => {
+        if (working(latest)) $.ui.invalidate('ui.render')
+        else if (t.timer === mine) stopTick(t)
+      },
+      () => undefined,
+    )
+  })
+  t.timer = mine
+}
+
 // The debug log turning on at once (a press in the settings, or /gearbox log on|full): it opens with the session's facts
 // and the settings in force and writes what is pending, as a log on from the start does.
 const startedLog = async ($: EngineInterface, o: { options: PluginOptions; settings: Settings; logEvent: (rec: Record<string, unknown>) => void; log: LogState }) => {
@@ -751,7 +781,12 @@ const CHANGES = new Set(['Edit', 'MultiEdit', 'Write'])
 const SEARCHERS = /^(Explore|Plan|claude-code-guide|statusline-setup)$/
 
 export type LogMode = 'off' | 'on' | 'full'
-export type Settings = { code_model: CodeModel; code_effort: CodeEffort; navigator: 'haiku' | 'sonnet'; log: LogMode } & OrchestratorSettings
+// `pulse`: whether the ● of an agent at work fades in and out in the readouts (on by default).
+export type Pulse = 'on' | 'off'
+export type Settings = { code_model: CodeModel; code_effort: CodeEffort; navigator: 'haiku' | 'sonnet'; log: LogMode; pulse: Pulse } & OrchestratorSettings
+// The plugin option is a boolean (true: on); what /gearbox stores is on or off. What it stored wins; a value that is neither
+// leaves the option, and then the default, on.
+const pulseMode = (v: unknown): Pulse | undefined => (v === true || v === 'on' ? 'on' : v === false || v === 'off' ? 'off' : undefined)
 
 // Settings gearbox once had and now always applies as they were when on: steering a session not on Haiku, handing
 // work up to a stronger model, the band above the prompt, a models panel that lists every loop, strict hand-offs and
@@ -775,6 +810,7 @@ export const settingsFrom = (options: PluginOptions, stored: unknown): Settings 
     code_effort: o.code_effort === 'main' ? 'auto' : CODE_EFFORTS.includes(o.code_effort as CodeEffort) ? (o.code_effort as CodeEffort) : 'xhigh',
     navigator: o.navigator === 'haiku' ? 'haiku' : 'sonnet',
     log: o.log === 'on' || o.log === 'full' ? o.log : 'off',
+    pulse: pulseMode(kept.pulse) ?? pulseMode(options.pulse) ?? 'on',
     ...orchestratorFrom(options, kept),
   }
 }
@@ -785,10 +821,11 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   if (word === 'effort' && CODE_EFFORTS.includes(value as CodeEffort)) return { code_effort: value as CodeEffort }
   if (word === 'navigator' && (value === 'haiku' || value === 'sonnet')) return { navigator: value }
   if (word === 'log' && (value === 'on' || value === 'off' || value === 'full')) return { log: value }
+  if (word === 'pulse' && (value === 'on' || value === 'off')) return { pulse: value }
   return orchestratorPatch(word, value)
 }
 
-const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or auto (the main conversation decides each agent’s model and effort)', navigator: 'sonnet or haiku', log: 'on, off or full', orchestrator: 'auto, on or off (auto: on, except in a session on Haiku, which shifts models)', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'auto, low, medium, high or xhigh (auto: the effort follows the prompt)', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
+const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or auto (the main conversation decides each agent’s model and effort)', navigator: 'sonnet or haiku', log: 'on, off or full', pulse: 'on or off (the dot of an agent at work fades in and out)', orchestrator: 'auto, on or off (auto: on, except in a session on Haiku, which shifts models)', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'auto, low, medium, high or xhigh (auto: the effort follows the prompt)', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
 // What `/gearbox <word>` of a removed setting answers.
 const REMOVED_WORDS: Record<string, string> = {
   steer: 'steer is no longer a setting: gearbox always steers a session not on Haiku. To leave sessions alone, turn gearbox off (/gearbox off) or disable the plugin.',
@@ -830,6 +867,7 @@ export const settingsSections = (s: Settings): { id: string; title: string; rows
         : []),
     ],
   },
+  { id: 'readout', title: 'Readout', rows: [['Pulse', 'pulse', ['on', 'off'], s.pulse]] },
   { id: 'debug', title: 'Debug', rows: [['Log', 'log', ['off', 'on', 'full'], s.log]] },
 ]
 
@@ -841,7 +879,7 @@ const orchestratorText = (s: Settings, haiku: boolean) => {
   return haiku ? `auto, off in this Haiku session, which shifts models; /gearbox orchestrator on uses it here (${runs})` : `auto, on (${runs}); a Haiku session shifts models instead`
 }
 const settingsText = (s: Settings, haiku: boolean) =>
-  `coding model ${s.code_model} · coding effort ${s.code_effort} · navigator ${s.navigator} · orchestrator ${orchestratorText(s, haiku)} · log ${s.log}`
+  `coding model ${s.code_model} · coding effort ${s.code_effort} · navigator ${s.navigator} · orchestrator ${orchestratorText(s, haiku)} · log ${s.log} · pulse ${s.pulse}`
 
 const loadSettings = async ($: EngineInterface, options: PluginOptions) => settingsFrom(options, await $.store.get('settings'))
 
@@ -880,7 +918,7 @@ const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
 
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): the model and effort for code, and the rest of /gearbox settings.
-  let { code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
+  let { code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, pulse, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
   // The rules' coding effort; with `auto` (`chooses`), their floor, and the main conversation decides delegation once
   // it has read the work: whether to hand off, to which model, at which effort. gearbox then sets only the main
   // conversation's effort for the turn's first request, advises the rest and holds each agent to safe bounds (decide).
@@ -889,7 +927,7 @@ export const register: Register = (on, options) => {
   // The effort up to which a gear is not put to the person: their coding effort, and for code with `auto`, any, since
   // they left code's effort to the main conversation.
   const askFloor = (writes: boolean): ModelEffort => (chooses() && writes ? 'xhigh' : standing)
-  const current = (): Settings => ({ code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
+  const current = (): Settings => ({ code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, pulse, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
   // What the main conversation runs on while the orchestrator hands off: its model, at its effort, or with `auto` at
   // BRIEFING, since briefing and reviewing the agent is the work (orchestratorPlan sets the rest per turn).
   const orchMain = (): Gear => ({ model: orchModel, effort: orchEffort === 'auto' ? BRIEFING : orchEffort })
@@ -904,6 +942,7 @@ export const register: Register = (on, options) => {
     standing = standingOf(codeEffort)
     navigator = s.navigator
     logMode = s.log
+    pulse = s.pulse
     orchestrator = s.orchestrator
     orchModel = s.orchestrator_model
     orchEffort = s.orchestrator_effort
@@ -1093,6 +1132,8 @@ export const register: Register = (on, options) => {
     ownEffort ? `${ownEffort} sets its own effort` : routeLabel()
   const routeLabel = () => (turnRoute && turnStep ? `step ${turnStep}/${turnRoute.length} ${turnRoute[turnStep - 1]!.what}` : undefined)
   const agentWatch: AgentWatch = {}
+  // The readouts' redraw tick, while a loop is at work (see keepTick).
+  const tick: Tick = {}
   const forget = () => {
     floor = previous = turnGear = turnHandoff = turnRoute = turnStep = ownEffort = undefined
     mainSet = false
@@ -1208,7 +1249,7 @@ export const register: Register = (on, options) => {
       },
       isDeferred: false,
     })
-    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | log on|off|full | orchestrator auto|on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | stop <agent>|all | on | off | ask on|off | usage]' })
+    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | log on|off|full | pulse on|off | orchestrator auto|on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | stop <agent>|all | on | off | ask on|off | usage]' })
     enabled = (await $.store.get('enabled')) !== false
     // What an older version stored for a removed setting is dropped once, so nothing reads or logs it again.
     const { kept: stored, stale } = await storedSettings($)
@@ -1275,7 +1316,7 @@ export const register: Register = (on, options) => {
       await saveSetting($, change)
       apply(await loadSettings($, options))
       if (!wasLogging && logMode !== 'off') await startedLog($, { options, settings: current(), logEvent, log })
-      return { text: `${settingsText(current(), haikuSession)} (${word === 'log' ? 'applies now' : 'from your next prompt'})` }
+      return { text: `${settingsText(current(), haikuSession)} (${word === 'log' || word === 'pulse' ? 'applies now' : 'from your next prompt'})` }
     }
     if (Object.hasOwn(REMOVED_WORDS, word)) return { text: REMOVED_WORDS[word]! }
     if (word === 'pane' || word === 'panel') {
@@ -1325,7 +1366,7 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'usage cleared' }
     } else if (arg) {
-      return { text: `unknown "${arg}". Try settings, panel, stop, model, effort, navigator, log, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `unknown "${arg}". Try settings, panel, stop, model, effort, navigator, log, pulse, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
@@ -2588,12 +2629,14 @@ export const register: Register = (on, options) => {
     const turn = await read($, TURN)
     const usd = await sessionCost($)
     const subs = nested(loops)
+    // The dot pulses (and the run times move) on a tick, kept while a loop is in a turn (see keepTick).
+    const pulsing = settingsFrom(options, await read($, SETTINGS)).pulse === 'on'
+    keepTick($, tick, loops, pulsing)
     // The request in force: the parts of a fan-out not yet started belong to it.
     const inForce = dm.now ?? latestDemand(loops)
     const thisTurn = usd !== undefined && turn.costAtStart !== undefined ? usd - turn.costAtStart : undefined
     const turnCosts = thisTurn !== undefined ? [...turn.costs, thisTurn] : turn.costs
     const avg = turnCosts.length ? turnCosts.reduce((a, b) => a + b, 0) / turnCosts.length : undefined
-    // shortcut: the run time is as of the band's last redraw (any loop's request or tool call); add a clock tick if a long silent tool makes it look stuck.
     const summary: Summary = {
       loops,
       // Parts the main conversation owes only while something is under way.
@@ -2601,6 +2644,7 @@ export const register: Register = (on, options) => {
       ...(turn.at !== undefined ? { since: turn.at } : {}),
       ...(inForce ? { demand: inForce } : {}),
       now: Date.now(),
+      pulse: pulsing,
       subs,
       requests: Object.entries(turn.requests),
       ...(usd !== undefined ? { usd } : {}),
@@ -2707,7 +2751,7 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
         ))}
-        <Text dimColor>The marked value is in use. Log applies now; the rest from your next prompt. Esc closes.</Text>
+        <Text dimColor>The marked value is in use. Log and Pulse apply now; the rest from your next prompt. Esc closes.</Text>
         {s.orchestrator === 'auto' && (
           <Text dimColor>{haiku ? 'Orchestrator auto: off in this Haiku session, which shifts models. Press on to use it here.' : 'Orchestrator auto: on here. A session on Haiku shifts models instead; press on to orchestrate those too.'}</Text>
         )}
@@ -2723,6 +2767,8 @@ export const register: Register = (on, options) => {
     if (!Object.keys(loops).length) return <Text dimColor>No model calls yet. Rows appear as the session works.</Text>
     const subs = alive(loops)
     const inForce = dm.now ?? latestDemand(loops)
-    return panelBody({ Box, Text }, loops, loops.main?.state === 'working' || subs.length ? queuedParts() : [], { now: Date.now(), cwd: await $.session.cwd().catch(() => undefined), handoff: turnHandoff !== undefined, mono: e.surface !== 'terminal', columns: e.props.bodyColumns, ...(inForce ? { demand: inForce } : {}), stop: stopControl($, Button, stopDeps(() => showStatus($, turnHandoff, stepLabel()))) })
+    const pulsing = settingsFrom(options, await read($, SETTINGS)).pulse === 'on'
+    keepTick($, tick, loops, pulsing)
+    return panelBody({ Box, Text }, loops, loops.main?.state === 'working' || subs.length ? queuedParts() : [], { now: Date.now(), pulse: pulsing, cwd: await $.session.cwd().catch(() => undefined), handoff: turnHandoff !== undefined, mono: e.surface !== 'terminal', columns: e.props.bodyColumns, ...(inForce ? { demand: inForce } : {}), stop: stopControl($, Button, stopDeps(() => showStatus($, turnHandoff, stepLabel()))) })
   })
 }

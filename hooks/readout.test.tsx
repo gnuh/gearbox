@@ -1,5 +1,7 @@
 import type { AgentStatus } from 'claude-code'
 import { expect, mock, test as fresh } from 'claude-code/testing'
+import type { GearboxLoop } from '../types'
+import { PULSE, PULSE_MS, type Summary, desktopBand, panelBody, pulseAt, terminalBand } from './agents'
 
 // A new install has the orchestrator on, on Opus, with up to 6 agents, and code fixed to Sonnet. These tests are written
 // for a plain session whose rules pick code's model, and for a Sonnet orchestrator with up to 3 agents when they turn
@@ -1879,7 +1881,9 @@ test('a request whose agents all ended keeps its box, “done”, until the next
   const after = await lines(next, 120)
   expect(after.some(l => /✓/.test(l))).toBe(false)
   expect(after.filter(l => /◌ part \d/.test(l))).toHaveLength(3)
-  expect(after.some(l => /done · since \d\d:\d\d/.test(l))).toBe(true) // none of the request's agents at work now
+  // None of the request's agents is at work, but its parts are queued, so it is not done: a request is done only when no part waits to start either.
+  expect(after.some(l => /done · since/.test(l))).toBe(false)
+  expect(inside(after).some(l => head(CREW_TITLE, '3 queued · since \\d\\d:\\d\\d').test(l))).toBe(true)
   await next.unmount()
 })
 
@@ -1935,4 +1939,369 @@ test('the panel draws each request as a box too, below main, with the blocks of 
   expect(small.some(l => /[╭╮╰╯]/.test(l))).toBe(false)
   expect(small.some(l => /^Orders by customer/.test(l))).toBe(true)
   await narrow.unmount()
+})
+
+// ---- the pulse and the finished request ----
+// These draw with agents.tsx itself, at a `now` the test sets: the hooks' own clock cannot be set.
+
+const GREEN = '#4FBF6A'
+const GREY = '#7C8592'
+
+test('the pulse: the working dot steps through 8 steps of green in 2 seconds, taken from the clock, and comes back to the full green', () => {
+  expect(PULSE).toHaveLength(8)
+  expect(PULSE[0]).toBe(GREEN) // the colour of ✓ and of a dot that does not pulse
+  expect(new Set(PULSE).size).toBe(5) // eight steps of a wave: five tones, down and back up
+  const green = PULSE.map(c => parseInt(c.slice(3, 5), 16))
+  expect(green[4]).toBe(Math.min(...green)) // the dimmest is half a cycle on
+  expect(PULSE.slice(1, 4)).toEqual(PULSE.slice(5).reverse()) // down and back up by the same steps
+  expect(PULSE_MS).toBe(250)
+  // One step per 250 ms, a cycle per 2 s, whatever the date.
+  expect([0, 249].map(pulseAt)).toEqual([PULSE[0], PULSE[0]])
+  expect([250, 499].map(pulseAt)).toEqual([PULSE[1], PULSE[1]])
+  expect(pulseAt(1000)).toBe(PULSE[4])
+  expect(pulseAt(1750)).toBe(PULSE[7])
+  expect(pulseAt(2000)).toBe(PULSE[0])
+  expect(pulseAt(-250)).toBe(PULSE[7])
+  const t = 1_800_000_000_123
+  expect(pulseAt(t + 2000)).toBe(pulseAt(t))
+  expect(Array.from({ length: 8 }, (_, i) => pulseAt(t + i * 250))).toEqual([...PULSE])
+})
+
+const DEMAND = { id: 'd1', title: 'Identify next task after merge', at: Date.UTC(2026, 0, 1, 19, 41) }
+const OTHER = { id: 'd2', title: 'Fix the flaky texture import test', at: Date.UTC(2026, 0, 1, 19, 58) }
+const loopOf = (extra: Partial<GearboxLoop> = {}): GearboxLoop => ({ label: 'agent', asked: 'claude-sonnet-5-5', effort: 'low', state: 'working', steps: 2, since: 1000, ...extra })
+const summaryOf = (loops: Record<string, GearboxLoop>, o: Partial<Summary> = {}): Summary => ({
+  loops,
+  queued: [],
+  now: 0,
+  pulse: true,
+  subs: Object.entries(loops).filter(([id, l]) => id !== 'main' && (l.state === 'working' || l.state === 'waiting')),
+  requests: [],
+  turnCosts: [],
+  compare: false,
+  handoff: false,
+  counted: '',
+  gears: '',
+  ...o,
+})
+const MAIN = loopOf({ label: 'main', asked: 'claude-opus-5-5', effort: 'high' })
+
+// What the band (either surface) and the panel draw for `summary`, by name.
+const DRAWERS: Record<string, (t: any, s: Summary) => unknown> = {
+  terminal: (t, s) => terminalBand(t, s, { columns: 120, actions: <t.Text>actions</t.Text>, stop: { Button: t.Button, press: () => {} } }),
+  desktop: (t, s) => desktopBand(t, s, { columns: 120, actions: <t.Text>actions</t.Text>, stop: { Button: t.Button, press: () => {} } }),
+  narrow: (t, s) => terminalBand(t, s, { columns: 90, actions: <t.Text>actions</t.Text>, stop: { Button: t.Button, press: () => {} } }),
+  panel: (t, s) => panelBody(t, s.loops, s.queued, { now: s.now, pulse: s.pulse, handoff: false, mono: false, columns: 110, ...(s.demand ? { demand: s.demand } : {}), stop: { Button: t.Button, press: () => {} } }),
+}
+// A pane of the test's own, which draws what the test says (registered before the test first calls `$`): `drawing` mounts it
+// for `summary`, drawn by `how` on the surface that draws it (the desktop's, or the terminal's for the rest).
+const probe = (on: any) => {
+  let how = 'terminal'
+  let summary: Summary
+  let n = 0
+  on('ui.render', { component: 'Pane', requestId: 'probe' }, ($: any, e: any) => DRAWERS[how]!($.ui.resolve(e), summary))
+  return ($: any, h: string, s: Summary) => {
+    how = h
+    summary = s
+    return $.ui.mount({ plugin: 'gearbox', component: 'Pane', requestId: 'probe', props: { ...PANE.props, bodyColumns: 100 + n++ }, surface: h === 'desktop' ? 'desktop' : 'terminal' })
+  }
+}
+// What a drawing paints with: its colours, as `prop:value`, in the tree below `el`.
+const walk = (el: any, each: (e: any) => void) => {
+  if (Array.isArray(el)) for (const c of el) walk(c, each)
+  else if (el && typeof el === 'object') {
+    each(el)
+    for (const c of el.children ?? []) walk(c, each)
+  }
+}
+const paints = (el: any): string[] => {
+  const out: string[] = []
+  walk(el, e => {
+    for (const k of ['color', 'backgroundColor', 'borderColor', 'borderDimColor']) if (e.props?.[k]) out.push(`${k}:${e.props[k]}`)
+  })
+  return out
+}
+const countOf = (el: any, type: string) => {
+  let n = 0
+  walk(el, e => { if (e.type === type) n++ })
+  return n
+}
+// The box of a request in a drawing, by the id of its demand.
+const boxOf = async (ui: any, id: string) => (await ui.findAll({ type: 'Box' })).map((b: any) => JSON.parse(JSON.stringify(b))).find((b: any) => (b.props?.key ?? b.key) === `demand-${id}`)
+// The colours of each glyph in a drawing: its exact Text elements, 'dim' for one with no colour.
+const glyphs = async (ui: any) => {
+  const out: Record<string, string[]> = {}
+  for (const g of ['●', '✓', '✗', '◐', '◌', '⚠']) out[g] = (await ui.findAll({ type: 'Text', text: new RegExp(`^${g}$`) })).map((t: any) => t.props?.color ?? 'dim')
+  return out
+}
+
+// main in a turn, an agent at work, one waiting, one answered by another model, one that finished, one that failed, one queued.
+const MIXED = {
+  main: MAIN,
+  work: loopOf({ label: 'part 1: customers', parent: 'main', demand: DEMAND }),
+  wait: loopOf({ label: 'part 2: CI log', parent: 'main', demand: DEMAND, state: 'waiting' }),
+  swap: loopOf({ label: 'part 3: lint', parent: 'main', demand: DEMAND, answered: 'claude-haiku-5-5' }),
+  ok: loopOf({ label: 'Explore · tasks', parent: 'main', demand: DEMAND, state: 'done', endedAt: 5000, result: '12 files' }),
+  bad: loopOf({ label: 'part 4: deploy', parent: 'main', demand: DEMAND, state: 'done', endedAt: 5000, failed: 'failed', result: 'no database' }),
+}
+const MIXED_QUEUED = [{ label: 'part 5 · changelog', model: 'sonnet', effort: 'low' }]
+
+test('the working ● of main and of each agent at work takes its shade from the clock, in both bands and the panel; ✓ ✗ ◐ ◌ ⚠ do not move', async ($: any, on) => {
+  const drawing = probe(on)
+  // The terminal band keeps to its rows, the desktop's cards and the panel hold them all.
+  for (const how of ['desktop', 'panel']) {
+    const at = async (now: number) => {
+      const ui = await drawing($, how, summaryOf(MIXED, { now, queued: MIXED_QUEUED, demand: DEMAND }))
+      const seen = await glyphs(ui)
+      await ui.unmount()
+      return seen
+    }
+    const [start, middle, again] = [await at(0), await at(1000), await at(2000)]
+    // main and the agent at work: the shade of the moment (●); the one answered by another model is a ⚠, as it was.
+    expect(start['●']).toEqual([PULSE[0], PULSE[0]])
+    expect(middle['●']).toEqual([PULSE[4], PULSE[4]])
+    expect(again['●']).toEqual(start['●'])
+    expect(PULSE[4]).not.toBe(PULSE[0])
+    // The rest stands still: the state's colour, the same at every moment.
+    for (const g of ['✓', '✗', '◐', '⚠', '◌']) {
+      expect(start[g]).toEqual(middle[g])
+      expect(start[g]!.length).toBeGreaterThan(0)
+    }
+    expect([start['✓'], start['✗'], start['◐'], start['⚠'], start['◌']]).toEqual([[GREEN], ['#E5646E'], ['#E9A23B'], ['#E9A23B'], ['dim']])
+  }
+  // The terminal's band: main, the agents at work and the finished one it has room for.
+  const fits = { main: MAIN, work: MIXED.work, wait: MIXED.wait, ok: MIXED.ok }
+  for (const how of ['terminal', 'narrow']) {
+    const at = async (now: number) => {
+      const ui = await drawing($, how, summaryOf(fits, { now }))
+      const seen = await glyphs(ui)
+      await ui.unmount()
+      return seen
+    }
+    const [start, middle] = [await at(0), await at(1000)]
+    expect(start['●']).toEqual([PULSE[0], PULSE[0]])
+    expect(middle['●']).toEqual([PULSE[4], PULSE[4]])
+    expect(middle['◐']).toEqual(['#E9A23B'])
+    expect(middle['✓']).toEqual([GREEN])
+  }
+})
+
+test('the pulse off: the ● stays the full green at every moment', async ($: any, on) => {
+  const drawing = probe(on)
+  for (const how of Object.keys(DRAWERS)) {
+    const colors = new Set<string>()
+    for (const now of [0, 250, 1000, 1750]) {
+      const ui = await drawing($, how, summaryOf({ main: MAIN, work: MIXED.work }, { now, pulse: false }))
+      for (const c of (await glyphs(ui))['●']!) colors.add(c)
+      await ui.unmount()
+    }
+    expect([...colors]).toEqual([GREEN])
+  }
+})
+
+// The request of the preview: both its agents have ended; another request is still at work beside it.
+const FINISHED = {
+  main: MAIN,
+  a: loopOf({ label: 'Explore · open tasks', parent: 'main', demand: DEMAND, state: 'done', endedAt: 39_000, effortBy: 'rules', result: '12 files' }),
+  b: loopOf({ label: 'Pick next task', parent: 'main', demand: DEMAND, asked: 'claude-opus-5-5', effort: 'high', state: 'done', endedAt: 126_000, effortBy: 'main', worktree: 'fix/pick', failed: 'failed', result: 'no task' }),
+  w: loopOf({ label: 'part 1: texture test', parent: 'main', demand: OTHER, effortBy: 'main', worktree: 'fix/texture', notes: [{ at: 1, text: 'Running it 20 times', tool: 'Bash' }], said: 'Running it 20 times', doing: 'Bash: bun test' }),
+}
+const NOW = 200_000
+const SHADE = PULSE[(NOW % 2000) / 250]
+
+test('a finished request goes all grey in the terminal band and the panel: an explicit grey border, a dimmed title, no colour on its rows; the request at work is as it was', async ($: any, on) => {
+  const drawing = probe(on)
+  for (const how of ['terminal', 'narrow', 'panel']) {
+    const ui = await drawing($, how, summaryOf(FINISHED, { now: NOW }))
+    const done = await boxOf(ui, 'd1')
+    const work = await boxOf(ui, 'd2')
+    // The border is a grey of its own, not the dim border the theme draws (which is tan in some terminals).
+    expect(done.props).toMatchObject({ borderStyle: 'round', borderColor: GREY })
+    expect(done.props.borderDimColor).toBeUndefined()
+    expect(work.props).toMatchObject({ borderStyle: 'round', borderDimColor: true })
+    expect(work.props.borderColor).toBeUndefined()
+    // Nothing in the box is painted: not a glyph (the ✓ and the ✗ are dimmed), not the model's gear, not a finished agent's
+    // end; the title is dimmed, and the state beside it says it is done.
+    expect(paints(done.children)).toEqual([])
+    expect(JSON.stringify(done)).toContain('✓')
+    expect(JSON.stringify(done)).toContain('✗')
+    expect(JSON.stringify(done.children[0].children[0])).toContain(DEMAND.title)
+    expect(JSON.stringify(done.children[0].children[0])).toContain('"dimColor":true')
+    expect(JSON.stringify(done.children[0].children.at(-1))).toMatch(/done/)
+    // The request at work keeps its colours, a title that is not dimmed, and its Stop; the finished one has none.
+    expect(paints(work.children)).toContain(`color:${GREEN}`)
+    expect(paints(work.children)).toContain('color:#5B8DEF')
+    expect(JSON.stringify(work.children[0].children[0])).not.toContain('"dimColor":true')
+    expect(countOf(done, 'Button')).toBe(0)
+    expect(countOf(work, 'Button')).toBe(1)
+    // The working dots, main's and the agent's, go on pulsing beside it; the grey glyphs are not among them.
+    const seen = await glyphs(ui)
+    expect(seen['●']).toEqual([SHADE, SHADE])
+    expect(seen['✓']).toEqual(['dim'])
+    expect(seen['✗']).toEqual(['dim'])
+    await ui.unmount()
+  }
+})
+
+test('a finished request goes all grey in the desktop app: the container, the strip, the cards and their chips and the rail; no Stop', async ($: any, on) => {
+  const drawing = probe(on)
+  const ui = await drawing($, 'desktop', summaryOf({ ...FINISHED, a: { ...FINISHED.a, skills: ['tdd'] } }, { now: NOW }))
+  const done = await boxOf(ui, 'd1')
+  const work = await boxOf(ui, 'd2')
+  expect(done.props).toMatchObject({ borderStyle: 'round', borderColor: GREY, overflow: 'hidden' })
+  expect(done.props.borderDimColor).toBeUndefined()
+  expect(work.props).toMatchObject({ borderStyle: 'round', borderDimColor: true, overflow: 'hidden' })
+  const [strip, body] = done.children
+  const [liveStrip, liveBody] = work.children
+  // A strip of the grey, flatter than the one at work, with a dimmed title.
+  expect(strip.props.backgroundColor).toBe('#7C85921A')
+  expect(liveStrip.props.backgroundColor).toBe('#7C859233')
+  expect(JSON.stringify(strip.children[0])).toContain('"dimColor":true')
+  expect(JSON.stringify(liveStrip.children[0])).not.toContain('"dimColor":true')
+  expect(JSON.stringify(strip.children.at(-1))).toMatch(/done · since \d\d:\d\d/)
+  // The cards: the rail falls to the grey it has when no model gives it a colour, every border is the grey (the chips and the
+  // skill chip too), no text has a colour, and there is no Stop.
+  const all = paints(body)
+  expect(all.filter(p => p.startsWith('color:'))).toEqual([])
+  expect(all.filter(p => p.startsWith('backgroundColor:'))).toEqual(['backgroundColor:#777777', 'backgroundColor:#777777'])
+  expect(all.filter(p => p.startsWith('borderDimColor'))).toEqual([])
+  const borders = all.filter(p => p.startsWith('borderColor:'))
+  expect(borders.every(p => p === `borderColor:${GREY}`)).toBe(true)
+  expect(borders.length).toBeGreaterThanOrEqual(8) // two cards, their gear, effort and worktree chips, the skill chip
+  expect(countOf(body, 'Button')).toBe(0)
+  // The request at work: the rail in its model's colour, the dim borders, the green dot, the Stop.
+  const live = paints(liveBody)
+  expect(live).toContain('backgroundColor:#5B8DEF')
+  expect(live).toContain('borderDimColor:true')
+  expect(live).toContain(`color:${SHADE}`)
+  expect(live.filter(p => p.startsWith('borderColor:'))).toEqual(['borderColor:#5B8DEF']) // the gear chip, in its model's colour
+  expect(countOf(liveBody, 'Button')).toBe(1)
+  await ui.unmount()
+})
+
+test('a request is finished only when nothing is at work and no part waits to start: a queued part keeps it in colour, and says so', async ($: any, on) => {
+  const drawing = probe(on)
+  const ended = { main: MAIN, a: FINISHED.a, b: FINISHED.b }
+  const waiting = [{ label: 'part 3 · changelog', model: 'sonnet', effort: 'low' }]
+  for (const how of ['terminal', 'desktop', 'panel']) {
+    // Both ended, a part still queued for the same request: coloured, "1 queued", not "done".
+    const owed = await drawing($, how, summaryOf(ended, { now: NOW, queued: waiting, demand: DEMAND }))
+    const box = await boxOf(owed, 'd1')
+    expect(paints(box)).not.toContain(`borderColor:${GREY}`)
+    expect(paints(box.children)).toContain(`color:${GREEN}`)
+    expect(JSON.stringify(box.children[0])).toMatch(/1 queued · since \d\d:\d\d/)
+    expect(JSON.stringify(box.children[0])).not.toMatch(/done/)
+    await owed.unmount()
+    // The part started and has ended too: grey, "done".
+    const over = await drawing($, how, summaryOf(ended, { now: NOW }))
+    const grey = await boxOf(over, 'd1')
+    expect(JSON.stringify(grey.children[0])).toMatch(/done · since/)
+    expect(paints(grey)).toContain(`borderColor:${GREY}`)
+    expect(paints(grey.children)).not.toContain(`color:${GREEN}`)
+    await over.unmount()
+  }
+})
+
+// ---- the redraw tick ----
+
+// How many times the readouts have been asked to draw again.
+const invalidations = (on: any) => {
+  const asked: string[] = []
+  on('ui.invalidate', (_: unknown, e: any) => (asked.push(e.event), { value: undefined }))
+  return asked
+}
+
+test('the readouts are drawn again every 250 ms while main or an agent is in a turn, and on no tick otherwise', async ($: any, on) => {
+  bench(on)
+  const clock = mock.clock(on)
+  const asked = invalidations(on)
+  // Nothing at work, nothing drawn: no timer, however long it takes.
+  const idle = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await clock.advance(5000)
+  expect(asked).toEqual([])
+  await idle.unmount()
+  // Main in a turn: the band that draws it starts the tick, and four a second follow.
+  await step($, 'claude-opus-5-5')
+  const band = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  expect(asked).toEqual([])
+  await clock.advance(249)
+  expect(asked).toEqual([])
+  await clock.advance(1)
+  expect(asked).toEqual(['ui.render'])
+  await clock.advance(750)
+  expect(asked).toHaveLength(4)
+  // Drawing it again (as each tick does) does not start a second timer.
+  await band.unmount()
+  const again = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await clock.advance(1000)
+  expect(asked).toHaveLength(8)
+  await again.unmount()
+  // The turn ends: the next tick finds nothing at work, asks for nothing and ends the timer.
+  await complete($)
+  await clock.advance(250)
+  expect(asked).toHaveLength(8) // that tick found nothing at work: it drew nothing and ended
+  await clock.advance(10_000)
+  expect(asked).toHaveLength(8)
+  // The timer is gone, not idle: a new turn draws nothing by itself, and starts a tick only when a readout is drawn.
+  await step($, 'claude-opus-5-5')
+  await clock.advance(2000)
+  expect(asked).toHaveLength(8)
+  const next = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await clock.advance(1000)
+  expect(asked).toHaveLength(12)
+  await next.unmount()
+})
+
+test('an agent at work keeps the tick, main idle; one only waiting on its own work does not; the Panel starts it too', async ($: any, on) => {
+  bench(on)
+  const clock = mock.clock(on)
+  const asked = invalidations(on)
+  const agents: Record<string, AgentStatus> = {}
+  on('agent.list', () => ({ value: Object.entries(agents).map(([id, s]) => ({ id, description: id, type: 'general-purpose', status: s })) }))
+  await step($, 'claude-opus-5-5')
+  await spawn($, 'deploy', 'sonnet')
+  await step($, 'claude-sonnet-5-5', { agentId: 'a-deploy', effort: 'low' })
+  agents['a-deploy'] = 'running'
+  await complete($) // main's turn ends; the agent is at work
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await clock.advance(1000)
+  expect(asked).toHaveLength(4)
+  // The agent's turn ends and it waits on background work of its own: a ◐ does not pulse, so the tick ends.
+  agents['a-deploy'] = 'waiting'
+  await complete($, 'a-deploy')
+  await clock.advance(250)
+  expect(asked).toHaveLength(4)
+  await clock.advance(10_000)
+  expect(asked).toHaveLength(4)
+  await pane.unmount()
+})
+
+test('with the pulse off the readouts are drawn again once a second (the run times move), and changing it sets the tick to the new pace', async ($: any, on) => {
+  bench(on)
+  const clock = mock.clock(on)
+  const asked = invalidations(on)
+  await step($, 'claude-opus-5-5')
+  // Pulsing: 250 ms.
+  const fast = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  await clock.advance(1000)
+  expect(asked).toHaveLength(4)
+  await fast.unmount()
+  // Off: the next draw sets a one-second tick, in place of the 250 ms one (not beside it).
+  expect((await $.command.run({ command: 'gearbox', args: 'pulse off' })).text).toContain('pulse off')
+  const slow = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  asked.length = 0
+  await clock.advance(999)
+  expect(asked).toEqual([])
+  await clock.advance(1)
+  expect(asked).toHaveLength(1)
+  await clock.advance(3000)
+  expect(asked).toHaveLength(4)
+  await slow.unmount()
+  // And back on: 250 ms again.
+  await $.command.run({ command: 'gearbox', args: 'pulse on' })
+  const back = await $.ui.mount({ ...BAND_AT(120), surface: 'terminal' })
+  asked.length = 0
+  await clock.advance(1000)
+  expect(asked).toHaveLength(4)
+  await back.unmount()
 })
