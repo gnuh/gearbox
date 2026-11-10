@@ -1,13 +1,13 @@
 import { expect, test as fresh } from 'claude-code/testing'
 
-// A new install has the orchestrator on, on Opus, with up to 6 agents, and code fixed to Sonnet. These tests are written
-// for a plain session whose rules pick code's model, and for a Sonnet orchestrator with up to 3 agents when they turn
-// it on, so each starts from those unless its own options say otherwise; `fresh` is the test with the defaults a new
-// install gets.
+// A new install has the orchestrator on, with up to 6 agents, and code fixed to Sonnet; its main conversation runs on the
+// model the session is on. These tests are written for a plain session whose rules pick code's model, and for an
+// orchestrator with up to 3 agents when they turn it on, so each starts from those unless its own options say otherwise;
+// `fresh` is the test with the defaults a new install gets.
 const test: typeof fresh = ((name: string, ...rest: any[]) => {
   const run = rest.pop()
   const opts = rest[0] ?? {}
-  return fresh(name, { ...opts, options: { code_model: 'auto', orchestrator: false, orchestrator_model: 'sonnet', orchestrator_agents: 3, ...opts.options } }, run)
+  return fresh(name, { ...opts, options: { code_model: 'auto', orchestrator: false, orchestrator_agents: 3, ...opts.options } }, run)
 }) as typeof fresh
 import { NESTING, hookBrief } from './policy'
 import { readOutput } from './classic'

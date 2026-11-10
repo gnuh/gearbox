@@ -1,6 +1,8 @@
 // The orchestrator: the main conversation only plans, briefs and reviews, and the work runs in lanes, one
 // long-lived subagent per model. A lane starts at the top effort it will need and each message lowers it (bench/lanes:
 // a mod's effort on a resumed agent reaches the API and keeps the cache; lowering takes hold fully, raising only half).
+// The main conversation stays on the model the session runs on, whatever it is (Fable included), and the orchestrator
+// only sets its effort: it has no model of its own to choose.
 import type { ModelEffort } from 'claude-code'
 import type { GearboxLoop } from '../types'
 import { family, isQueued, live } from './loops'
@@ -13,12 +15,12 @@ export const ORCHESTRATOR_EFFORTS: readonly OrchestratorEffort[] = ['auto', 'low
 // orchestratorOn); `off` turns it off.
 export type OrchestratorMode = 'auto' | 'on' | 'off'
 export const ORCHESTRATOR_MODES: readonly OrchestratorMode[] = ['auto', 'on', 'off']
-export type OrchestratorSettings = { orchestrator: OrchestratorMode; orchestrator_model: 'haiku' | 'sonnet' | 'opus'; orchestrator_effort: OrchestratorEffort; orchestrator_agents: number }
+export type OrchestratorSettings = { orchestrator: OrchestratorMode; orchestrator_effort: OrchestratorEffort; orchestrator_agents: number }
 
 // The orchestrator is on, in every session, Haiku ones included, unless the person turns it off or picks `auto`
-// (see orchestratorOn), and the main conversation then runs on Opus at `auto` effort, unless the person picks another.
-export const ORCHESTRATOR: { mode: OrchestratorMode; model: 'opus'; effort: OrchestratorEffort } = { mode: 'on', model: 'opus', effort: 'auto' }
-const MODELS = ['haiku', 'sonnet', 'opus'] as const
+// (see orchestratorOn), and the main conversation then runs on the session's own model at `auto` effort, unless the
+// person picks another effort. An `orchestrator_model` an older version kept is never read.
+export const ORCHESTRATOR: { mode: OrchestratorMode; effort: OrchestratorEffort } = { mode: 'on', effort: 'auto' }
 // How many agents a request may fan out to at once: 1 to 6, 6 unless the person picks another; 1 is no fan-out.
 export const AGENTS = 6
 const agentsFrom = (v: unknown): number => {
@@ -33,22 +35,21 @@ const agentsFrom = (v: unknown): number => {
 const modeOf = (v: unknown): OrchestratorMode | undefined => (v === true ? 'on' : v === false ? 'off' : ORCHESTRATOR_MODES.includes(v as OrchestratorMode) ? (v as OrchestratorMode) : undefined)
 
 // Whether the orchestrator runs the main conversation: with `on` (the default) in every session, and with `auto` unless
-// the session is on Haiku, whose person started there to shift models cheaply.
+// the session is on Haiku, whose person started there to shift models cheaply. With `on` in a Haiku session the main
+// conversation stays on Haiku, the model the person chose, and hands everything past Haiku's rung to a lane.
 export const orchestratorOn = (mode: OrchestratorMode, haiku: boolean): boolean => mode === 'on' || (mode === 'auto' && !haiku)
 
 // `options` are the plugin's, `stored` what /gearbox stored, which wins.
 export const orchestratorFrom = (options: Record<string, unknown>, stored: Record<string, unknown> = {}): OrchestratorSettings => orchestratorOf({ ...options, ...stored }, modeOf(stored.orchestrator) ?? modeOf(options.orchestrator) ?? ORCHESTRATOR.mode)
 const orchestratorOf = (o: Record<string, unknown>, mode: OrchestratorMode): OrchestratorSettings => ({
   orchestrator: mode,
-  orchestrator_model: MODELS.includes(o.orchestrator_model as never) ? (o.orchestrator_model as OrchestratorSettings['orchestrator_model']) : ORCHESTRATOR.model,
   orchestrator_effort: ORCHESTRATOR_EFFORTS.includes(o.orchestrator_effort as OrchestratorEffort) ? (o.orchestrator_effort as OrchestratorEffort) : o.orchestrator_effort === 'max' ? 'xhigh' : ORCHESTRATOR.effort,
   orchestrator_agents: agentsFrom(o.orchestrator_agents),
 })
 
-// One `/gearbox orchestrator[-model|-effort|-agents] <value>`; undefined when the word or the value is not one it takes.
+// One `/gearbox orchestrator[-effort|-agents] <value>`; undefined when the word or the value is not one it takes.
 export const orchestratorPatch = (word: string, value: string | undefined): Partial<OrchestratorSettings> | undefined => {
   if (word === 'orchestrator' && ORCHESTRATOR_MODES.includes(value as OrchestratorMode)) return { orchestrator: value as OrchestratorMode }
-  if (word === 'orchestrator-model' && MODELS.includes(value as never)) return { orchestrator_model: value as OrchestratorSettings['orchestrator_model'] }
   if (word === 'orchestrator-effort' && ORCHESTRATOR_EFFORTS.includes(value as OrchestratorEffort)) return { orchestrator_effort: value as OrchestratorEffort }
   if (word === 'orchestrator-agents' && value !== undefined && /^[1-6]$/.test(value)) return { orchestrator_agents: Number(value) }
   return undefined
@@ -218,10 +219,11 @@ export const fanParts = (r: Reading, cap: number, standing: ModelEffort, code?: 
 // needs smarter decisions still goes to its lane. A guess is never handed off, a review excepted. A sure request of
 // independent parts goes out to one agent per part, all at once, up to `cap` of them. Everything else goes to the lane
 // of the model the work calls for, at the effort it calls for, reviews included, sure or not (an unsure review's
-// effort is its best guess); Fable's open-ended work is a fresh agent, not a lane, and never split. `code`: the model
-// the person fixed for code (`want` is on it already): small code stays here only on that very model, or when it is a
-// mechanical edit at one spot, else it goes to that model's lane (on Fable, a fresh agent), and each code part of a
-// fan-out runs on it. `auto`: the orchestrator's effort is set per turn, not pinned (the plan's `main` carries it): what
+// effort is its best guess); Fable's open-ended work is a fresh agent, not a lane, and never split, unless the main is
+// on Fable itself (the session's model), which keeps it: a Fable agent would be no stronger model, only a brief and a
+// cold start. `code`: the model the person fixed for code (`want` is on it already): small code stays here only on that
+// very model, or when it is a mechanical edit at one spot, else it goes to that model's lane (on Fable, a fresh agent,
+// or the Fable main itself), and each code part of a fan-out runs on it. `auto`: the orchestrator's effort is set per turn, not pinned (the plan's `main` carries it): what
 // it keeps runs at the rules' effort for the reading (`want`), xhigh at most; a hand-off at BRIEFING, since briefing
 // and later choosing the agent's effort is where it is won or lost, save a lane that only relays a command (a long
 // command, a git chore), which runs low. `advice`: the coding effort is `auto`, so the hand-off is advice, and none is
@@ -247,6 +249,7 @@ export const orchestratorPlan = (r: Reading, want: Gear, main: Gear, cap = 1, st
   if (ordinary && r.mode === 'code' && r.depth <= 1 && small && enough) return keep()
   if (r.mode === 'wait') return hand({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, relay: 'wait' }, true)
   if (r.mode === 'commit') return hand({ kind: 'lane', gear: choreGear(r.depth), relay: 'chore' }, true)
+  if (want.model === 'fable' && main.model === 'fable') return keep()
   return hand({ kind: want.model === 'fable' ? 'deep' : 'lane', gear: want })
 }
 

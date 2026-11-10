@@ -1,6 +1,6 @@
 # gearbox
 
-A Claude Code mod that picks the model and effort for every prompt and sends tool-heavy work to cheaper agents, so Opus plans and reviews instead of clicking, waiting and fetching.
+A Claude Code mod that picks the model and effort for every prompt and sends tool-heavy work to cheaper agents, so the model you picked for the session plans and reviews instead of clicking, waiting and fetching.
 
 ![The gearbox band above the Claude Code prompt in the desktop app: the main conversation and each agent, with model, effort, requests and time](assets/band-desktop.png)
 
@@ -8,7 +8,7 @@ A Claude Code mod that picks the model and effort for every prompt and sends too
 
 - **The right gear per prompt.** A quick Sonnet call describes the request, and gearbox's rules turn that into a model and an effort.
 - **Cheap agents for tool-heavy work.** Browser checks go to a navigator, builds and long commands to Haiku, and git chores to Haiku once the conversation is long.
-- **An orchestrator, on by default.** The main conversation stays on Opus and plans, briefs and reviews. Code goes to a long-lived agent, and independent parts run in parallel, up to 6 at once. A message you type while agents work is read as a new request: it goes to the agent whose work it is, or to a new agent beside them, and the main conversation does not do it itself.
+- **An orchestrator, on by default.** The main conversation stays on the model you picked for the session (`/model`: Opus, Fable, any) and plans, briefs and reviews; only its effort changes. Code goes to a long-lived agent, and independent parts run in parallel, up to 6 at once. A message you type while agents work is read as a new request: it goes to the agent whose work it is, or to a new agent beside them, and the main conversation does not do it itself.
 - **A live readout.** The band above the prompt shows every agent's model and effort as it works, the dot of an agent at work pulsing, and the agents of each request you made in a box of their own under a short title, which turns grey once all its agents are done. A Stop button on each agent ends it (and the agents it started) without touching the others.
 
 ## Savings
@@ -55,7 +55,6 @@ Work as usual. The commands you will use:
 | `/gearbox …` | Default |
 |---|---|
 | `orchestrator auto\|on\|off` | `on` (`auto` is on, except Haiku sessions) |
-| `orchestrator-model haiku\|sonnet\|opus` | `opus` |
 | `orchestrator-effort auto\|low\|medium\|high\|xhigh` | `auto` |
 | `orchestrator-agents 1-6` | `6` |
 | `model auto\|sonnet\|opus\|fable` (coding model) | `sonnet` |
@@ -64,7 +63,7 @@ Work as usual. The commands you will use:
 | `pulse on\|off` (the working dot fades in and out) | `on` |
 | `log off\|on\|full` | `off` |
 
-Hand-offs are always strict and your own hooks always run for subagents. Neither is a setting.
+The orchestrator has no model setting: its main conversation runs on the model the session is on, so to try another one, pick it with `/model`. An `orchestrator_model` an older version stored is ignored. Hand-offs are always strict and your own hooks always run for subagents. Neither is a setting.
 
 **Coming from 0.24.0:** the coding model is now `sonnet` and the orchestrator `on` unless you set them, so code runs on Sonnet and a session started on Haiku is orchestrated too. `/gearbox model auto` lets the rules pick the code model again, and `/gearbox orchestrator auto` leaves a Haiku session shifting models instead.
 
@@ -78,7 +77,7 @@ flowchart LR
   A["Prompt"] --> B["Survey: one Sonnet call at low effort"]
   B --> C["Rules pick model and effort"]
   C --> D{"Keep or hand off?"}
-  D -->|"small answer or edit"| E["Orchestrator does it on Opus"]
+  D -->|"small answer or edit"| E["Orchestrator does it on the session model"]
   D -->|"code, review, browser check, long command, git chore, independent parts"| F["Agents: lane, navigator, Haiku, parallel"]
   F --> G["Orchestrator reviews the report and the diff"]
 ```

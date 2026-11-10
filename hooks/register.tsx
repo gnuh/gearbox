@@ -95,12 +95,12 @@ import { NEUTRAL, ORCHESTRATOR_EFFORTS, ORCHESTRATOR_MODES, type Lane, type Lane
 import { READERS, REFUSED, SPLIT, type Refusal, briefVerdict, nestedCap, readerGear, settle, whyNoNestedFan } from './nesting'
 
 // US$ per million tokens.
-// shortcut: copied from the claude-api skill's table (cached 2026-10-06); update when prices move.
+// shortcut: copied from the claude-api skill's table (cached 2026-11-10); update when prices move.
 const PRICES: Record<Model, { fresh: number; written: number; cached: number; out: number }> = {
   haiku: { fresh: 0.1, written: 0.125, cached: 0.01, out: 0.5 },
-  sonnet: { fresh: 2, written: 2.5, cached: 0.2, out: 10 },
+  sonnet: { fresh: 2, written: 2.5, cached: 0.1, out: 10 },
   opus: { fresh: 4, written: 5, cached: 0.2, out: 20 },
-  fable: { fresh: 10, written: 12.5, cached: 0.25, out: 50 },
+  fable: { fresh: 8, written: 10, cached: 0.2, out: 40 },
 }
 // Haiku bills a prompt over 100K tokens at five times its rate.
 const HAIKU_LONG = { fresh: 0.5, written: 0.625, cached: 0.05, out: 2.5 }
@@ -790,9 +790,9 @@ const pulseMode = (v: unknown): Pulse | undefined => (v === true || v === 'on' ?
 
 // Settings gearbox once had and now always applies as they were when on: steering a session not on Haiku, handing
 // work up to a stronger model, the band above the prompt, a models panel that lists every loop, strict hand-offs and
-// the person's hooks for subagents.
+// the person's hooks for subagents; and the orchestrator's model, which is now the session's own.
 // What an older version stored or a plugin option still says for them is ignored, and dropped from the store.
-export const REMOVED_SETTINGS = ['steer', 'escalate', 'band', 'pane', 'strict', 'agent_hooks'] as const
+export const REMOVED_SETTINGS = ['steer', 'escalate', 'band', 'pane', 'strict', 'agent_hooks', 'orchestrator_model'] as const
 const removedKey = (k: string) => (REMOVED_SETTINGS as readonly string[]).includes(k)
 const withoutRemoved = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !removedKey(k)))
 
@@ -825,7 +825,7 @@ export const settingPatch = (word: string, value: string | undefined): Partial<S
   return orchestratorPatch(word, value)
 }
 
-const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or auto (the main conversation decides each agent’s model and effort)', navigator: 'sonnet or haiku', log: 'on, off or full', pulse: 'on or off (the dot of an agent at work fades in and out)', orchestrator: 'auto, on or off (auto: on, except in a session on Haiku, which shifts models)', 'orchestrator-model': 'haiku, sonnet or opus', 'orchestrator-effort': 'auto, low, medium, high or xhigh (auto: the effort follows the prompt)', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
+const SETTING_CHOICES: Record<string, string> = { model: 'auto, sonnet, opus or fable', effort: 'medium, high, xhigh or auto (the main conversation decides each agent’s model and effort)', navigator: 'sonnet or haiku', log: 'on, off or full', pulse: 'on or off (the dot of an agent at work fades in and out)', orchestrator: 'auto, on or off (auto: on, except in a session on Haiku, which shifts models)', 'orchestrator-effort': 'auto, low, medium, high or xhigh (auto: the effort follows the prompt)', 'orchestrator-agents': 'a number from 1 to 6 (1: no fan-out)' }
 // What `/gearbox <word>` of a removed setting answers.
 const REMOVED_WORDS: Record<string, string> = {
   steer: 'steer is no longer a setting: gearbox always steers a session not on Haiku. To leave sessions alone, turn gearbox off (/gearbox off) or disable the plugin.',
@@ -833,9 +833,10 @@ const REMOVED_WORDS: Record<string, string> = {
   band: 'band is no longer a setting: the band above the prompt is always shown.',
   strict: 'strict is no longer a setting: hand-offs are always strict.',
   hooks: 'hooks is no longer a setting: your UserPromptSubmit and Stop hooks always run for the subagents gearbox sends work to.',
+  'orchestrator-model': 'orchestrator-model is no longer a setting: with the orchestrator on, the main conversation runs on the model the session is on (pick it with /model), and gearbox only sets its effort (/gearbox orchestrator-effort).',
 }
 // The settings panel's blocks, each under its heading: a row per setting, as [label, /gearbox word, values, the value
-// in use]. The orchestrator's model, effort and parallel agents only matter, and only show, while it is not off.
+// in use]. The orchestrator's effort and parallel agents only matter, and only show, while it is not off.
 export type SettingRow = [string, string, readonly string[], string]
 export const settingsSections = (s: Settings): { id: string; title: string; rows: SettingRow[] }[] => [
   {
@@ -860,7 +861,6 @@ export const settingsSections = (s: Settings): { id: string; title: string; rows
       ['Orchestrator', 'orchestrator', ORCHESTRATOR_MODES, s.orchestrator],
       ...(s.orchestrator !== 'off'
         ? ([
-            ['Model', 'orchestrator-model', ['sonnet', 'opus', 'haiku'], s.orchestrator_model],
             ['Effort', 'orchestrator-effort', ORCHESTRATOR_EFFORTS, s.orchestrator_effort],
             ['Parallel agents', 'orchestrator-agents', ['1', '2', '3', '4', '5', '6'], String(s.orchestrator_agents)],
           ] satisfies SettingRow[])
@@ -873,7 +873,7 @@ export const settingsSections = (s: Settings): { id: string; title: string; rows
 
 // The orchestrator as it is in effect, not only as set: `auto` is on except in a session on Haiku (`haiku`).
 const orchestratorText = (s: Settings, haiku: boolean) => {
-  const runs = `${s.orchestrator_model}·${s.orchestrator_effort}, up to ${s.orchestrator_agents} agent${s.orchestrator_agents === 1 ? '' : 's'} at once`
+  const runs = `effort ${s.orchestrator_effort}, up to ${s.orchestrator_agents} agent${s.orchestrator_agents === 1 ? '' : 's'} at once`
   if (s.orchestrator === 'off') return 'off'
   if (s.orchestrator === 'on') return `on (${runs})`
   return haiku ? `auto, off in this Haiku session, which shifts models; /gearbox orchestrator on uses it here (${runs})` : `auto, on (${runs}); a Haiku session shifts models instead`
@@ -918,7 +918,7 @@ const saveSetting = async ($: EngineInterface, patch: Partial<Settings>) => {
 
 export const register: Register = (on, options) => {
   // The person's settings (userConfig): the model and effort for code, and the rest of /gearbox settings.
-  let { code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, pulse, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
+  let { code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, pulse, orchestrator, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents } = settingsFrom(options, undefined)
   // The rules' coding effort; with `auto` (`chooses`), their floor, and the main conversation decides delegation once
   // it has read the work: whether to hand off, to which model, at which effort. gearbox then sets only the main
   // conversation's effort for the turn's first request, advises the rest and holds each agent to safe bounds (decide).
@@ -927,10 +927,20 @@ export const register: Register = (on, options) => {
   // The effort up to which a gear is not put to the person: their coding effort, and for code with `auto`, any, since
   // they left code's effort to the main conversation.
   const askFloor = (writes: boolean): ModelEffort => (chooses() && writes ? 'xhigh' : standing)
-  const current = (): Settings => ({ code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, pulse, orchestrator, orchestrator_model: orchModel, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
-  // What the main conversation runs on while the orchestrator hands off: its model, at its effort, or with `auto` at
-  // BRIEFING, since briefing and reviewing the agent is the work (orchestratorPlan sets the rest per turn).
-  const orchMain = (): Gear => ({ model: orchModel, effort: orchEffort === 'auto' ? BRIEFING : orchEffort })
+  const current = (): Settings => ({ code_model: codeModel, code_effort: codeEffort, navigator, log: logMode, pulse, orchestrator, orchestrator_effort: orchEffort, orchestrator_agents: orchAgents })
+  // The model the session runs on, as last seen (each prompt, request and command reads it): the orchestrator's main
+  // conversation stays on it, whatever it is, and gearbox only sets its effort. Undefined until one is seen, or while the
+  // session is on a model gearbox does not know, which the orchestrator leaves alone (see orchestratorRuns).
+  let sessionModel: Model | undefined
+  const seeSession = (id: unknown) => {
+    haikuSession = String(id).includes('haiku')
+    sessionModel = family(String(id))
+  }
+  const orchModel = (): Model => sessionModel ?? STARTER.model
+  // What the main conversation runs on while the orchestrator hands off: the session's model, at the orchestrator's
+  // effort, or with `auto` at BRIEFING, since briefing and reviewing the agent is the work (orchestratorPlan sets the
+  // rest per turn).
+  const orchMain = (): Gear => ({ model: orchModel(), effort: orchEffort === 'auto' ? BRIEFING : orchEffort })
   // The debug log of this session; see /gearbox log.
   const log: LogState = { pending: [] }
   const logEvent = (rec: Record<string, unknown>) => {
@@ -944,7 +954,6 @@ export const register: Register = (on, options) => {
     logMode = s.log
     pulse = s.pulse
     orchestrator = s.orchestrator
-    orchModel = s.orchestrator_model
     orchEffort = s.orchestrator_effort
     orchAgents = s.orchestrator_agents
   }
@@ -974,11 +983,13 @@ export const register: Register = (on, options) => {
   // (`launched`, see launchEffort).
   let subagent: string | null | undefined
   let launched: LaunchEffort | undefined
-  // Whether the session runs on Haiku, as last seen (each prompt, request and command reads it). With the orchestrator
-  // on `auto` (the person's choice), a session on Haiku is not orchestrated: whoever starts there shifts models, to save
-  // money. With `on`, the default, it is orchestrated like any other.
+  // Whether the session runs on Haiku, as last seen (see seeSession). With the orchestrator on `auto` (the person's
+  // choice), a session on Haiku is not orchestrated: whoever starts there shifts models, to save money. With `on`, the
+  // default, it is orchestrated like any other, and its main conversation stays on Haiku, the model the person chose.
+  // A session on a model gearbox does not know is not orchestrated either: the main conversation has no rung on the
+  // ladder to plan from, so gearbox leaves it alone, as it does without the orchestrator.
   let haikuSession = false
-  const orchestratorRuns = () => orchestratorOn(orchestrator, haikuSession)
+  const orchestratorRuns = () => sessionModel !== undefined && orchestratorOn(orchestrator, haikuSession)
   // The orchestrator is on and this session is not someone's sub-agent: the main conversation runs on the orchestrator.
   const orchestrating = () => orchestratorRuns() && !subagent
   // The model family the main conversation's last request went out on, as sent: a request on another one writes the
@@ -1249,12 +1260,14 @@ export const register: Register = (on, options) => {
       },
       isDeferred: false,
     })
-    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | log on|off|full | pulse on|off | orchestrator auto|on|off | orchestrator-model <model> | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | stop <agent>|all | on | off | ask on|off | usage]' })
+    await $.command.register({ name: 'gearbox', description: 'Model routing and readout: /gearbox [settings | model auto|sonnet|opus|fable | effort <level> | navigator <model> | log on|off|full | pulse on|off | orchestrator auto|on|off | orchestrator-effort <level> | orchestrator-agents <1-6> | panel | stop <agent>|all | on | off | ask on|off | usage]' })
     enabled = (await $.store.get('enabled')) !== false
     // What an older version stored for a removed setting is dropped once, so nothing reads or logs it again.
     const { kept: stored, stale } = await storedSettings($)
     if (stale) await $.store.set('settings', stored)
     apply(await loadSettings($, options))
+    // A reload forgets the model the session is on, which the orchestrator's main conversation stays on.
+    seeSession(await $.session.model().catch(() => ''))
     await update($, SETTINGS, () => stored)
     // A reload keeps the loops but drops the timer: the engine's list says again what is alive.
     if (enabled) {
@@ -1284,7 +1297,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'gearbox' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     apply(await loadSettings($, options))
-    haikuSession = String(await $.session.model().catch(() => '')).includes('haiku')
+    seeSession(await $.session.model().catch(() => ''))
     const [word = '', value] = arg.split(/\s+/)
     if (arg === 'log') {
       if (logMode === 'off') return { text: 'the log is off. /gearbox log on starts one for this session; /gearbox log full also keeps the first 200 characters of each prompt.' }
@@ -1366,11 +1379,11 @@ export const register: Register = (on, options) => {
       await $.store.delete('usage')
       return { text: 'usage cleared' }
     } else if (arg) {
-      return { text: `unknown "${arg}". Try settings, panel, stop, model, effort, navigator, log, pulse, orchestrator, orchestrator-model, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
+      return { text: `unknown "${arg}". Try settings, panel, stop, model, effort, navigator, log, pulse, orchestrator, orchestrator-effort, orchestrator-agents, on, off, ask on, ask off, usage or usage reset.` }
     }
     const asks = (await $.store.get('consent')) !== false
     const session = await $.session.model()
-    const mode = orchestrating() ? `orchestrating on ${orchModel}` : session.includes('haiku') ? 'shifting models' : family(session) ? `steering effort on ${family(session)}` : `readout only (${session} is not a model gearbox knows)`
+    const mode = orchestrating() ? `orchestrating on ${orchModel()}` : session.includes('haiku') ? 'shifting models' : family(session) ? `steering effort on ${family(session)}` : `readout only (${session} is not a model gearbox knows)`
     return {
       text: `${enabled ? `on, ${mode}` : 'off'} · ${settingsText(current(), haikuSession)} · asks before costly gears: ${asks ? 'yes' : 'no'}${floor ? ` · main model ${floor}` : ''}${previous ? ` · last gear ${label(previous)}` : ''}\nChange settings with /gearbox settings, or /gearbox model|effort|navigator <value>.`,
     }
@@ -1494,7 +1507,7 @@ export const register: Register = (on, options) => {
     if (Object.keys(changed).length) logEvent({ ev: 'settings', changed })
     await startTurnTally($)
     const session = await $.session.model()
-    haikuSession = session.includes('haiku')
+    seeSession(session)
     logEvent({ ev: 'prompt', kind: ownEffort ?? 'typed', chars: e.text.length, ...(logMode === 'full' ? { text: e.text.slice(0, 200) } : {}), session })
     // A session another one started as its sub-agent says so in its first typed prompt: it does the work it was given,
     // on the model and, when gearbox can tell, at the effort it was launched with. Read once; the log says why once.
@@ -1623,7 +1636,7 @@ export const register: Register = (on, options) => {
         if (orchestrated && keepsRoute(checked, p)) {
           // With `auto` and no effort asked for, its effort follows the steps' through the phase tool, as in steer mode.
           const follow = orchEffort === 'auto' && !ask.effort
-          const own: Gear = { model: ask.model ?? orchModel, effort: ask.effort ?? (orchEffort === 'auto' ? p.main.effort : orchEffort) }
+          const own: Gear = { model: ask.model ?? orchModel(), effort: ask.effort ?? (orchEffort === 'auto' ? p.main.effort : orchEffort) }
           turnRoute = orchestratorRoute(route(phases, own.model, standing, r.care === 'costly', navigator, long, own.model, stepCode), own, follow)
           if (follow) p = { ...p, main: { ...p.main, effort: capXhigh(workEffort(turnRoute)) } }
           const rest = follow ? `${own.model}, its effort following the steps` : label(own)
@@ -1718,7 +1731,7 @@ export const register: Register = (on, options) => {
       why = 'continuation: previous gear'
       brief = ['continuation', 'kept the previous gear']
     } else p = await byRules(msg, false)
-    // The orchestrator's main conversation runs on its own model, whatever the session or the floor.
+    // The orchestrator's main conversation runs on the session's model, whatever the floor.
     // A person's ask moves the turn only when it stays here; with a lane doing the work the orchestrator is the same.
     // With `auto`, its effort is the plan's (a nod, a continuation or an unreadable prompt reuse the last effort), xhigh at most.
     const orchEffortNow = orchEffort === 'auto' ? capXhigh(p.main.effort) : orchEffort
@@ -1727,7 +1740,7 @@ export const register: Register = (on, options) => {
     turnGear = subagent && fixed
       ? { model: fixed, effort: launched?.effort ?? p.main.effort }
       : orchestrated
-        ? p.handoff ? { model: orchModel, effort: orchEffortNow } : { model: ask.model ?? orchModel, effort: ask.effort ?? orchEffortNow }
+        ? p.handoff ? { model: orchModel(), effort: orchEffortNow } : { model: ask.model ?? orchModel(), effort: ask.effort ?? orchEffortNow }
         : { model: mainModel(p, ask, base), effort: p.main.effort }
     // The orchestrator edits files itself only for a one-spot change the plan kept here.
     mainMayEdit = orchestrated && !p.handoff && lastMode === 'code'
@@ -2449,14 +2462,16 @@ export const register: Register = (on, options) => {
     // for the agent that started it, and the loop finishes.
     if (enabled && e.agentId && (await read($, LOOPS))[e.agentId]?.stopping === 'soft') return { turnId: e.turnId, index: e.index, answer: STOP_ANSWER, toolUses: [], stopReason: 'end_turn', usage: null }
     let step = e
-    if (!e.agentId) haikuSession = String(e.model).includes('haiku')
+    if (!e.agentId) seeSession(e.model)
     if (!e.agentId && enabled && subagent) {
       // A sub-agent session: the model it was launched on, as Claude Code sends it, and the effort it was launched at
       // where gearbox can tell (ownEffort), else the effort gearbox picks for the work.
       if (turnGear && !ownEffort) step = { ...step, effort: turnGear.effort }
     } else if (!e.agentId && enabled && orchestratorRuns()) {
-      // The orchestrator: the main conversation runs on its own model at its own effort, whatever the session is on.
-      if (turnGear) step = { ...step, model: turnGear.model, ...(ownEffort ? {} : { effort: turnGear.effort }) }
+      // The orchestrator: the main conversation runs on the session's model, as Claude Code sends it, at the orchestrator's
+      // effort. Only the effort changes, which keeps the prompt cache; the model changes only for a model the person asked
+      // for this turn (a family, as steer mode names it), never to another build of the session's own.
+      if (turnGear) step = { ...step, ...(turnGear.model !== family(e.model) ? { model: turnGear.model } : {}), ...(ownEffort ? {} : { effort: turnGear.effort }) }
     } else if (!e.agentId && enabled) {
       // Shifting (Haiku session): the turn's model, else the floor. Steering: the session's model, unless the
       // person asked for another this turn. Effort changes are free: they keep the prompt cache (measured).
@@ -2470,14 +2485,13 @@ export const register: Register = (on, options) => {
     if (!e.agentId) {
       // A request on another model than the main conversation's last one went out on writes the whole conversation
       // into that model's cache: the first request of a session gearbox moves off the session's model, the turn after
-      // a slash command or skill that ran on the session's model, a change of orchestrator model, a model asked for one
-      // turn and the turn after it. Before 0.23.2 the orchestrator compared with the session's model, Claude Code's own
-      // setting, which its requests never go out on, so every turn logged a re-cache that never happened.
+      // a slash command or skill that ran on the session's model, a model asked for one turn and the turn after it.
+      // The orchestrator's main conversation stays on the session's model, so it logs none of its own.
       const sent = family(String(step.model))
       const was = lastMain ?? family(e.model)
       if (enabled && logMode !== 'off' && sent && was && sent !== was) {
         const tokens = (await $.session.usage()).context.tokens ?? 0
-        logEvent({ ev: 'shift', from: was, to: sent, recache: tokens, usd: (tokens * PRICES[sent].written) / 1e6, ...(orchestrating() && turnGear?.model === sent ? { why: 'orchestrator' } : {}) })
+        logEvent({ ev: 'shift', from: was, to: sent, recache: tokens, usd: (tokens * PRICES[sent].written) / 1e6 })
       }
       if (sent) lastMain = sent
     }
