@@ -8,13 +8,18 @@ const MAIN: Gear = { model: 'sonnet', effort: 'medium' }
 const part = (what: string, mode: Part['mode'], depth: Part['depth'], files: string[] = []): Part => ({ what, mode, depth, files })
 const whats = (groups: Part[][]) => groups.map(g => g.map(p => p.what))
 
-test('a new install has the orchestrator on, on Opus at an effort of auto, with up to 6 agents', () => {
-  expect(orchestratorFrom({})).toEqual({ orchestrator: 'on', orchestrator_model: 'opus', orchestrator_effort: 'auto', orchestrator_agents: 6 })
-  expect(ORCHESTRATOR).toEqual({ mode: 'on', model: 'opus', effort: 'auto' })
+test('a new install has the orchestrator on, at an effort of auto, with up to 6 agents, and no model of its own', () => {
+  expect(orchestratorFrom({})).toEqual({ orchestrator: 'on', orchestrator_effort: 'auto', orchestrator_agents: 6 })
+  expect(ORCHESTRATOR).toEqual({ mode: 'on', effort: 'auto' })
   expect(ORCHESTRATOR_EFFORTS).toEqual(['auto', 'low', 'medium', 'high', 'xhigh'])
-  // What the person set stays: off, another model, another effort, another number of agents.
-  expect(orchestratorFrom({}, { orchestrator: 'on', orchestrator_model: 'sonnet', orchestrator_effort: 'high' })).toEqual({ orchestrator: 'on', orchestrator_model: 'sonnet', orchestrator_effort: 'high', orchestrator_agents: 6 })
-  expect(orchestratorFrom({ orchestrator_model: 'haiku', orchestrator_agents: 2 }, { orchestrator: 'off' })).toEqual({ orchestrator: 'off', orchestrator_model: 'haiku', orchestrator_effort: 'auto', orchestrator_agents: 2 })
+  // What the person set stays: off, another effort, another number of agents.
+  expect(orchestratorFrom({}, { orchestrator: 'on', orchestrator_effort: 'high' })).toEqual({ orchestrator: 'on', orchestrator_effort: 'high', orchestrator_agents: 6 })
+  expect(orchestratorFrom({ orchestrator_agents: 2 }, { orchestrator: 'off' })).toEqual({ orchestrator: 'off', orchestrator_effort: 'auto', orchestrator_agents: 2 })
+  // The orchestrator_model an older version kept (plugin option or stored) is ignored, whatever it says.
+  for (const model of ['haiku', 'sonnet', 'opus', 'fable', 'gpt', 42]) {
+    expect(orchestratorFrom({ orchestrator_model: model }, { orchestrator_model: model, orchestrator: 'off' })).toEqual({ orchestrator: 'off', orchestrator_effort: 'auto', orchestrator_agents: 6 })
+    expect('orchestrator_model' in orchestratorFrom({ orchestrator_model: model }, { orchestrator_model: model })).toBe(false)
+  }
   // The plugin option is a boolean with a default of true, which Claude Code passes in: true is on, the default mode,
   // and false is off. What /gearbox stored is the person's, and wins: on, off or auto (never read as unset), or the
   // boolean an older version stored (true is on, false is off).
@@ -27,7 +32,7 @@ test('a new install has the orchestrator on, on Opus at an effort of auto, with 
   expect(orchestratorFrom({ orchestrator: true }, { orchestrator: true }).orchestrator).toBe('on')
   expect(orchestratorFrom({ orchestrator: true }, { orchestrator: false }).orchestrator).toBe('off')
   // Values it does not take fall back to the defaults.
-  expect(orchestratorFrom({ orchestrator: 'yes', orchestrator_model: 'fable', orchestrator_effort: 'huge' }, { orchestrator: 'sometimes' })).toEqual({ orchestrator: 'on', orchestrator_model: 'opus', orchestrator_effort: 'auto', orchestrator_agents: 6 })
+  expect(orchestratorFrom({ orchestrator: 'yes', orchestrator_effort: 'huge' }, { orchestrator: 'sometimes' })).toEqual({ orchestrator: 'on', orchestrator_effort: 'auto', orchestrator_agents: 6 })
   // max is no longer offered: a stored or plugin max is xhigh.
   expect(orchestratorFrom({ orchestrator_effort: 'max' }).orchestrator_effort).toBe('xhigh')
 })
@@ -155,15 +160,15 @@ test('the first part of each model goes to that model’s lane; other parts, and
   expect(seatParts([edits[0]!, reads[2]!], {}, now, idle).map(seat)).toEqual(['lane', 'lane'])
 })
 
-test('/gearbox orchestrator, -model and -effort each take only their own values', () => {
+test('/gearbox orchestrator, -effort and -agents each take only their own values; the orchestrator has no model of its own to set', () => {
   expect(orchestratorPatch('orchestrator', 'on')).toEqual({ orchestrator: 'on' })
   expect(orchestratorPatch('orchestrator', 'off')).toEqual({ orchestrator: 'off' })
   expect(orchestratorPatch('orchestrator', 'auto')).toEqual({ orchestrator: 'auto' })
-  expect(orchestratorPatch('orchestrator-model', 'opus')).toEqual({ orchestrator_model: 'opus' })
+  expect(orchestratorPatch('orchestrator-model', 'opus')).toBeUndefined()
+  expect(orchestratorPatch('orchestrator-model', 'fable')).toBeUndefined()
   expect(orchestratorPatch('orchestrator-effort', 'high')).toEqual({ orchestrator_effort: 'high' })
   expect(orchestratorPatch('orchestrator-effort', 'auto')).toEqual({ orchestrator_effort: 'auto' })
   expect(orchestratorPatch('orchestrator-effort', 'max')).toBeUndefined()
-  expect(orchestratorPatch('orchestrator-model', 'fable')).toBeUndefined()
   expect(orchestratorPatch('orchestrator-effort', 'huge')).toBeUndefined()
   expect(orchestratorPatch('orchestrator', 'maybe')).toBeUndefined()
   expect(orchestratorPatch('effort', 'high')).toBeUndefined()
@@ -244,6 +249,66 @@ test('an unsure review goes to the Opus lane too, at the effort its best guess g
   for (const mode of ['code', 'answer', 'drive', 'wait', 'commit'] as const) {
     const g = reading({ sure: false, mode, reach: 'system', depth: 3, care: 'costly' })
     expect(orchestratorPlan(g, gearFor(g, 'xhigh'), MAIN)).toEqual({ main: MAIN })
+  }
+})
+
+// The main conversation runs on the model the session is on, so the plan's `main` can be any rung of the ladder.
+const FABLE: Gear = { model: 'fable', effort: 'medium' }
+const OPUS: Gear = { model: 'opus', effort: 'medium' }
+const HAIKU: Gear = { model: 'haiku', effort: 'medium' }
+
+test('on a Fable main, Fable-level work stays here: a fresh Fable agent is no stronger model, only a brief and a cold start', () => {
+  const open = reading({ mode: 'answer', reach: 'frontier', depth: 2 })
+  const want = gearFor(open, 'high')
+  expect(want.model).toBe('fable')
+  // Unchanged on an Opus (or any lower) main: Fable's open-ended work is a deep hand-off to a fresh Fable agent.
+  for (const main of [OPUS, MAIN, HAIKU]) expect(orchestratorPlan(open, want, main)).toEqual({ main, handoff: { kind: 'deep', gear: want } })
+  expect(orchestratorPlan(open, want, FABLE)).toEqual({ main: FABLE })
+  // With `auto` its effort is the rules' for the work, xhigh at most, as for what any orchestrator keeps.
+  expect(orchestratorPlan(open, { model: 'fable', effort: 'max' }, FABLE, 1, 'xhigh', undefined, true)).toEqual({ main: { model: 'fable', effort: 'xhigh' } })
+  expect(orchestratorPlan(open, want, { model: 'fable', effort: 'high' }, 1, 'xhigh', undefined, true)).toEqual({ main: { model: 'fable', effort: want.effort } })
+  // Frontier code, a costly frontier question and a frontier review are Fable's too.
+  for (const mode of ['code', 'review'] as const) {
+    const r = reading({ mode, reach: 'frontier', depth: 2 })
+    expect(orchestratorPlan(r, gearFor(r, 'high'), OPUS).handoff?.kind).toBe('deep')
+    expect(orchestratorPlan(r, gearFor(r, 'high'), FABLE).handoff).toBeUndefined()
+  }
+  // Code the person fixed to Fable, however big: the Fable main writes it, in no agent of its own (and a Fable agent is
+  // a deep hand-off from any lower main, as before).
+  const big = reading({ mode: 'code', reach: 'area', depth: 3 })
+  expect(orchestratorPlan(big, { model: 'fable', effort: 'xhigh' }, OPUS, 1, 'xhigh', 'fable').handoff).toEqual({ kind: 'deep', gear: { model: 'fable', effort: 'xhigh' } })
+  expect(orchestratorPlan(big, { model: 'fable', effort: 'xhigh' }, FABLE, 1, 'xhigh', 'fable').handoff).toBeUndefined()
+})
+
+test('a Fable main still hands the rest to lanes: what the rules give a lower model goes to that model’s lane, and a guess stays', () => {
+  const code = reading({ mode: 'code', reach: 'area', depth: 2 })
+  const sonnet = { model: 'sonnet', effort: 'xhigh' } as const
+  // Never a Fable lane, never an agent on the main's own model for work a lower one does.
+  expect(orchestratorPlan(code, sonnet, FABLE)).toEqual({ main: FABLE, handoff: { kind: 'lane', gear: sonnet } })
+  expect(orchestratorPlan(reading({ mode: 'answer', reach: 'system', depth: 2 }), { model: 'opus', effort: 'high' }, FABLE).handoff).toEqual({ kind: 'lane', gear: { model: 'opus', effort: 'high' } })
+  expect(orchestratorPlan(reading({ mode: 'wait' }), sonnet, FABLE).handoff).toEqual({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, relay: 'wait' })
+  expect(orchestratorPlan(reading({ mode: 'commit', depth: 0 }), { model: 'haiku', effort: 'low' }, FABLE).handoff).toEqual({ kind: 'lane', gear: { model: 'haiku', effort: 'low' }, relay: 'chore' })
+  // Small code a lower model does stays on the stronger main; on a Haiku main the same code goes to a lane.
+  const small = reading({ mode: 'code', reach: 'area', depth: 1 })
+  expect(orchestratorPlan(small, { model: 'sonnet', effort: 'xhigh' }, FABLE)).toEqual({ main: FABLE })
+  expect(orchestratorPlan(small, { model: 'sonnet', effort: 'xhigh' }, OPUS)).toEqual({ main: OPUS })
+  expect(orchestratorPlan(small, { model: 'sonnet', effort: 'xhigh' }, HAIKU).handoff).toEqual({ kind: 'lane', gear: { model: 'sonnet', effort: 'xhigh' } })
+  expect(orchestratorPlan(reading({ sure: false, mode: 'code', reach: 'frontier', depth: 3 }), { model: 'fable', effort: 'high' }, FABLE)).toEqual({ main: FABLE })
+  // A sure request of independent parts still fans out from a Fable main, at the parts' own gear.
+  const r = reading({ mode: 'code', reach: 'area', depth: 2, parts: PARTS })
+  const fan = orchestratorPlan(r, gearFor(r, 'high'), FABLE, 3, 'high')
+  expect(fan.main).toEqual(FABLE)
+  expect(fan.handoff?.kind).toBe('fan')
+  expect(fan.handoff?.parts?.map(p => label(p.gear))).toEqual(['opus·medium', 'sonnet·high', 'sonnet·xhigh'])
+})
+
+test('the effort of the plan’s main follows the rules whichever model the main is on: kept, a hand-off, a relay and a drive', () => {
+  const want = { model: 'sonnet', effort: 'xhigh' } as const
+  for (const main of [FABLE, OPUS, MAIN, HAIKU]) {
+    expect(orchestratorPlan(reading({ mode: 'answer', reach: 'point', depth: 0 }), { model: 'haiku', effort: 'low' }, main, 1, 'xhigh', undefined, true).main).toEqual({ model: main.model, effort: 'low' })
+    expect(orchestratorPlan(reading({ mode: 'code', reach: 'area', depth: 2 }), want, main, 1, 'xhigh', undefined, true).main).toEqual({ model: main.model, effort: 'high' })
+    expect(orchestratorPlan(reading({ mode: 'wait' }), want, main, 1, 'xhigh', undefined, true).main).toEqual({ model: main.model, effort: 'low' })
+    expect(orchestratorPlan(reading({ mode: 'drive' }), want, main, 1, 'xhigh', undefined, true).main).toEqual({ model: main.model, effort: 'medium' })
   }
 })
 

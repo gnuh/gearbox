@@ -3,14 +3,14 @@ import { expect, mock, test as fresh } from 'claude-code/testing'
 import type { GearboxLoop } from '../types'
 import { PULSE, PULSE_MS, type Summary, desktopBand, panelBody, pulseAt, terminalBand } from './agents'
 
-// A new install has the orchestrator on, on Opus, with up to 6 agents, and code fixed to Sonnet. These tests are written
-// for a plain session whose rules pick code's model, and for a Sonnet orchestrator with up to 3 agents when they turn
-// it on, so each starts from those unless its own options say otherwise; `fresh` is the test with the defaults a new
-// install gets.
+// A new install has the orchestrator on, with up to 6 agents, and code fixed to Sonnet; its main conversation runs on the
+// model the session is on. These tests are written for a plain session whose rules pick code's model, and for an
+// orchestrator with up to 3 agents when they turn it on, so each starts from those unless its own options say otherwise;
+// `fresh` is the test with the defaults a new install gets.
 const test: typeof fresh = ((name: string, ...rest: any[]) => {
   const run = rest.pop()
   const opts = rest[0] ?? {}
-  return fresh(name, { ...opts, options: { code_model: 'auto', orchestrator: false, orchestrator_model: 'sonnet', orchestrator_agents: 3, ...opts.options } }, run)
+  return fresh(name, { ...opts, options: { code_model: 'auto', orchestrator: false, orchestrator_agents: 3, ...opts.options } }, run)
 }) as typeof fresh
 
 // The test runtime has timers; the hooks' own environment, whose types these files use, does not.
@@ -162,7 +162,7 @@ const spawnUnder = ($: any, description: string, model: string, parentAgentId: s
 // The crew the design draws: the main conversation on Opus, its effort left to the orchestrator, splits a request into
 // parts that run at once: two on Sonnet whose effort it names, a review on Opus that has already reported; part 2
 // started an Explore of its own. `owed`: a fourth part, which the main conversation has not started.
-const CREW = { options: { orchestrator: true, orchestrator_model: 'opus', orchestrator_effort: 'auto', code_effort: 'auto', orchestrator_agents: 4 } }
+const CREW = { options: { orchestrator: true, orchestrator_effort: 'auto', code_effort: 'auto', orchestrator_agents: 4 } }
 // The title the survey gives the crew's request, which heads the box its agents are drawn in.
 const CREW_TITLE = 'Orders by customer, and the README output'
 const CREW_PARTS = [
